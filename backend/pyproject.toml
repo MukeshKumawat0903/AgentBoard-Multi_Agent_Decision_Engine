@@ -1,0 +1,14 @@
+[tool.pytest.ini_options]
+asyncio_mode = "auto"
+testpaths = ["tests"]
+markers = [
+    "integration: marks tests that call the real GROQ API (deselect with -m 'not integration')",
+    "unit: marks tests that use mocked LLM clients only (default; no network)",
+]
+# Default timeout (seconds). Override per-test with @pytest.mark.timeout(N).
+# Requires pytest-timeout: pip install pytest-timeout
+# timeout = 30
+filterwarnings = [
+    "ignore::DeprecationWarning",
+    "ignore::PendingDeprecationWarning",
+]
