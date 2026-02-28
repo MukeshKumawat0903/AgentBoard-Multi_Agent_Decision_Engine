@@ -1,1 +1,1 @@
-# AgentBoard-Multi-Agent-Decision-Engine
+# AgentBoard-Multi Agent Decision Engine
