@@ -34,12 +34,27 @@ export default function RootLayout({
               <span className="text-xl">🎯</span>
               <span>AgentBoard</span>
             </a>
-            <div className="flex items-center gap-3">
-              <span className="text-xs text-gray-400 dark:text-gray-500 hidden sm:inline">
-                Multi-Agent Decision Engine
-              </span>
+            <nav className="flex items-center gap-1 sm:gap-3">
+              <a
+                href="/"
+                className="text-sm text-gray-500 dark:text-gray-400 hover:text-gray-800 dark:hover:text-gray-100 transition px-2 py-1 rounded"
+              >
+                New Debate
+              </a>
+              <a
+                href="/history"
+                className="text-sm text-gray-500 dark:text-gray-400 hover:text-gray-800 dark:hover:text-gray-100 transition px-2 py-1 rounded"
+              >
+                History
+              </a>
+              <a
+                href="/compare"
+                className="text-sm text-gray-500 dark:text-gray-400 hover:text-gray-800 dark:hover:text-gray-100 transition px-2 py-1 rounded"
+              >
+                Compare
+              </a>
               <ThemeToggle />
-            </div>
+            </nav>
           </div>
         </header>
 

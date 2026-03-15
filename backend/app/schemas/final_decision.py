@@ -23,6 +23,10 @@ class FinalDecision(BaseModel):
     thread_id: str = Field(
         description="Unique identifier of the debate session that produced this decision."
     )
+    query: str = Field(
+        default="",
+        description="The original user query that initiated this debate.",
+    )
     decision: str = Field(
         min_length=1,
         description="Clear, actionable decision statement.",

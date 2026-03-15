@@ -1,8 +1,8 @@
 /**
  * Home page — the debate input form.
  *
- * Submits the query, shows a loading state, then navigates to
- * the result page when the debate finishes.
+ * Submits the query via the async endpoint, then navigates immediately
+ * to the live-streaming debate page.
  */
 
 "use client";
@@ -11,7 +11,7 @@ import { useState } from "react";
 import { useRouter } from "next/navigation";
 import DebateInput from "@/components/DebateInput";
 import LoadingState from "@/components/LoadingState";
-import { startDebate } from "@/lib/api";
+import { startDebateAsync } from "@/lib/api";
 
 export default function HomePage() {
   const router = useRouter();
@@ -22,11 +22,11 @@ export default function HomePage() {
     setIsLoading(true);
     setError(null);
     try {
-      const decision = await startDebate({ query, max_rounds: maxRounds });
-      router.push(`/debate/${decision.thread_id}`);
+      const res = await startDebateAsync({ query, max_rounds: maxRounds });
+      // Navigate immediately – the debate page streams progress via SSE
+      router.push(`/debate/${res.thread_id}`);
     } catch (err) {
       setError(err instanceof Error ? err.message : "An unexpected error occurred.");
-    } finally {
       setIsLoading(false);
     }
   }

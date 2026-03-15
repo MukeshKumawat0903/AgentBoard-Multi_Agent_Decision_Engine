@@ -268,6 +268,7 @@ class ModeratorAgent(BaseAgent):
     def _parse_final_decision(self, raw: dict, state: DebateState) -> FinalDecision:
         try:
             raw.setdefault("thread_id", state.thread_id)
+            raw.setdefault("query", state.user_query)
             raw.setdefault("total_rounds", state.current_round)
             raw.setdefault(
                 "termination_reason",

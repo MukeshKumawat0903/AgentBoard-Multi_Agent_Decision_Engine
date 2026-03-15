@@ -90,10 +90,119 @@ export interface DebateStartRequest {
   max_rounds?: number;
 }
 
+export interface AsyncDebateStartResponse {
+  thread_id: string;
+  status: string;
+  stream_url: string;
+}
+
 export interface ErrorResponse {
   error: string;
   detail?: string;
 }
+
+/* ------------------------------------------------------------------ */
+/* History                                                             */
+/* ------------------------------------------------------------------ */
+
+export interface HistoryItem {
+  thread_id: string;
+  user_query: string;
+  created_at: string;
+  status: string;
+  total_rounds: number;
+  agreement_score: number;
+  termination_reason: string;
+}
+
+export interface HistoryListResponse {
+  items: HistoryItem[];
+  total: number;
+  page: number;
+  limit: number;
+}
+
+/* ------------------------------------------------------------------ */
+/* SSE events                                                          */
+/* ------------------------------------------------------------------ */
+
+export interface DebateStartedEvent {
+  type: "debate_started";
+  thread_id: string;
+  user_query: string;
+  max_rounds: number;
+}
+
+export interface RoundStartedEvent {
+  type: "round_started";
+  round_number: number;
+  max_rounds: number;
+}
+
+export interface PhaseStartedEvent {
+  type: "phase_started";
+  round_number: number;
+  phase: DebatePhase;
+}
+
+export interface AgentOutputEvent {
+  type: "agent_output";
+  round_number: number;
+  phase: DebatePhase;
+  agent_name: string;
+  position: string;
+  reasoning: string;
+  confidence_score: number;
+  assumptions: string[];
+}
+
+export interface CritiqueCompletedEvent {
+  type: "critique_completed";
+  round_number: number;
+  critic_agent: string;
+  target_agent: string;
+  severity: "low" | "medium" | "high" | "critical";
+  critique_points: string[];
+  confidence_score: number;
+}
+
+export interface SynthesisEvent {
+  type: "synthesis";
+  round_number: number;
+  agreement_score: number;
+  should_continue: boolean;
+  summary: string;
+  agreement_areas: string[];
+  disagreement_areas: string[];
+}
+
+export interface DebateCompletedEvent {
+  type: "debate_completed";
+  thread_id: string;
+  termination_reason: string;
+  total_rounds: number;
+  agreement_score: number;
+}
+
+export interface FinalDecisionEvent extends FinalDecision {
+  type: "final_decision";
+}
+
+export interface ErrorEvent {
+  type: "error";
+  message: string;
+}
+
+export type DebateSSEEvent =
+  | DebateStartedEvent
+  | RoundStartedEvent
+  | PhaseStartedEvent
+  | AgentOutputEvent
+  | CritiqueCompletedEvent
+  | SynthesisEvent
+  | DebateCompletedEvent
+  | FinalDecisionEvent
+  | ErrorEvent;
 
 /* ------------------------------------------------------------------ */
 /* Agent colour / role metadata (UI-only)                              */

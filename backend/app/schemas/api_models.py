@@ -111,3 +111,42 @@ class ErrorResponse(BaseModel):
             }
         }
     )
+
+
+# ---------------------------------------------------------------------------
+# Async / streaming models
+# ---------------------------------------------------------------------------
+
+
+class AsyncDebateStartResponse(BaseModel):
+    """Response for POST /debate/start-async – debate runs in the background."""
+
+    thread_id: str = Field(description="UUID of the debate session.")
+    status: str = Field(description="Initial status ('initialized').")
+    stream_url: str = Field(description="SSE endpoint to subscribe to live events.")
+
+
+# ---------------------------------------------------------------------------
+# History / comparison models
+# ---------------------------------------------------------------------------
+
+
+class HistoryItem(BaseModel):
+    """Lightweight summary row returned by GET /history."""
+
+    thread_id: str
+    user_query: str
+    created_at: str
+    status: str
+    total_rounds: int
+    agreement_score: float
+    termination_reason: str
+
+
+class HistoryListResponse(BaseModel):
+    """Paginated list of completed debates."""
+
+    items: list[HistoryItem]
+    total: int
+    page: int
+    limit: int

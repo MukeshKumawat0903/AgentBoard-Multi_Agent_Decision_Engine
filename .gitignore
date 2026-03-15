@@ -29,3 +29,6 @@ Thumbs.db
 htmlcov/
 *docs
 *Notebooks
+
+# Database
+*.db

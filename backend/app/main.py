@@ -14,6 +14,7 @@ from fastapi.responses import JSONResponse
 from app.core.config import settings
 from app.core.logging_config import setup_logging
 from app.api.routes import router
+from app.db.database import init_db
 from app.utils.exceptions import LLMConnectionError, LLMRateLimitError, LLMResponseError
 
 logger = logging.getLogger("agentboard")
@@ -23,6 +24,7 @@ logger = logging.getLogger("agentboard")
 async def lifespan(app: FastAPI):
     """Application startup and shutdown lifecycle."""
     setup_logging(settings.LOG_LEVEL)
+    await init_db()
     logger.info(
         "AgentBoard starting up",
         extra={
