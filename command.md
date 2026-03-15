@@ -22,6 +22,25 @@ cd AgentBoard-Multi_Agent_Decision_Engine
 
 ---
 
+## 🚀 Quick Start: Run Everything Together
+
+You can now start both the **Backend** and **Frontend** simultaneously using a single command.
+
+### Windows (Native)
+Run the batch file from the project root:
+```powershell
+.\run_all.bat
+```
+
+### Git Bash / WSL / macOS / Linux
+Run the shell script from the project root:
+```bash
+chmod +x run_all.sh  # Only needed once
+./run_all.sh
+```
+
+---
+
 ## 2. Backend setup
 
 ### 2.1 Create the virtual environment
