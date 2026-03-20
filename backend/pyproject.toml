@@ -1,5 +1,6 @@
 [tool.pytest.ini_options]
 asyncio_mode = "auto"
+asyncio_default_fixture_loop_scope = "function"
 testpaths = ["tests"]
 markers = [
     "integration: marks tests that call the real GROQ API (deselect with -m 'not integration')",
@@ -11,4 +12,9 @@ markers = [
 filterwarnings = [
     "ignore::DeprecationWarning",
     "ignore::PendingDeprecationWarning",
+    # Fire-and-forget asyncio.create_task(_persist_debate) outlives the test's
+    # event loop scope; the aiosqlite background thread and the uncollected
+    # coroutine both raise benign warnings on teardown — suppress them.
+    "ignore::pytest.PytestUnhandledThreadExceptionWarning",
+    "ignore::pytest.PytestUnraisableExceptionWarning",
 ]

@@ -28,6 +28,10 @@ Thumbs.db
 .coverage
 htmlcov/
 *docs
+
+# Logs
+backend/logs/
+logs/
 *Notebooks
 
 # Database

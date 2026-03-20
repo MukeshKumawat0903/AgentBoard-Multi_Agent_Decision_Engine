@@ -9,6 +9,8 @@ import logging
 import json
 import sys
 from datetime import datetime, timezone
+from logging.handlers import TimedRotatingFileHandler
+from pathlib import Path
 
 
 class JSONFormatter(logging.Formatter):
@@ -46,14 +48,37 @@ def setup_logging(log_level: str = "INFO") -> None:
     if logger.handlers:
         logger.handlers.clear()
 
-    # Console handler with JSON formatter
+    formatter = JSONFormatter()
+
+    # Console handler
     console_handler = logging.StreamHandler(sys.stdout)
     console_handler.setLevel(numeric_level)
-    console_handler.setFormatter(JSONFormatter())
+    console_handler.setFormatter(formatter)
     logger.addHandler(console_handler)
+
+    # File handler – daily rotating, kept for 30 days
+    # Resolves to: backend/logs/agentboard_YYYY-MM-DD.log
+    logs_dir = Path(__file__).resolve().parent.parent.parent / "logs"
+    logs_dir.mkdir(exist_ok=True)
+    today = datetime.now().strftime("%Y-%m-%d")
+    log_file = logs_dir / f"agentboard_{today}.log"
+
+    file_handler = TimedRotatingFileHandler(
+        filename=str(log_file),
+        when="midnight",
+        interval=1,
+        backupCount=30,
+        encoding="utf-8",
+        utc=False,
+    )
+    file_handler.setLevel(numeric_level)
+    file_handler.setFormatter(formatter)
+    # Suffix so rotated files are named agentboard_YYYY-MM-DD.log.YYYY-MM-DD
+    file_handler.suffix = "%Y-%m-%d"
+    logger.addHandler(file_handler)
 
     # Suppress noisy third-party loggers
     logging.getLogger("uvicorn.access").setLevel(logging.WARNING)
     logging.getLogger("httpx").setLevel(logging.WARNING)
 
-    logger.info("Logging initialized", extra={"log_level": log_level})
+    logger.info("Logging initialized", extra={"log_level": log_level, "log_file": str(log_file)})

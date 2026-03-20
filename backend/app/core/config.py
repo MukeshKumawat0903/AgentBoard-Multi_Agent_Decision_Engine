@@ -17,7 +17,7 @@ class Settings(BaseSettings):
     GROQ_BASE_URL: str = "https://api.groq.com/openai/v1"
 
     # --- Debate Engine Configuration ---
-    MAX_DEBATE_ROUNDS: int = 4
+    MAX_DEBATE_ROUNDS: int = 2
     CONSENSUS_THRESHOLD: float = 0.75
 
     # --- Application Configuration ---
@@ -35,4 +35,4 @@ class Settings(BaseSettings):
 
 
 # Singleton instance – import this everywhere
-settings = Settings()
+settings = Settings()  # type: ignore[call-arg]

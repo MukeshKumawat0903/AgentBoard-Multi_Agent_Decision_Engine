@@ -136,7 +136,7 @@ class GroqClient:
                 {"role": "user",   "content": user_prompt},
             ],
             "temperature": temperature,
-            "max_tokens": 2048,
+            "max_tokens": 800,
             "response_format": {"type": "json_object"},
         }
 

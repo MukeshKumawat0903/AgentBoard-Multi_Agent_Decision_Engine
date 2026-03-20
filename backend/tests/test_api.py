@@ -1,7 +1,7 @@
 """
 Tests for API endpoints (Phase 8).
 
-All DebateController calls are mocked – no LLM traffic.
+All DebateGraph calls are mocked – no LLM traffic.
 
 Coverage:
   GET  /health                   – 200 + correct fields
@@ -24,6 +24,13 @@ from app.main import app
 from app.schemas.final_decision import FinalDecision
 from app.schemas.state import DebateRound, DebateState
 from app.utils.exceptions import LLMConnectionError, LLMRateLimitError, LLMResponseError
+
+
+def _mock_graph(state: DebateState, decision: FinalDecision) -> MagicMock:
+    """Return a MagicMock that mimics DebateGraph (run returns (state, decision))."""
+    g = MagicMock()
+    g.run = AsyncMock(return_value=(state, decision))
+    return g
 
 
 # ---------------------------------------------------------------------------
@@ -89,18 +96,6 @@ def _make_decision(thread_id: str | None = None, **kwargs: Any) -> FinalDecision
     return FinalDecision(**{**defaults, **kwargs})
 
 
-def _mock_controller(state: DebateState, decision: FinalDecision) -> MagicMock:
-    """Return a MagicMock that mimics DebateController's async API."""
-    ctrl = MagicMock()
-    ctrl.initialize_state = AsyncMock(return_value=state)
-    ctrl.execute = AsyncMock(return_value=decision)
-    return ctrl
-
-
-# ---------------------------------------------------------------------------
-# GET /health
-# ---------------------------------------------------------------------------
-
 class TestHealthCheck:
 
     @pytest.mark.anyio
@@ -136,7 +131,7 @@ class TestPostDebateStart:
         state = _make_state()
         decision = _make_decision(thread_id=state.thread_id)
 
-        with patch("app.api.routes.DebateController", return_value=_mock_controller(state, decision)):
+        with patch("app.api.routes.DebateGraph", return_value=_mock_graph(state, decision)):
             response = await client.post(
                 "/debate/start",
                 json={"query": "Should we expand into the Asian market in Q3?", "max_rounds": 2},
@@ -153,7 +148,7 @@ class TestPostDebateStart:
         state = _make_state()
         decision = _make_decision(thread_id=state.thread_id)
 
-        with patch("app.api.routes.DebateController", return_value=_mock_controller(state, decision)):
+        with patch("app.api.routes.DebateGraph", return_value=_mock_graph(state, decision)):
             await client.post(
                 "/debate/start",
                 json={"query": "Should we expand into the Asian market in Q3?", "max_rounds": 2},
@@ -182,13 +177,10 @@ class TestPostDebateStart:
 
     @pytest.mark.anyio
     async def test_llm_response_error_returns_502(self, client, isolated_stores):
-        debate_store, _ = isolated_stores
-        state = _make_state()
-        ctrl = MagicMock()
-        ctrl.initialize_state = AsyncMock(return_value=state)
-        ctrl.execute = AsyncMock(side_effect=LLMResponseError("bad JSON from model"))
+        g = MagicMock()
+        g.run = AsyncMock(side_effect=LLMResponseError("bad JSON from model"))
 
-        with patch("app.api.routes.DebateController", return_value=ctrl):
+        with patch("app.api.routes.DebateGraph", return_value=g):
             response = await client.post(
                 "/debate/start",
                 json={"query": "Should we expand into the Asian market in Q3?"},
@@ -199,13 +191,10 @@ class TestPostDebateStart:
 
     @pytest.mark.anyio
     async def test_llm_connection_error_returns_503(self, client, isolated_stores):
-        debate_store, _ = isolated_stores
-        state = _make_state()
-        ctrl = MagicMock()
-        ctrl.initialize_state = AsyncMock(return_value=state)
-        ctrl.execute = AsyncMock(side_effect=LLMConnectionError("network timeout"))
+        g = MagicMock()
+        g.run = AsyncMock(side_effect=LLMConnectionError("network timeout"))
 
-        with patch("app.api.routes.DebateController", return_value=ctrl):
+        with patch("app.api.routes.DebateGraph", return_value=g):
             response = await client.post(
                 "/debate/start",
                 json={"query": "Should we expand into the Asian market in Q3?"},
@@ -216,13 +205,10 @@ class TestPostDebateStart:
 
     @pytest.mark.anyio
     async def test_llm_rate_limit_error_returns_429(self, client, isolated_stores):
-        debate_store, _ = isolated_stores
-        state = _make_state()
-        ctrl = MagicMock()
-        ctrl.initialize_state = AsyncMock(return_value=state)
-        ctrl.execute = AsyncMock(side_effect=LLMRateLimitError("rate limited"))
+        g = MagicMock()
+        g.run = AsyncMock(side_effect=LLMRateLimitError("rate limited"))
 
-        with patch("app.api.routes.DebateController", return_value=ctrl):
+        with patch("app.api.routes.DebateGraph", return_value=g):
             response = await client.post(
                 "/debate/start",
                 json={"query": "Should we expand into the Asian market in Q3?"},
@@ -232,20 +218,18 @@ class TestPostDebateStart:
         assert response.json()["error"] == "llm_rate_limit"
 
     @pytest.mark.anyio
-    async def test_state_marked_error_on_execute_failure(self, client, isolated_stores):
-        debate_store, _ = isolated_stores
-        state = _make_state()
-        ctrl = MagicMock()
-        ctrl.initialize_state = AsyncMock(return_value=state)
-        ctrl.execute = AsyncMock(side_effect=LLMConnectionError("timeout"))
+    async def test_connection_failure_returns_503(self, client, isolated_stores):
+        """LLMConnectionError from graph.run() should surface as 503."""
+        g = MagicMock()
+        g.run = AsyncMock(side_effect=LLMConnectionError("timeout"))
 
-        with patch("app.api.routes.DebateController", return_value=ctrl):
-            await client.post(
+        with patch("app.api.routes.DebateGraph", return_value=g):
+            response = await client.post(
                 "/debate/start",
                 json={"query": "Should we expand into the Asian market in Q3?"},
             )
 
-        assert state.status == "error"
+        assert response.status_code == 503
 
 
 # ---------------------------------------------------------------------------
@@ -362,12 +346,10 @@ class TestExceptionHandlers:
 
     @pytest.mark.anyio
     async def test_llm_response_error_returns_502_error_key(self, client, isolated_stores):
-        state = _make_state()
-        ctrl = MagicMock()
-        ctrl.initialize_state = AsyncMock(return_value=state)
-        ctrl.execute = AsyncMock(side_effect=LLMResponseError("parse failed"))
+        g = MagicMock()
+        g.run = AsyncMock(side_effect=LLMResponseError("parse failed"))
 
-        with patch("app.api.routes.DebateController", return_value=ctrl):
+        with patch("app.api.routes.DebateGraph", return_value=g):
             response = await client.post(
                 "/debate/start",
                 json={"query": "Should we expand into the Asian market in Q3?"},
@@ -380,12 +362,10 @@ class TestExceptionHandlers:
 
     @pytest.mark.anyio
     async def test_llm_connection_error_detail_propagated(self, client, isolated_stores):
-        state = _make_state()
-        ctrl = MagicMock()
-        ctrl.initialize_state = AsyncMock(return_value=state)
-        ctrl.execute = AsyncMock(side_effect=LLMConnectionError("unreachable"))
+        g = MagicMock()
+        g.run = AsyncMock(side_effect=LLMConnectionError("unreachable"))
 
-        with patch("app.api.routes.DebateController", return_value=ctrl):
+        with patch("app.api.routes.DebateGraph", return_value=g):
             response = await client.post(
                 "/debate/start",
                 json={"query": "Should we expand into the Asian market in Q3?"},
@@ -395,12 +375,10 @@ class TestExceptionHandlers:
 
     @pytest.mark.anyio
     async def test_rate_limit_error_returns_429(self, client, isolated_stores):
-        state = _make_state()
-        ctrl = MagicMock()
-        ctrl.initialize_state = AsyncMock(return_value=state)
-        ctrl.execute = AsyncMock(side_effect=LLMRateLimitError("too many requests"))
+        g = MagicMock()
+        g.run = AsyncMock(side_effect=LLMRateLimitError("too many requests"))
 
-        with patch("app.api.routes.DebateController", return_value=ctrl):
+        with patch("app.api.routes.DebateGraph", return_value=g):
             response = await client.post(
                 "/debate/start",
                 json={"query": "Should we expand into the Asian market in Q3?"},

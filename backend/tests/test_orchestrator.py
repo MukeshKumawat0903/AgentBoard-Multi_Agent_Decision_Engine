@@ -1,5 +1,5 @@
 """
-Tests for the debate orchestrator / controller (Phase 6).
+Tests for the debate orchestrator – DebateController and LangGraph DebateGraph.
 
 All LLM calls are mocked – no network traffic.
 
@@ -13,15 +13,30 @@ Coverage:
   _should_terminate()      – consensus / max-rounds / high-confidence paths
   _finalize()              – sets state.status, populates debate_trace
   execute()                – full loop, consensus exit, max-rounds exit
+
+  DebateGraph construction
+  DebateGraph.run()        – consensus exit, max-rounds exit, agent failure
+  LangGraph node functions – proposals, critiques, revisions, convergence, finalize
 """
 
-from typing import Any
+import asyncio
+from typing import Any, cast
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
+from app.agents.base_agent import BaseAgent
 from app.agents.moderator_agent import ModeratorSynthesis
 from app.orchestrator.debate_controller import DebateController
+from app.orchestrator.debate_graph import DebateGraph
+from app.orchestrator.lg_state import DebateGraphState
+from app.orchestrator.nodes import (
+    make_convergence_node,
+    make_critiques_node,
+    make_finalize_node,
+    make_proposals_node,
+    make_revisions_node,
+)
 from app.schemas.agent_response import AgentResponse, CritiqueResponse
 from app.schemas.final_decision import FinalDecision
 from app.schemas.state import DebateRound, DebateState
@@ -375,7 +390,7 @@ class TestRunRevisions:
         revised = await ctrl._run_revisions(state)
         assert revised == []
         for agent in ctrl.agents.values():
-            agent.revise.assert_not_called()
+            cast(AsyncMock, agent.revise).assert_not_called()
 
     @pytest.mark.anyio
     async def test_updates_confidence_scores_in_state(self):
@@ -634,8 +649,8 @@ class TestExecute:
 
         original_run = ctrl.agents["Analyst"].run
 
-        async def capture_status(s: DebateState) -> AgentResponse:
-            status_during.append(s.status)
+        async def capture_status(state: DebateState) -> AgentResponse:
+            status_during.append(state.status)
             return _agent_response("Analyst")
 
         ctrl.agents["Analyst"].run = capture_status
@@ -695,3 +710,389 @@ class TestExecute:
 
         # agreement_score in state should be the last synthesis value
         assert state.agreement_score >= scores[-1]
+
+
+# ===========================================================================
+# LangGraph DebateGraph tests
+# ===========================================================================
+
+
+# ---------------------------------------------------------------------------
+# Helpers for DebateGraph
+# ---------------------------------------------------------------------------
+
+def _mock_settings_dg(
+    *,
+    max_rounds: int = 4,
+    consensus_threshold: float = 0.75,
+) -> MagicMock:
+    s = MagicMock()
+    s.MAX_DEBATE_ROUNDS = max_rounds
+    s.CONSENSUS_THRESHOLD = consensus_threshold
+    return s
+
+
+def _make_graph(max_rounds: int = 4, threshold: float = 0.75) -> DebateGraph:
+    return DebateGraph(
+        llm_client=_mock_llm(),
+        settings=_mock_settings_dg(max_rounds=max_rounds, consensus_threshold=threshold),
+    )
+
+
+def _patch_all_agents_dg(graph: DebateGraph, confidence: float = 0.8) -> None:
+    """Replace every agent's run/critique/revise on the DebateGraph with AsyncMocks."""
+    for name, agent in graph.agents.items():
+        agent.run = AsyncMock(return_value=_agent_response(name, confidence=confidence))
+        agent.critique = AsyncMock(
+            side_effect=lambda state, target, _n=name: _critique_response(_n, target.agent_name)
+        )
+        agent.revise = AsyncMock(return_value=_agent_response(name, confidence=confidence))
+
+
+def _patch_moderator_dg(
+    graph: DebateGraph,
+    synthesis: ModeratorSynthesis,
+    decision: FinalDecision | None = None,
+) -> None:
+    graph.moderator.synthesize = AsyncMock(return_value=synthesis)
+    if decision is None:
+        decision = FinalDecision(
+            thread_id="test-thread",
+            decision="Proceed.",
+            rationale_summary="Consensus reached.",
+            confidence_score=0.85,
+            agreement_score=synthesis.agreement_score,
+            total_rounds=1,
+            termination_reason="consensus_reached",
+            debate_trace=[],
+        )
+    graph.moderator.finalize = AsyncMock(return_value=decision)
+
+
+# ---------------------------------------------------------------------------
+# DebateGraph construction
+# ---------------------------------------------------------------------------
+
+class TestDebateGraphInit:
+
+    def test_creates_four_debate_agents(self):
+        g = _make_graph()
+        assert set(g.agents.keys()) == {"Analyst", "Risk", "Strategy", "Ethics"}
+
+    def test_moderator_is_separate(self):
+        g = _make_graph()
+        assert g.moderator is not None
+        assert "Moderator" not in g.agents
+
+    def test_graph_is_compiled(self):
+        g = _make_graph()
+        # compiled graph exposes ainvoke
+        assert callable(getattr(g._graph, "ainvoke", None))
+
+
+# ---------------------------------------------------------------------------
+# DebateGraph.run() – integration (all helpers mocked)
+# ---------------------------------------------------------------------------
+
+class TestDebateGraphRun:
+
+    @pytest.mark.anyio
+    async def test_returns_debate_state_and_final_decision(self):
+        g = _make_graph()
+        _patch_all_agents_dg(g)
+        _patch_moderator_dg(g, _synthesis(agreement_score=0.85, should_continue=False))
+
+        state, decision = await g.run("Should we expand globally in Q3?")
+
+        assert isinstance(state, DebateState)
+        assert isinstance(decision, FinalDecision)
+
+    @pytest.mark.anyio
+    async def test_terminates_after_one_round_at_consensus(self):
+        g = _make_graph(max_rounds=4, threshold=0.75)
+        _patch_all_agents_dg(g)
+        _patch_moderator_dg(g, _synthesis(agreement_score=0.90, should_continue=False))
+
+        state, _ = await g.run("Should we expand globally in Q3?")
+
+        assert state.current_round == 1
+        assert state.termination_reason == "consensus_reached"
+        assert state.status == "converged"
+
+    @pytest.mark.anyio
+    async def test_runs_all_rounds_if_no_consensus(self):
+        g = _make_graph(max_rounds=2, threshold=0.75)
+        _patch_all_agents_dg(g)
+        _patch_moderator_dg(g, _synthesis(agreement_score=0.50, should_continue=True))
+
+        state, _ = await g.run("Should we expand globally in Q3?")
+
+        assert state.current_round == 2
+        assert state.termination_reason == "max_rounds_reached"
+        assert state.status == "max_rounds_reached"
+
+    @pytest.mark.anyio
+    async def test_correct_round_count_in_state(self):
+        g = _make_graph(max_rounds=3, threshold=0.95)  # high threshold forces all rounds
+        _patch_all_agents_dg(g)
+        _patch_moderator_dg(g, _synthesis(agreement_score=0.50, should_continue=True))
+
+        state, _ = await g.run("Should we expand globally in Q3?")
+
+        assert len(state.rounds) == 3
+
+    @pytest.mark.anyio
+    async def test_respects_custom_max_rounds(self):
+        g = _make_graph(max_rounds=4, threshold=0.95)
+        _patch_all_agents_dg(g)
+        _patch_moderator_dg(g, _synthesis(agreement_score=0.50, should_continue=True))
+
+        state, _ = await g.run("Should we expand globally in Q3?", max_rounds=2)
+
+        assert state.current_round == 2
+
+    @pytest.mark.anyio
+    async def test_preserves_thread_id_when_initial_state_provided(self):
+        g = _make_graph()
+        _patch_all_agents_dg(g)
+        _patch_moderator_dg(g, _synthesis(agreement_score=0.85, should_continue=False))
+
+        initial = DebateState(user_query="Should we expand globally in Q3?")
+        expected_thread_id = initial.thread_id
+
+        state, _ = await g.run(initial.user_query, initial_state=initial)
+
+        assert state.thread_id == expected_thread_id
+
+    @pytest.mark.anyio
+    async def test_survives_one_failing_agent(self):
+        g = _make_graph(max_rounds=4, threshold=0.75)
+        _patch_all_agents_dg(g)
+        g.agents["Ethics"].run = AsyncMock(side_effect=RuntimeError("LLM down"))
+        _patch_moderator_dg(g, _synthesis(agreement_score=0.88, should_continue=False))
+
+        state, decision = await g.run("Should we expand globally in Q3?")
+
+        assert isinstance(decision, FinalDecision)
+        # Only 3 proposals succeed per round
+        assert len(state.rounds[0].agent_outputs) == 3
+
+    @pytest.mark.anyio
+    async def test_emits_events_to_queue(self):
+        queue_list: list = []
+        personal_queue: asyncio.Queue = asyncio.Queue()
+        queue_list.append(personal_queue)
+
+        g = DebateGraph(
+            llm_client=_mock_llm(),
+            settings=_mock_settings_dg(max_rounds=2, consensus_threshold=0.75),
+            queue_list=queue_list,
+        )
+        _patch_all_agents_dg(g)
+        _patch_moderator_dg(g, _synthesis(agreement_score=0.85, should_continue=False))
+
+        await g.run("Should we expand globally in Q3?")
+
+        emitted_types = []
+        while not personal_queue.empty():
+            emitted_types.append(personal_queue.get_nowait().get("type"))
+
+        assert "debate_started" in emitted_types
+        assert "round_started" in emitted_types
+        assert "debate_completed" in emitted_types
+
+
+# ---------------------------------------------------------------------------
+# Node unit tests – proposals_node
+# ---------------------------------------------------------------------------
+
+class TestProposalsNode:
+
+    @pytest.mark.anyio
+    async def test_increments_round_counter(self):
+        agents = {n: MagicMock() for n in ["A", "B"]}
+        for name, ag in agents.items():
+            ag.name = name
+            ag.run = AsyncMock(return_value=_agent_response(name))
+
+        node = make_proposals_node(cast(dict[str, BaseAgent], agents), lambda *_: None)
+        ds = DebateState(user_query="Should we expand globally in Q3?")
+        state = cast(DebateGraphState, {"debate_state": ds, "should_continue": True, "final_decision": None})
+
+        result = await node(state)
+
+        assert result["debate_state"].current_round == 1
+
+    @pytest.mark.anyio
+    async def test_appends_round_to_state(self):
+        agents = {"A": MagicMock()}
+        agents["A"].name = "A"
+        agents["A"].run = AsyncMock(return_value=_agent_response("A"))
+
+        node = make_proposals_node(cast(dict[str, BaseAgent], agents), lambda *_: None)
+        ds = DebateState(user_query="Should we expand globally in Q3?")
+        state = cast(DebateGraphState, {"debate_state": ds, "should_continue": True, "final_decision": None})
+
+        result = await node(state)
+
+        assert len(result["debate_state"].rounds) == 1
+
+    @pytest.mark.anyio
+    async def test_handles_agent_failure_gracefully(self):
+        agents = {"A": MagicMock(), "B": MagicMock()}
+        agents["A"].name = "A"
+        agents["A"].run = AsyncMock(side_effect=RuntimeError("boom"))
+        agents["B"].name = "B"
+        agents["B"].run = AsyncMock(return_value=_agent_response("B"))
+
+        node = make_proposals_node(cast(dict[str, BaseAgent], agents), lambda *_: None)
+        ds = DebateState(user_query="Should we expand globally in Q3?")
+        state = cast(DebateGraphState, {"debate_state": ds, "should_continue": True, "final_decision": None})
+
+        result = await node(state)
+
+        assert len(result["debate_state"].rounds[0].agent_outputs) == 1
+
+
+# ---------------------------------------------------------------------------
+# Node unit tests – convergence_node
+# ---------------------------------------------------------------------------
+
+class TestConvergenceNode:
+
+    @pytest.mark.anyio
+    async def test_sets_should_continue_false_on_consensus(self):
+        moderator = MagicMock()
+        moderator.synthesize = AsyncMock(
+            return_value=_synthesis(agreement_score=0.90, should_continue=False)
+        )
+        settings = _mock_settings_dg(consensus_threshold=0.75)
+
+        node = make_convergence_node(moderator, settings, lambda *_: None)
+        ds = DebateState(user_query="Should we expand globally in Q3?", current_round=1)
+        round_data = DebateRound(round_number=1)
+        for n in ["A", "B"]:
+            round_data.agent_outputs.append(_agent_response(n))
+        ds.rounds.append(round_data)
+
+        result = await node({"debate_state": ds, "should_continue": True, "final_decision": None})
+
+        assert result["should_continue"] is False
+        assert result["debate_state"].termination_reason == "consensus_reached"
+
+    @pytest.mark.anyio
+    async def test_sets_should_continue_false_at_max_rounds(self):
+        moderator = MagicMock()
+        moderator.synthesize = AsyncMock(
+            return_value=_synthesis(agreement_score=0.50, should_continue=True)
+        )
+        settings = _mock_settings_dg(max_rounds=2, consensus_threshold=0.75)
+
+        node = make_convergence_node(moderator, settings, lambda *_: None)
+        ds = DebateState(
+            user_query="Should we expand globally in Q3?",
+            current_round=2,
+            max_rounds=2,
+        )
+        round_data = DebateRound(round_number=2)
+        ds.rounds.append(round_data)
+
+        result = await node({"debate_state": ds, "should_continue": True, "final_decision": None})
+
+        assert result["should_continue"] is False
+        assert result["debate_state"].termination_reason == "max_rounds_reached"
+
+    @pytest.mark.anyio
+    async def test_sets_should_continue_true_mid_debate(self):
+        moderator = MagicMock()
+        moderator.synthesize = AsyncMock(
+            return_value=_synthesis(agreement_score=0.50, should_continue=True)
+        )
+        settings = _mock_settings_dg(max_rounds=4, consensus_threshold=0.75)
+
+        node = make_convergence_node(moderator, settings, lambda *_: None)
+        ds = DebateState(user_query="Should we expand globally in Q3?", current_round=1)
+        round_data = DebateRound(round_number=1)
+        ds.rounds.append(round_data)
+
+        result = await node({"debate_state": ds, "should_continue": True, "final_decision": None})
+
+        assert result["should_continue"] is True
+        assert result["debate_state"].termination_reason is None
+
+
+# ---------------------------------------------------------------------------
+# Node unit tests – finalize_node
+# ---------------------------------------------------------------------------
+
+class TestFinalizeNode:
+
+    @pytest.mark.anyio
+    async def test_populates_final_decision(self):
+        moderator = MagicMock()
+        ds = DebateState(
+            user_query="Should we expand globally in Q3?",
+            current_round=1,
+        )
+        ds.termination_reason = "consensus_reached"
+        dummy_decision = FinalDecision(
+            thread_id=ds.thread_id,
+            decision="Proceed.",
+            rationale_summary="Consensus.",
+            confidence_score=0.85,
+            agreement_score=0.85,
+            total_rounds=1,
+            termination_reason="consensus_reached",
+            debate_trace=[],
+        )
+        moderator.finalize = AsyncMock(return_value=dummy_decision)
+
+        node = make_finalize_node(moderator, lambda *_: None)
+        result = await node({"debate_state": ds, "should_continue": False, "final_decision": None})
+
+        assert isinstance(result["final_decision"], FinalDecision)
+
+    @pytest.mark.anyio
+    async def test_sets_state_status_converged(self):
+        moderator = MagicMock()
+        ds = DebateState(user_query="Should we expand globally in Q3?", current_round=1)
+        ds.termination_reason = "consensus_reached"
+        dummy_decision = FinalDecision(
+            thread_id=ds.thread_id,
+            decision="Go.",
+            rationale_summary="OK.",
+            confidence_score=0.9,
+            agreement_score=0.9,
+            total_rounds=1,
+            termination_reason="consensus_reached",
+            debate_trace=[],
+        )
+        moderator.finalize = AsyncMock(return_value=dummy_decision)
+
+        node = make_finalize_node(moderator, lambda *_: None)
+        result = await node({"debate_state": ds, "should_continue": False, "final_decision": None})
+
+        assert result["debate_state"].status == "converged"
+
+    @pytest.mark.anyio
+    async def test_debate_trace_populated_from_rounds(self):
+        moderator = MagicMock()
+        ds = DebateState(user_query="Should we expand globally in Q3?", current_round=2)
+        ds.termination_reason = "consensus_reached"
+        ds.rounds = [DebateRound(round_number=1), DebateRound(round_number=2)]
+        dummy_decision = FinalDecision(
+            thread_id=ds.thread_id,
+            decision="Proceed.",
+            rationale_summary="Done.",
+            confidence_score=0.85,
+            agreement_score=0.85,
+            total_rounds=2,
+            termination_reason="consensus_reached",
+            debate_trace=[],
+        )
+        moderator.finalize = AsyncMock(return_value=dummy_decision)
+
+        node = make_finalize_node(moderator, lambda *_: None)
+        result = await node({"debate_state": ds, "should_continue": False, "final_decision": None})
+
+        assert len(result["final_decision"].debate_trace) == 2

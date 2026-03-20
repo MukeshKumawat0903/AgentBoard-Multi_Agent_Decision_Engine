@@ -24,7 +24,8 @@ from app.api.dependencies import (
 )
 from app.core.config import Settings
 from app.db.crud import get_decision_json, get_history, save_decision, upsert_debate
-from app.orchestrator.debate_controller import DebateController
+from app.orchestrator.debate_graph import DebateGraph
+from app.schemas.state import DebateState
 from app.schemas.api_models import (
     AsyncDebateStartResponse,
     DebateStartRequest,
@@ -34,7 +35,6 @@ from app.schemas.api_models import (
     HistoryListResponse,
 )
 from app.schemas.final_decision import FinalDecision
-from app.schemas.state import DebateState
 from app.services.llm_client import GroqClient
 
 router = APIRouter()
@@ -56,30 +56,35 @@ async def _persist_debate(state: DebateState, decision: FinalDecision, database_
 
 
 async def _run_debate_background(
-    controller: DebateController,
-    state: DebateState,
+    graph: DebateGraph,
+    debate_state: DebateState,
     debate_store: dict,
     decision_store: dict,
     all_queues: dict,
     database_url: str,
 ) -> None:
-    """Run the debate, persist results, then close all subscriber queues."""
+    """Run the debate graph, persist results, then close all subscriber queues."""
+    thread_id = debate_state.thread_id
     try:
-        decision = await controller.execute()
-        decision_store[state.thread_id] = decision
-        await _persist_debate(state, decision, database_url)
+        final_state, decision = await graph.run(
+            debate_state.user_query,
+            initial_state=debate_state,
+        )
+        debate_store[thread_id] = final_state
+        decision_store[thread_id] = decision
+        await _persist_debate(final_state, decision, database_url)
         # Emit final_decision event so SSE clients can render the panel
         final_payload = json.loads(decision.model_dump_json())
         final_payload["type"] = "final_decision"
-        queue_list = all_queues.get(state.thread_id, [])
+        queue_list = all_queues.get(thread_id, [])
         for q in list(queue_list):
             q.put_nowait(final_payload)
     except Exception as exc:  # noqa: BLE001
         logger.error("background_debate_failed", extra={"error": str(exc)})
-        state.status = "error"
+        debate_state.status = "error"
     finally:
         # Send sentinel to all subscriber queues
-        queue_list = all_queues.get(state.thread_id, [])
+        queue_list = all_queues.get(thread_id, [])
         for q in list(queue_list):
             q.put_nowait(None)
 
@@ -108,19 +113,17 @@ async def start_debate(
     V2 will add an async variant (`/debate/start-async`) that returns
     a `thread_id` immediately and lets the client poll for results.
     """
-    controller = DebateController(llm_client=llm_client, settings=settings)
-    state = await controller.initialize_state(
-        request.query, max_rounds=request.max_rounds
-    )
-    debate_store[state.thread_id] = state
-    logger.info("api_debate_start", extra={"thread_id": state.thread_id})
+    graph = DebateGraph(llm_client=llm_client, settings=settings)
+    logger.info("api_debate_start")
 
     try:
-        decision = await controller.execute()
+        state, decision = await graph.run(
+            request.query, max_rounds=request.max_rounds
+        )
     except Exception:
-        state.status = "error"
         raise
 
+    debate_store[state.thread_id] = state
     decision_store[state.thread_id] = decision
     asyncio.create_task(_persist_debate(state, decision, settings.DATABASE_URL))
     logger.info(
@@ -149,35 +152,42 @@ async def start_debate_async(
     all_queues: dict = Depends(get_event_queues),
     all_replays: dict = Depends(get_event_replays),
 ) -> AsyncDebateStartResponse:
-    # Create channels BEFORE constructing the controller so no events are lost
+    # Pre-create state so we have a thread_id before the graph runs.
+    # Create channels at the same time so no events are lost.
+    debate_state = DebateState(
+        user_query=request.query,
+        max_rounds=(
+            request.max_rounds
+            if request.max_rounds is not None
+            else settings.MAX_DEBATE_ROUNDS
+        ),
+    )
+    thread_id = debate_state.thread_id
     queue_list: list = []
     replay_buffer: list = []
+    all_queues[thread_id] = queue_list
+    all_replays[thread_id] = replay_buffer
+    debate_store[thread_id] = debate_state
 
-    controller = DebateController(
+    graph = DebateGraph(
         llm_client=llm_client,
         settings=settings,
         queue_list=queue_list,
         replay_buffer=replay_buffer,
     )
-    state = await controller.initialize_state(
-        request.query, max_rounds=request.max_rounds
-    )
-    all_queues[state.thread_id] = queue_list
-    all_replays[state.thread_id] = replay_buffer
-    debate_store[state.thread_id] = state
 
-    logger.info("api_async_debate_start", extra={"thread_id": state.thread_id})
+    logger.info("api_async_debate_start", extra={"thread_id": thread_id})
 
     asyncio.create_task(
         _run_debate_background(
-            controller, state, debate_store, decision_store,
+            graph, debate_state, debate_store, decision_store,
             all_queues, settings.DATABASE_URL,
         )
     )
     return AsyncDebateStartResponse(
-        thread_id=state.thread_id,
+        thread_id=thread_id,
         status="initialized",
-        stream_url=f"/debate/{state.thread_id}/stream",
+        stream_url=f"/debate/{thread_id}/stream",
     )
 
 
