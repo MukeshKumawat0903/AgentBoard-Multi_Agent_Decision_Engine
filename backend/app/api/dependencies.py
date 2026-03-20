@@ -1,15 +1,17 @@
 """
 Shared FastAPI dependencies for AgentBoard.
 
-Provides dependency injection for the LLM client,
-debate storage, controller instances, and SSE event channels.
+Provides dependency injection for the LLM client, in-memory stores,
+background task registry, and SSE event channels.
 """
+
+import asyncio
 
 from app.core.config import Settings, settings
 from app.db.database import get_db as _get_db  # re-export for routes
 from app.schemas.final_decision import FinalDecision
 from app.schemas.state import DebateState
-from app.services.llm_client import GroqClient, get_llm_client
+from app.services.llm_client import LangChainProvider, get_llm_client
 
 
 # --- In-memory stores (V1) ---
@@ -24,6 +26,10 @@ _event_queues: dict[str, list] = {}
 # SSE replay buffer – ordered list of all events emitted for a thread so that
 # late-joining SSE clients can replay history before switching to live events.
 _event_replays: dict[str, list] = {}
+
+# Background task registry for async debates. Presence means the thread
+# is actively executing in this process.
+_background_tasks: dict[str, asyncio.Task] = {}
 
 
 def get_debate_store() -> dict[str, DebateState]:
@@ -46,13 +52,18 @@ def get_event_replays() -> dict[str, list]:
     return _event_replays
 
 
+def get_background_tasks() -> dict[str, asyncio.Task]:
+    """FastAPI dependency – returns the active async debate task registry."""
+    return _background_tasks
+
+
 def get_settings() -> Settings:
     """FastAPI dependency – returns application settings."""
     return settings
 
 
-def get_groq_client() -> GroqClient:
-    """FastAPI dependency – returns the singleton GroqClient."""
+def get_groq_client() -> LangChainProvider:
+    """FastAPI dependency – returns the singleton LangChainProvider."""
     return get_llm_client()
 
 

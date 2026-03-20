@@ -1,75 +1,75 @@
 """
-Moderator Agent – Synthesizes all positions and drives convergence.
+Moderator Agent - synthesizes positions and drives convergence.
 
-Role in the debate:
-  - Remain strictly neutral — never takes sides
-  - Compute an agreement score from agent positions each round
-  - Decide whether to continue debating or produce the final decision
-  - When converged: generate a structured FinalDecision
+Phase 1 migration: synthesize() and finalize() use structured output
+schemas directly, eliminating manual JSON parsing and prompt-only JSON
+enforcement.
 """
 
-import uuid
-from datetime import datetime, timezone
-
 from pydantic import BaseModel, ConfigDict, Field
+
+from langchain_core.prompts import PromptTemplate
 
 from app.agents.base_agent import BaseAgent
 from app.schemas.agent_response import AgentResponse, CritiqueResponse
 from app.schemas.final_decision import FinalDecision
-from app.schemas.state import DebateRound, DebateState
+from app.schemas.state import DebateState
 from app.services.llm_client import GroqClient
-from app.utils.exceptions import LLMResponseError
 
-
-# ---------------------------------------------------------------------------
-# Moderator-specific schema
-# ---------------------------------------------------------------------------
 
 class ModeratorSynthesis(BaseModel):
-    """
-    Per-round synthesis produced by the Moderator.
-
-    Drives the convergence check inside the DebateController.
-    """
+    """Per-round synthesis produced by the moderator."""
 
     summary: str = Field(description="Neutral summary of the current state of the debate.")
     agreement_areas: list[str] = Field(
         default_factory=list,
-        description="Topics/claims all agents broadly agree on.",
+        description="Topics or claims all agents broadly agree on.",
     )
     disagreement_areas: list[str] = Field(
         default_factory=list,
-        description="Topics/claims that remain in active dispute.",
+        description="Topics or claims that remain in active dispute.",
     )
     agreement_score: float = Field(
-        ge=0.0, le=1.0,
+        ge=0.0,
+        le=1.0,
         description="0 = full disagreement, 1 = full consensus.",
     )
     should_continue: bool = Field(
-        description="True = run another debate round; False = converged."
+        description="True = run another round, False = converge and finalize.",
     )
     next_round_focus: str | None = Field(
         default=None,
-        description="Key questions for the next round (only when should_continue=True).",
+        description="Key question for the next round when should_continue is true.",
     )
 
     model_config = ConfigDict(
         json_schema_extra={
             "example": {
-                "summary": "Agents broadly agree on market opportunity but disagree on timing.",
-                "agreement_areas": ["Strong demand signal in SE Asia", "Singapore is low-risk entry"],
-                "disagreement_areas": ["Q3 vs Q4 launch timing", "Budget allocation method"],
+                "summary": "Agents agree on market opportunity but disagree on timing.",
+                "agreement_areas": ["Demand signal is strong", "Pilot market is low-risk"],
+                "disagreement_areas": ["Q3 versus Q4 timing"],
                 "agreement_score": 0.62,
                 "should_continue": True,
-                "next_round_focus": "Resolve Q3 vs Q4 timing with supporting data.",
+                "next_round_focus": "Resolve timing with evidence.",
             }
         }
     )
 
 
-# ---------------------------------------------------------------------------
-# System prompts
-# ---------------------------------------------------------------------------
+class FinalDecisionLLMOutput(BaseModel):
+    """LLM-generated core of the final decision."""
+
+    decision: str = Field(min_length=1, description="Clear, actionable decision statement.")
+    rationale_summary: str = Field(
+        min_length=1,
+        description="Concise explanation of why the decision was chosen.",
+    )
+    confidence_score: float = Field(ge=0.0, le=1.0)
+    agreement_score: float = Field(ge=0.0, le=1.0)
+    risk_flags: list[str] = Field(default_factory=list)
+    alternatives: list[str] = Field(default_factory=list)
+    dissenting_opinions: list[str] = Field(default_factory=list)
+
 
 SYNTHESIS_SYSTEM_PROMPT = """\
 You are the Moderator Agent in a multi-agent decision engine.
@@ -82,64 +82,49 @@ Your role:
 - Determine if the debate has converged or needs more rounds
 
 Rules:
-- Be neutral — do NOT take sides
+- Be neutral and do not take sides
 - Weight positions by each agent's confidence score
-- Flag any unresolved disagreements
-- If agreement_score >= 0.75 OR max rounds reached, set should_continue=false
-
-You MUST respond with a single valid JSON object:
-{
-  "summary": "<neutral synthesis>",
-  "agreement_areas": ["<area 1>", "<area 2>"],
-  "disagreement_areas": ["<area 1>", "<area 2>"],
-  "agreement_score": <float 0.0-1.0>,
-  "should_continue": <true|false>,
-  "next_round_focus": "<key question for next round, or null if not continuing>"
-}
-Output ONLY the JSON object.
+- Flag unresolved disagreements
+- If agreement_score >= 0.75 or max rounds reached, set should_continue=false
 """
 
 FINAL_DECISION_SYSTEM_PROMPT = """\
-You are the Moderator Agent producing the FINAL DECISION of a multi-agent debate.
+You are the Moderator Agent producing the final decision of a multi-agent debate.
 
 Your role:
-- Synthesize all agent positions into a single, clear, actionable decision
+- Synthesize all agent positions into a single clear actionable decision
 - Provide a concise rationale summary
-- List all identified risk flags
-- List alternative options that were considered but not chosen
-- Note any dissenting opinions among agents
-
-You MUST respond with a single valid JSON object:
-{
-  "decision": "<clear, actionable decision statement>",
-  "rationale_summary": "<concise explanation of why this decision was chosen>",
-  "confidence_score": <float 0.0-1.0>,
-  "agreement_score": <float 0.0-1.0>,
-  "risk_flags": ["<risk 1>", "<risk 2>"],
-  "alternatives": ["<alternative 1>", "<alternative 2>"],
-  "dissenting_opinions": ["<dissent 1>"]
-}
-Output ONLY the JSON object.
+- List identified risk flags
+- List alternatives that were considered but not chosen
+- Note dissenting opinions among agents
 """
 
 
 # ---------------------------------------------------------------------------
-# Agent
+# Prompt templates (Phase 1.5 – replaces raw f-strings with named variables)
 # ---------------------------------------------------------------------------
 
+_SYNTHESIS_TEMPLATE = PromptTemplate.from_template(
+    "Problem statement:\n{problem}\n\n"
+    "Debate round: {current_round} / {max_rounds}\n"
+    "Current agreement score: {agreement_score}\n\n"
+    "Agent positions this round:\n{agents_summary}\n"
+    "Synthesize the positions. Identify agreement and disagreement areas. "
+    "Compute an agreement score (0.0-1.0). Set should_continue=false if "
+    "agreement_score >= 0.75 or this is the final round."
+)
+
+_FINALIZE_TEMPLATE = PromptTemplate.from_template(
+    "Problem statement:\n{problem}\n\n"
+    "Total rounds completed: {current_round}\n"
+    "Final agreement score: {agreement_score}\n\n"
+    "Full debate history:\n{all_rounds}\n"
+    "Produce the final decision synthesizing all agent input."
+)
+
+
 class ModeratorAgent(BaseAgent):
-    """
-    Moderator agent: synthesis, convergence, and final decision.
-
-    Overrides ``run()`` to produce a ``ModeratorSynthesis`` instead of
-    an ``AgentResponse`` (the standard agent interface does not apply
-    cleanly to the moderator's neutral synthesis role).
-
-    Extra public methods
-    --------------------
-    synthesize(state)  -> ModeratorSynthesis   (per-round agreement check)
-    finalize(state)    -> FinalDecision         (end-of-debate output)
-    """
+    """Moderator agent: synthesis, convergence, and final decision."""
 
     def __init__(self, llm_client: GroqClient) -> None:
         super().__init__(
@@ -149,47 +134,55 @@ class ModeratorAgent(BaseAgent):
             llm_client=llm_client,
         )
 
-    # ------------------------------------------------------------------
-    # Primary moderator operations
-    # ------------------------------------------------------------------
-
     async def synthesize(self, state: DebateState) -> ModeratorSynthesis:
-        """
-        After all agents have proposed/critiqued/revised in a round,
-        the Moderator synthesizes their positions and returns a
-        ``ModeratorSynthesis`` that the DebateController uses for the
-        convergence check.
-        """
         user_prompt = self._build_synthesis_prompt(state)
-        raw = await self._call_llm("synthesis", state.current_round, user_prompt)
-        return self._parse_synthesis(raw, state.current_round)
+        synthesis = await self.llm_client.ainvoke_structured(
+            ModeratorSynthesis,
+            system_prompt=SYNTHESIS_SYSTEM_PROMPT,
+            user_prompt=user_prompt,
+        )
+        self.logger.info(
+            "synthesis_complete",
+            extra={
+                "round": state.current_round,
+                "agreement_score": synthesis.agreement_score,
+                "should_continue": synthesis.should_continue,
+            },
+        )
+        return synthesis
 
     async def finalize(self, state: DebateState) -> FinalDecision:
-        """
-        Produce the ``FinalDecision`` at the end of the debate (either
-        because consensus was reached or max rounds was hit).
-        """
         user_prompt = self._build_finalize_prompt(state)
-        # Temporarily swap system prompt for final-decision variant
-        original_prompt = self.system_prompt
-        self.system_prompt = FINAL_DECISION_SYSTEM_PROMPT
-        try:
-            raw = await self._call_llm("finalize", state.current_round, user_prompt)
-        finally:
-            self.system_prompt = original_prompt
-        return self._parse_final_decision(raw, state)
-
-    # ------------------------------------------------------------------
-    # BaseAgent abstract methods – overridden but kept usable
-    # ------------------------------------------------------------------
+        llm_out = await self.llm_client.ainvoke_structured(
+            FinalDecisionLLMOutput,
+            system_prompt=FINAL_DECISION_SYSTEM_PROMPT,
+            user_prompt=user_prompt,
+        )
+        decision = FinalDecision(
+            thread_id=state.thread_id,
+            query=state.user_query,
+            total_rounds=state.current_round,
+            termination_reason=state.termination_reason or "max_rounds_reached",
+            debate_trace=list(state.rounds),
+            decision=llm_out.decision,
+            rationale_summary=llm_out.rationale_summary,
+            confidence_score=llm_out.confidence_score,
+            agreement_score=llm_out.agreement_score,
+            risk_flags=llm_out.risk_flags,
+            alternatives=llm_out.alternatives,
+            dissenting_opinions=llm_out.dissenting_opinions,
+        )
+        self.logger.info(
+            "finalize_complete",
+            extra={
+                "thread_id": state.thread_id,
+                "total_rounds": state.current_round,
+                "termination_reason": decision.termination_reason,
+            },
+        )
+        return decision
 
     async def run(self, state: DebateState) -> AgentResponse:  # type: ignore[override]
-        """
-        Drives a synthesis round.  Returns an ``AgentResponse`` that
-        wraps the synthesis summary so it fits the standard agent
-        interface while the richer ``ModeratorSynthesis`` is available
-        via ``synthesize()``.
-        """
         synthesis = await self.synthesize(state)
         return AgentResponse(
             agent_name=self.name,
@@ -208,7 +201,9 @@ class ModeratorAgent(BaseAgent):
         return self._build_synthesis_prompt(state)
 
     def _build_critique_prompt(
-        self, state: DebateState, target: AgentResponse
+        self,
+        state: DebateState,
+        target: AgentResponse,
     ) -> str:
         return (
             f"As moderator, evaluate whether {target.agent_name}'s position "
@@ -217,84 +212,37 @@ class ModeratorAgent(BaseAgent):
         )
 
     def _build_revision_prompt(
-        self, state: DebateState, critiques: list[CritiqueResponse]
+        self,
+        state: DebateState,
+        critiques: list[CritiqueResponse],
     ) -> str:
         return self._build_synthesis_prompt(state)
 
-    # ------------------------------------------------------------------
-    # Prompt builders
-    # ------------------------------------------------------------------
-
     @staticmethod
     def _build_synthesis_prompt(state: DebateState) -> str:
-        agents_summary = ModeratorAgent._format_all_outputs(state)
-        return (
-            f"Problem statement:\n{state.user_query}\n\n"
-            f"Debate round: {state.current_round} / {state.max_rounds}\n"
-            f"Current agreement score: {state.agreement_score:.2f}\n\n"
-            f"Agent positions this round:\n{agents_summary}\n"
-            "Synthesize the above positions. Identify agreement and disagreement "
-            "areas. Compute an agreement score (0.0–1.0). Set should_continue=false "
-            "if agreement_score >= 0.75 OR this is the final round."
+        return _SYNTHESIS_TEMPLATE.format(
+            problem=state.user_query,
+            current_round=state.current_round,
+            max_rounds=state.max_rounds,
+            agreement_score=f"{state.agreement_score:.2f}",
+            agents_summary=ModeratorAgent._format_all_outputs(state),
         )
 
     @staticmethod
     def _build_finalize_prompt(state: DebateState) -> str:
-        all_rounds = ModeratorAgent._format_all_rounds(state)
-        return (
-            f"Problem statement:\n{state.user_query}\n\n"
-            f"Total rounds completed: {state.current_round}\n"
-            f"Final agreement score: {state.agreement_score:.2f}\n\n"
-            f"Full debate history:\n{all_rounds}\n"
-            "Produce the final decision synthesizing all agent input."
+        return _FINALIZE_TEMPLATE.format(
+            problem=state.user_query,
+            current_round=state.current_round,
+            agreement_score=f"{state.agreement_score:.2f}",
+            all_rounds=ModeratorAgent._format_all_rounds(state),
         )
-
-    # ------------------------------------------------------------------
-    # Parsers
-    # ------------------------------------------------------------------
-
-    def _parse_synthesis(self, raw: dict, round_number: int) -> ModeratorSynthesis:
-        try:
-            return ModeratorSynthesis.model_validate(raw)
-        except Exception as exc:
-            self.logger.error(
-                "parse_synthesis_failed",
-                extra={"round": round_number, "raw_keys": list(raw.keys()), "error": str(exc)},
-            )
-            raise LLMResponseError(
-                f"[Moderator] ModeratorSynthesis parse failed: {exc}\nRaw keys: {list(raw.keys())}"
-            ) from exc
-
-    def _parse_final_decision(self, raw: dict, state: DebateState) -> FinalDecision:
-        try:
-            raw.setdefault("thread_id", state.thread_id)
-            raw.setdefault("query", state.user_query)
-            raw.setdefault("total_rounds", state.current_round)
-            raw.setdefault(
-                "termination_reason",
-                "consensus_reached" if state.agreement_score >= 0.75 else "max_rounds_reached",
-            )
-            raw.setdefault("debate_trace", [r.model_dump() for r in state.rounds])
-            return FinalDecision.model_validate(raw)
-        except Exception as exc:
-            self.logger.error(
-                "parse_final_decision_failed",
-                extra={"round": state.current_round, "raw_keys": list(raw.keys()), "error": str(exc)},
-            )
-            raise LLMResponseError(
-                f"[Moderator] FinalDecision parse failed: {exc}\nRaw keys: {list(raw.keys())}"
-            ) from exc
-
-    # ------------------------------------------------------------------
-    # Formatting helpers
-    # ------------------------------------------------------------------
 
     @staticmethod
     def _format_all_outputs(state: DebateState) -> str:
         if not state.rounds:
             return "(no agent outputs yet)"
         latest = state.rounds[-1]
-        lines = []
+        lines: list[str] = []
         for out in latest.agent_outputs:
             lines.append(
                 f"  [{out.agent_name}] (confidence={out.confidence_score:.2f}):\n"
@@ -304,11 +252,9 @@ class ModeratorAgent(BaseAgent):
 
     @staticmethod
     def _format_all_rounds(state: DebateState) -> str:
-        lines = []
-        for r in state.rounds:
-            lines.append(f"--- Round {r.round_number} ---")
-            for out in r.agent_outputs:
-                lines.append(
-                    f"  [{out.agent_name}] position: {out.position[:300]}"
-                )
+        lines: list[str] = []
+        for round_data in state.rounds:
+            lines.append(f"--- Round {round_data.round_number} ---")
+            for out in round_data.agent_outputs:
+                lines.append(f"  [{out.agent_name}] position: {out.position[:300]}")
         return "\n".join(lines) if lines else "(no rounds completed)"

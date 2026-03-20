@@ -7,6 +7,8 @@ Role in the debate:
   - Explicitly state assumptions; never advocate for a strategy
 """
 
+from langchain_core.prompts import PromptTemplate
+
 from app.agents.base_agent import BaseAgent
 from app.schemas.agent_response import AgentResponse, CritiqueResponse
 from app.schemas.state import DebateState
@@ -28,16 +30,42 @@ Rules:
 - Focus ONLY on what the data shows
 - Always state your assumptions explicitly
 - Rate your confidence from 0.0 to 1.0
-
-You MUST respond with a single valid JSON object that matches this schema exactly:
-{
-  "position": "<your objective analysis>",
-  "reasoning": "<step-by-step derivation>",
-  "assumptions": ["<assumption 1>", "<assumption 2>"],
-  "confidence_score": <float 0.0-1.0>
-}
-Output ONLY the JSON object. Do not include any prose before or after it.
 """
+
+
+# ---------------------------------------------------------------------------
+# Prompt templates (Phase 1.5 – replaces raw f-strings with named variables)
+# ---------------------------------------------------------------------------
+
+_PROPOSAL_TEMPLATE = PromptTemplate.from_template(
+    "Problem statement:\n{problem}\n\n"
+    "{prior_rounds}"
+    "Provide an objective analysis of the problem. Extract key facts, "
+    "variables, and relationships. State all assumptions explicitly. "
+    "Do NOT recommend a strategy."
+)
+
+_CRITIQUE_TEMPLATE = PromptTemplate.from_template(
+    "Problem statement:\n{problem}\n\n"
+    "You are critiquing the position of the {target_agent} agent:\n"
+    "Position: {target_position}\n"
+    "Reasoning: {target_reasoning}\n"
+    "Confidence: {target_confidence}\n\n"
+    "Evaluate whether the claims are supported by evidence. "
+    "Identify any factual inaccuracies, unsubstantiated claims, or "
+    "missing data. Do NOT comment on strategy or risk — focus only on "
+    "analytical rigour."
+)
+
+_REVISION_TEMPLATE = PromptTemplate.from_template(
+    "Problem statement:\n{problem}\n\n"
+    "Your previous analysis in round {round_number}:\n"
+    "{prior_position}\n\n"
+    "Critiques received:\n{critiques}\n"
+    "Revise your analysis to address factual inaccuracies only. "
+    "Do NOT change your analysis based on strategic preferences. "
+    "If a critique is unfounded, explain why in your reasoning."
+)
 
 
 class AnalystAgent(BaseAgent):
@@ -61,49 +89,30 @@ class AnalystAgent(BaseAgent):
     # ------------------------------------------------------------------
 
     def _build_proposal_prompt(self, state: DebateState) -> str:
-        prior = self._format_prior_rounds(state)
-        return (
-            f"Problem statement:\n{state.user_query}\n\n"
-            f"{prior}"
-            "Provide an objective analysis of the problem. Extract key facts, "
-            "variables, and relationships. State all assumptions explicitly. "
-            "Do NOT recommend a strategy."
+        return _PROPOSAL_TEMPLATE.format(
+            problem=state.user_query,
+            prior_rounds=self._format_prior_rounds(state),
         )
 
     def _build_critique_prompt(
         self, state: DebateState, target: AgentResponse
     ) -> str:
-        return (
-            f"Problem statement:\n{state.user_query}\n\n"
-            f"You are critiquing the position of the {target.agent_name} agent:\n"
-            f"Position: {target.position}\n"
-            f"Reasoning: {target.reasoning}\n"
-            f"Confidence: {target.confidence_score}\n\n"
-            "Evaluate whether the claims are supported by evidence. "
-            "Identify any factual inaccuracies, unsubstantiated claims, or "
-            "missing data. Do NOT comment on strategy or risk — focus only on "
-            "analytical rigour.\n\n"
-            "Respond with a JSON object:\n"
-            "{\n"
-            '  "critique_points": ["<point 1>", "<point 2>"],\n'
-            '  "severity": "<low|medium|high|critical>",\n'
-            '  "suggested_revision": "<optional concrete suggestion or null>",\n'
-            '  "confidence_score": <float 0.0-1.0>\n'
-            "}"
+        return _CRITIQUE_TEMPLATE.format(
+            problem=state.user_query,
+            target_agent=target.agent_name,
+            target_position=target.position,
+            target_reasoning=target.reasoning,
+            target_confidence=target.confidence_score,
         )
 
     def _build_revision_prompt(
         self, state: DebateState, critiques: list[CritiqueResponse]
     ) -> str:
-        critique_text = self._format_critiques(critiques)
-        return (
-            f"Problem statement:\n{state.user_query}\n\n"
-            f"Your previous analysis in round {state.current_round}:\n"
-            f"{self._last_position(state)}\n\n"
-            f"Critiques received:\n{critique_text}\n"
-            "Revise your analysis to address factual inaccuracies only. "
-            "Do NOT change your analysis based on strategic preferences. "
-            "If a critique is unfounded, explain why in your reasoning."
+        return _REVISION_TEMPLATE.format(
+            problem=state.user_query,
+            round_number=state.current_round,
+            prior_position=self._last_position(state),
+            critiques=self._format_critiques(critiques),
         )
 
     # ------------------------------------------------------------------

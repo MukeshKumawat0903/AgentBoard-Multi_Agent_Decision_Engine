@@ -1,11 +1,14 @@
 """
-CRUD helpers for debate history persistence.
+CRUD helpers for debate persistence.
+
 All functions accept an open aiosqlite.Connection from the get_db() dependency.
 """
 
 from __future__ import annotations
 
 import logging
+from datetime import datetime, timezone
+import json
 from typing import Any
 
 import aiosqlite
@@ -27,13 +30,14 @@ async def upsert_debate(db: aiosqlite.Connection, state: DebateState) -> None:
         """
         INSERT INTO debates
             (thread_id, user_query, status, current_round, max_rounds,
-             agreement_score, termination_reason, created_at, updated_at)
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+             agreement_score, termination_reason, state_json, created_at, updated_at)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         ON CONFLICT(thread_id) DO UPDATE SET
             status             = excluded.status,
             current_round      = excluded.current_round,
             agreement_score    = excluded.agreement_score,
             termination_reason = excluded.termination_reason,
+            state_json         = excluded.state_json,
             updated_at         = excluded.updated_at
         """,
         (
@@ -44,6 +48,7 @@ async def upsert_debate(db: aiosqlite.Connection, state: DebateState) -> None:
             state.max_rounds,
             state.agreement_score,
             state.termination_reason,
+            state.model_dump_json(),
             state.created_at.isoformat(),
             state.updated_at.isoformat(),
         ),
@@ -151,3 +156,50 @@ async def get_decision_json(
     )
     row = await cur.fetchone()
     return row[0] if row else None
+
+
+async def get_debate_state_json(
+    db: aiosqlite.Connection,
+    thread_id: str,
+) -> str | None:
+    """Return the full DebateState JSON snapshot, or None if not found."""
+    cur = await db.execute(
+        "SELECT state_json FROM debates WHERE thread_id = ?",
+        (thread_id,),
+    )
+    row = await cur.fetchone()
+    return row[0] if row and row[0] else None
+
+
+async def save_debate_event(
+    db: aiosqlite.Connection,
+    thread_id: str,
+    payload: dict[str, Any],
+) -> None:
+    """Persist a single replayable SSE payload for later recovery."""
+    await db.execute(
+        """
+        INSERT INTO debate_events (thread_id, event_type, payload_json, created_at)
+        VALUES (?, ?, ?, ?)
+        """,
+        (
+            thread_id,
+            payload.get("type", "message"),
+            json.dumps(payload),
+            datetime.now(timezone.utc).isoformat(),
+        ),
+    )
+    await db.commit()
+
+
+async def get_debate_events(
+    db: aiosqlite.Connection,
+    thread_id: str,
+) -> list[dict[str, Any]]:
+    """Return ordered replayable SSE payloads for a debate."""
+    cur = await db.execute(
+        "SELECT payload_json FROM debate_events WHERE thread_id = ? ORDER BY event_id ASC",
+        (thread_id,),
+    )
+    rows = await cur.fetchall()
+    return [json.loads(row[0]) for row in rows]

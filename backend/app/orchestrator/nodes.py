@@ -29,7 +29,8 @@ from app.agents.base_agent import BaseAgent
 from app.agents.moderator_agent import ModeratorAgent
 from app.core.config import Settings
 from app.orchestrator.lg_state import DebateGraphState
-from app.schemas.state import DebateRound
+from app.schemas.state import DebateRound, DebateState
+from app.services.consensus import ConsensusEngine, SemanticConsensusEngine
 
 _PROPOSAL_TIMEOUT: float = 15.0
 _CRITIQUE_TIMEOUT: float = 15.0
@@ -42,6 +43,7 @@ logger = logging.getLogger("agentboard.nodes")
 # ---------------------------------------------------------------------------
 _Emit = Callable[[str, dict], None]
 _NodeFn = Callable[[DebateGraphState], Awaitable[dict]]
+_PersistState = Callable[["DebateState"], Awaitable[None]] | None
 
 
 # ---------------------------------------------------------------------------
@@ -51,6 +53,7 @@ _NodeFn = Callable[[DebateGraphState], Awaitable[dict]]
 def make_proposals_node(
     agents: dict[str, BaseAgent],
     emit: _Emit,
+    persist_state: _PersistState = None,
 ) -> _NodeFn:
     """Return an async node that starts a new round and runs all proposals."""
 
@@ -106,6 +109,8 @@ def make_proposals_node(
                 round_data.agent_outputs.append(r)
 
         ds.touch()
+        if persist_state is not None:
+            await persist_state(ds)
         logger.info(
             "phase_timing",
             extra={
@@ -127,6 +132,7 @@ def make_proposals_node(
 def make_critiques_node(
     agents: dict[str, BaseAgent],
     emit: _Emit,
+    persist_state: _PersistState = None,
 ) -> _NodeFn:
     """Return an async node that runs every agent's critique in parallel."""
 
@@ -180,6 +186,8 @@ def make_critiques_node(
                 round_data.critiques.append(r)
 
         ds.touch()
+        if persist_state is not None:
+            await persist_state(ds)
         logger.info(
             "phase_timing",
             extra={
@@ -201,6 +209,7 @@ def make_critiques_node(
 def make_revisions_node(
     agents: dict[str, BaseAgent],
     emit: _Emit,
+    persist_state: _PersistState = None,
 ) -> _NodeFn:
     """Return an async node that runs each agent's revision in parallel."""
 
@@ -261,6 +270,8 @@ def make_revisions_node(
                 ds.confidence_scores[name] = result.confidence_score
 
         ds.touch()
+        if persist_state is not None:
+            await persist_state(ds)
         logger.info(
             "phase_timing",
             extra={
@@ -282,8 +293,22 @@ def make_convergence_node(
     moderator: ModeratorAgent,
     settings: Settings,
     emit: _Emit,
+    persist_state: _PersistState = None,
 ) -> _NodeFn:
     """Return an async node that scores convergence and sets should_continue."""
+
+    # Phase 4.3: instantiate the semantic engine once at factory time so the
+    # sentence-transformers model is loaded once per debate graph, not once
+    # per convergence round.
+    _semantic_engine: SemanticConsensusEngine | None = None
+    if settings.SEMANTIC_CONSENSUS_ENABLED:
+        try:
+            _semantic_engine = SemanticConsensusEngine(settings.SEMANTIC_MODEL)
+        except ImportError as exc:
+            logger.warning(
+                "semantic_consensus_unavailable",
+                extra={"error": str(exc)},
+            )
 
     async def convergence_node(state: DebateGraphState) -> dict:
         _t0 = time.monotonic()
@@ -296,34 +321,61 @@ def make_convergence_node(
         })
 
         synthesis = await moderator.synthesize(ds)
-        ds.agreement_score = synthesis.agreement_score
+
+        confidence_engine = ConsensusEngine()
+        # Phase 4.3: V1 confidence score is the deterministic baseline.
+        # The semantic hybrid overrides it when the engine is available.
+        confidence_agreement = confidence_engine.compute_agreement_score(round_data.agent_outputs)
+        semantic_agreement: float | None = None
+        agreement_score = confidence_agreement
+
+        if _semantic_engine is not None and len(round_data.agent_outputs) >= 2:
+            try:
+                semantic_agreement = _semantic_engine.compute_semantic_similarity(
+                    round_data.agent_outputs
+                )
+                agreement_score = _semantic_engine.compute_agreement_score(
+                    round_data.agent_outputs,
+                    semantic_weight=settings.SEMANTIC_CONSENSUS_WEIGHT,
+                )
+            except Exception as exc:
+                logger.warning(
+                    "semantic_consensus_failed",
+                    extra={"error": str(exc)},
+                )
+
+        ds.agreement_score = agreement_score
 
         for output in round_data.agent_outputs:
             ds.confidence_scores[output.agent_name] = output.confidence_score
 
         ds.touch()
+        if persist_state is not None:
+            await persist_state(ds)
         logger.info(
             "round_finished",
             extra={
                 "thread_id": ds.thread_id,
                 "round": ds.current_round,
-                "agreement_score": synthesis.agreement_score,
+                "agreement_score": agreement_score,
                 "should_continue": synthesis.should_continue,
             },
         )
         emit("synthesis", {
             "round_number": ds.current_round,
-            "agreement_score": synthesis.agreement_score,
+            "agreement_score": agreement_score,
             "should_continue": synthesis.should_continue,
             "summary": synthesis.summary,
             "agreement_areas": synthesis.agreement_areas,
             "disagreement_areas": synthesis.disagreement_areas,
+            "confidence_agreement_score": confidence_agreement,
+            "semantic_agreement_score": semantic_agreement,
         })
 
         # Mirror DebateController._should_terminate logic
         should_continue = True
 
-        if synthesis.agreement_score >= settings.CONSENSUS_THRESHOLD:
+        if agreement_score >= settings.CONSENSUS_THRESHOLD:
             ds.termination_reason = "consensus_reached"
             should_continue = False
         elif ds.current_round >= ds.max_rounds:
@@ -340,6 +392,8 @@ def make_convergence_node(
                 "phase": "convergence",
                 "round": ds.current_round,
                 "agreement_score": ds.agreement_score,
+                "confidence_agreement_score": confidence_agreement,
+                "semantic_agreement_score": semantic_agreement,
                 "should_continue": should_continue,
                 "elapsed_ms": round((time.monotonic() - _t0) * 1000),
             },
@@ -356,6 +410,7 @@ def make_convergence_node(
 def make_finalize_node(
     moderator: ModeratorAgent,
     emit: _Emit,
+    persist_state: _PersistState = None,
 ) -> _NodeFn:
     """Return an async node that asks the moderator for the FinalDecision."""
 
@@ -373,6 +428,8 @@ def make_finalize_node(
             else "max_rounds_reached"
         )
         ds.touch()
+        if persist_state is not None:
+            await persist_state(ds)
 
         logger.info(
             "debate_finalized",

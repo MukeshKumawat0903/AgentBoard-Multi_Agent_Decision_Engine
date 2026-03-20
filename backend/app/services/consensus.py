@@ -3,14 +3,17 @@ Consensus scoring engine.
 
 Computes agreement scores between agent positions to drive convergence.
 
-V1 implementation – pure stdlib, no embedding dependencies:
-- compute_agreement_score  : mean confidence as a proxy for group alignment
-- compute_confidence_weighted_score : confidence-weighted pairwise position overlap
-- detect_position_drift    : Jaccard-overlap tracks how much each agent changed
-                              between rounds (0 = identical, 1 = completely different)
+V1 – ``ConsensusEngine`` (pure stdlib, no ML dependencies):
+- compute_agreement_score              : mean confidence as group alignment proxy
+- compute_confidence_weighted_score    : confidence-weighted pairwise Jaccard overlap
+- detect_position_drift                : Jaccard-overlap delta between rounds
 
-V2 (future): replace Jaccard word-overlap with cosine similarity over LLM embeddings
-for a semantically richer signal.
+V2 – ``SemanticConsensusEngine`` (requires ``sentence-transformers``):
+- compute_semantic_similarity          : mean pairwise cosine similarity of embeddings
+- compute_agreement_score (override)   : hybrid = (1-w)*confidence + w*cosine_sim
+
+SemanticConsensusEngine is feature-flagged via ``settings.SEMANTIC_CONSENSUS_ENABLED``
+and gracefully degrades if ``sentence-transformers`` is not installed.
 """
 
 from __future__ import annotations
@@ -162,3 +165,136 @@ class ConsensusEngine:
             extra={"common_agents": len(common_agents), "drift": round(score, 4)},
         )
         return score
+
+
+# ---------------------------------------------------------------------------
+# Phase 4 – Semantic consensus engine (requires sentence-transformers + numpy)
+# ---------------------------------------------------------------------------
+
+try:
+    import numpy as _np  # type: ignore[import-untyped]
+    from sentence_transformers import SentenceTransformer as _ST  # type: ignore[import-untyped]
+    _SEMANTIC_AVAILABLE = True
+except ImportError:
+    _SEMANTIC_AVAILABLE = False
+
+
+class SemanticConsensusEngine(ConsensusEngine):
+    """
+    Hybrid consensus engine: mean-confidence (V1) × cosine similarity (V2).
+
+    Blending weight is passed per-call via ``semantic_weight`` so the
+    caller (nodes.py) can read it from settings at runtime.
+
+    Lazy model loading
+    ------------------
+    The sentence-transformer model (~80 MB) is downloaded and cached by
+    the ``sentence_transformers`` library on first use, not at import time,
+    so startup remains fast.
+
+    Usage::
+
+        engine = SemanticConsensusEngine()  # default model: all-MiniLM-L6-v2
+        score = engine.compute_agreement_score(responses, semantic_weight=0.5)
+
+    Raises
+    ------
+    ImportError
+        If ``sentence-transformers`` or ``numpy`` are not installed.
+    """
+
+    def __init__(self, model_name: str = "all-MiniLM-L6-v2") -> None:
+        if not _SEMANTIC_AVAILABLE:
+            raise ImportError(
+                "sentence-transformers and numpy are required for SemanticConsensusEngine. "
+                "Install them with: pip install sentence-transformers numpy"
+            )
+        self._model_name = model_name
+        self._model: "_ST | None" = None  # lazy-loaded on first call
+
+    # ------------------------------------------------------------------
+    # Public API
+    # ------------------------------------------------------------------
+
+    def compute_semantic_similarity(self, responses: list[AgentResponse]) -> float:
+        """
+        Mean pairwise cosine similarity over sentence-transformer embeddings.
+
+        Returns:
+            Float in [0, 1].  Returns 0.0 for fewer than 2 responses.
+        """
+        if len(responses) < 2:
+            return 0.0
+
+        model = self._load_model()
+        positions = [r.position for r in responses]
+        embeddings = model.encode(positions, convert_to_numpy=True)  # (n, d)
+
+        # L2-normalise so dot product == cosine similarity
+        norms = _np.linalg.norm(embeddings, axis=1, keepdims=True)
+        normalised = embeddings / _np.maximum(norms, 1e-8)
+        sim_matrix: "_np.ndarray" = normalised @ normalised.T  # (n, n)
+
+        n = len(responses)
+        total, pairs = 0.0, 0
+        for i in range(n):
+            for j in range(i + 1, n):
+                total += float(sim_matrix[i, j])
+                pairs += 1
+
+        return total / pairs if pairs else 0.0
+
+    def compute_agreement_score(  # type: ignore[override]
+        self,
+        responses: list[AgentResponse],
+        semantic_weight: float = 0.5,
+    ) -> float:
+        """
+        Hybrid agreement score.
+
+        ``score = (1 - w) × confidence_mean + w × cosine_similarity_mean``
+
+        Falls back to the V1 confidence-only score on any exception so the
+        debate can continue even if the embedding model misbehaves.
+
+        Args:
+            responses:       Agent responses for the current round.
+            semantic_weight: Weight of the semantic component (0 → pure V1,
+                             1 → pure cosine).  Defaults to 0.5.
+        """
+        base_score = super().compute_agreement_score(responses)
+        if len(responses) < 2:
+            return base_score
+
+        try:
+            semantic_score = self.compute_semantic_similarity(responses)
+            hybrid = (1.0 - semantic_weight) * base_score + semantic_weight * semantic_score
+            logger.debug(
+                "semantic_agreement_score",
+                extra={
+                    "base": round(base_score, 4),
+                    "semantic": round(semantic_score, 4),
+                    "hybrid": round(hybrid, 4),
+                    "weight": semantic_weight,
+                },
+            )
+            return hybrid
+        except Exception as exc:  # noqa: BLE001
+            logger.warning(
+                "semantic_scoring_failed_falling_back",
+                extra={"error": str(exc)},
+            )
+            return base_score
+
+    # ------------------------------------------------------------------
+    # Private
+    # ------------------------------------------------------------------
+
+    def _load_model(self) -> "_ST":
+        if self._model is None:
+            logger.info(
+                "Loading sentence-transformer model",
+                extra={"model": self._model_name},
+            )
+            self._model = _ST(self._model_name)
+        return self._model

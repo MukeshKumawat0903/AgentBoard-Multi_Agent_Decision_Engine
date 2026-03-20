@@ -4,12 +4,13 @@ Tests for API endpoints (Phase 8).
 All DebateGraph calls are mocked – no LLM traffic.
 
 Coverage:
-  GET  /health                   – 200 + correct fields
-  POST /debate/start             – 200 FinalDecision; LLM errors → 502/503/429
-  GET  /debate/{thread_id}       – 200 DebateStatusResponse; 404 unknown
-  GET  /decision/{thread_id}     – 200 FinalDecision; 404 unknown; 409 in-progress
-  Exception handlers             – LLMResponseError→502, LLMConnectionError→503,
-                                   LLMRateLimitError→429, generic Exception→500
+  GET  /health                        – 200 + correct fields
+  POST /debate/start                  – 200 FinalDecision; LLM errors → 502/503/429
+  GET  /debate/{thread_id}            – 200 DebateStatusResponse; 404 unknown
+  GET  /decision/{thread_id}          – 200 FinalDecision; 404 unknown; 409 in-progress
+  POST /debate/{thread_id}/resume     – 200 FinalDecision; 400/404/409 error cases
+  Exception handlers                  – LLMResponseError→502, LLMConnectionError→503,
+                                        LLMRateLimitError→429, generic Exception→500
 """
 
 from typing import Any
@@ -111,7 +112,7 @@ class TestHealthCheck:
     @pytest.mark.anyio
     async def test_version_present(self, client):
         data = (await client.get("/health")).json()
-        assert data["version"] == "0.1.0"
+        assert data["version"] == "2.0.0"
 
     @pytest.mark.anyio
     async def test_groq_configured_present(self, client):
@@ -386,3 +387,85 @@ class TestExceptionHandlers:
 
         assert response.status_code == 429
 
+
+# ---------------------------------------------------------------------------
+# POST /debate/{thread_id}/resume
+# ---------------------------------------------------------------------------
+
+class TestResumeDebate:
+
+    @pytest.mark.anyio
+    async def test_resume_returns_200_when_already_completed(self, client, isolated_stores):
+        """Fast-path: debate already done in decision_store – no graph call needed."""
+        debate_store, decision_store = isolated_stores
+        state = _make_state()
+        decision = _make_decision(thread_id=state.thread_id)
+        decision_store[state.thread_id] = decision
+
+        response = await client.post(f"/debate/{state.thread_id}/resume")
+
+        assert response.status_code == 200
+        assert response.json()["thread_id"] == state.thread_id
+
+    @pytest.mark.anyio
+    async def test_resume_returns_404_for_unknown_thread(self, client, isolated_stores):
+        response = await client.post("/debate/no-such-thread/resume")
+
+        assert response.status_code == 404
+        assert response.json()["detail"]["error"] == "debate_not_found"
+
+    @pytest.mark.anyio
+    async def test_resume_returns_409_when_debate_running(self, client, isolated_stores):
+        """Cannot resume a debate that is still live in background_tasks."""
+        from app.api.dependencies import get_background_tasks
+
+        debate_store, _ = isolated_stores
+        state = _make_state(status="in_progress")
+        debate_store[state.thread_id] = state
+
+        fake_tasks: dict = {state.thread_id: MagicMock()}
+        app.dependency_overrides[get_background_tasks] = lambda: fake_tasks
+        try:
+            response = await client.post(f"/debate/{state.thread_id}/resume")
+        finally:
+            app.dependency_overrides.pop(get_background_tasks, None)
+
+        assert response.status_code == 409
+        assert response.json()["detail"]["error"] == "debate_in_progress"
+
+    @pytest.mark.anyio
+    async def test_resume_succeeds_and_returns_decision(self, client, isolated_stores):
+        """Happy path: state in memory, graph.resume succeeds."""
+        debate_store, decision_store = isolated_stores
+        state = _make_state(status="error")
+        decision = _make_decision(thread_id=state.thread_id)
+        debate_store[state.thread_id] = state
+
+        final_state = _make_state(status="converged")
+        final_state.thread_id = state.thread_id  # same thread
+
+        g = MagicMock()
+        g.resume = AsyncMock(return_value=(final_state, decision))
+
+        with patch("app.api.routes.DebateGraph", return_value=g):
+            response = await client.post(f"/debate/{state.thread_id}/resume")
+
+        assert response.status_code == 200
+        assert response.json()["decision"] == "Proceed with phased expansion."
+        assert state.thread_id in decision_store
+
+    @pytest.mark.anyio
+    async def test_resume_returns_400_when_no_checkpoint(self, client, isolated_stores):
+        """graph.resume raises ValueError when no checkpoint exists → 400."""
+        debate_store, _ = isolated_stores
+        state = _make_state(status="error")
+        debate_store[state.thread_id] = state
+
+        g = MagicMock()
+        g.resume = AsyncMock(side_effect=ValueError("No checkpoint found for thread_id"))
+
+        with patch("app.api.routes.DebateGraph", return_value=g):
+            response = await client.post(f"/debate/{state.thread_id}/resume")
+
+        assert response.status_code == 400
+        assert response.json()["detail"]["error"] == "no_checkpoint_available"

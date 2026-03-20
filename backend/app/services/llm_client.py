@@ -1,65 +1,159 @@
 """
-GROQ LLM client wrapper.
+LangChain-backed multi-provider LLM adapter for AgentBoard.
 
-Reusable async client for structured LLM calls via the GROQ API.
-Supports plain-text and structured JSON responses, exponential-backoff
-retries, and per-call timing logs.
+Replaces the custom GroqClient (httpx) with a provider-agnostic adapter
+built on LangChain that supports:
+
+- Multi-provider backends: Groq (default), OpenAI, Anthropic – switchable
+  via the LLM_PROVIDER config variable without any code changes.
+- Structured output via with_structured_output(): pass a Pydantic model
+  class and receive a validated model instance back directly, eliminating
+  all manual JSON parsing and retry-on-parse-failure boilerplate.
+- Built-in retry: LangChain's with_retry() handles exponential back-off
+  on transient failures across every provider automatically.
+- LangSmith tracing: when LANGSMITH_TRACING=true in .env, every LLM call
+  is automatically traced with token counts, cost, and latency.
+
+GroqClient is kept as a backward-compatible alias so existing imports
+in tests and legacy code continue to work without modification.
 """
 
-import asyncio
-import json
 import logging
-import time
-from typing import Any
+from typing import Any, TypeVar, cast
 
-import httpx
+from langchain_core.prompts import ChatPromptTemplate
+from pydantic import SecretStr
 
 from app.core.config import settings
-from app.utils.exceptions import LLMConnectionError, LLMRateLimitError, LLMResponseError
+from app.utils.exceptions import LLMConnectionError, LLMResponseError
 
 logger = logging.getLogger("agentboard.services.llm_client")
 
-_MAX_RETRIES = 2
-_BACKOFF_SECONDS: list[float] = [1.0, 2.0]
+T = TypeVar("T")
 
 
-class GroqClient:
+class LangChainProvider:
     """
-    Reusable async GROQ API client for structured LLM calls.
+    Multi-provider LLM adapter using LangChain.
 
-    Usage:
-        client = GroqClient(api_key=..., model=..., base_url=...)
-        text   = await client.chat(system_prompt, user_prompt)
-        data   = await client.chat_json(system_prompt, user_prompt)
+    Supports Groq (default), OpenAI, and Anthropic backends, all sharing
+    the same async interface.  Provider is selected via the LLM_PROVIDER
+    config setting; credentials come from the corresponding *_API_KEY vars.
+
+    Key methods
+    -----------
+    ainvoke_structured(schema, system_prompt, user_prompt)
+        Invoke the LLM and return a validated Pydantic model directly.
+        No manual JSON parsing required.  Uses with_structured_output().
+
+    chat(system_prompt, user_prompt, ...)
+        Plain text response – for free-form content generation.
+
+    chat_json(system_prompt, user_prompt, ...)
+        Backward-compatible dict-returning method for legacy callers.
     """
 
-    def __init__(self, api_key: str, model: str, base_url: str) -> None:
-        """
-        Initialise the GROQ client.
-
-        Args:
-            api_key:  GROQ API key (Bearer token).
-            model:    Model identifier, e.g. "llama-3.3-70b-versatile".
-            base_url: Base URL of the GROQ OpenAI-compatible API.
-        """
-        self.api_key = api_key
+    def __init__(
+        self,
+        provider: str = "groq",
+        api_key: str = "",
+        model: str = "",
+        base_url: str | None = None,
+    ) -> None:
+        self.provider = provider
         self.model = model
         self.base_url = base_url
-        self._client = httpx.AsyncClient(
-            base_url=base_url,
-            headers={
-                "Authorization": f"Bearer {api_key}",
-                "Content-Type": "application/json",
-            },
-            timeout=60.0,
+        self._llm = self._build_llm(provider, api_key, model)
+        logger.info(
+            "LangChainProvider initialized",
+            extra={"provider": provider, "model": model},
         )
 
-    async def close(self) -> None:
-        """Close the underlying httpx client – call on app shutdown."""
-        await self._client.aclose()
+    # ------------------------------------------------------------------
+    # Provider factory
+    # ------------------------------------------------------------------
+
+    @staticmethod
+    def _build_llm(provider: str, api_key: str, model: str):
+        """Build the appropriate LangChain chat model for the given provider."""
+        secret = SecretStr(api_key) if api_key else None
+        if provider == "groq":
+            from langchain_groq import ChatGroq  # type: ignore[import-untyped]
+            return ChatGroq(api_key=secret, model=model, temperature=0.7)
+        elif provider == "openai":
+            from langchain_openai import ChatOpenAI  # type: ignore[import-untyped]
+            return ChatOpenAI(api_key=secret, model=model, temperature=0.7)
+        elif provider == "anthropic":
+            from langchain_anthropic import ChatAnthropic  # type: ignore[import-untyped]
+            return ChatAnthropic(api_key=secret, model=model, temperature=0.7)  # type: ignore[call-arg]
+        else:
+            raise ValueError(f"Unsupported LLM provider: {provider!r}")
+
+    @staticmethod
+    def _build_messages(system_prompt: str, user_prompt: str):
+        """Compose the chat turn using ChatPromptTemplate."""
+        template = ChatPromptTemplate.from_messages(
+            [
+                ("system", "{system_prompt}"),
+                ("human", "{user_prompt}"),
+            ]
+        )
+        return template.format_messages(
+            system_prompt=system_prompt,
+            user_prompt=user_prompt,
+        )
 
     # ------------------------------------------------------------------
-    # Public API
+    # Primary structured-output method (Phase 1 core)
+    # ------------------------------------------------------------------
+
+    async def ainvoke_structured(
+        self,
+        schema: type[T],
+        system_prompt: str,
+        user_prompt: str,
+        temperature: float = 0.3,
+    ) -> T:
+        """
+        Invoke the LLM and return a validated Pydantic model instance.
+
+        Uses LangChain's with_structured_output() for reliable schema
+        binding via tool/function calling.  No manual JSON parsing needed.
+        Built-in retry on transient failures (max 2 attempts).
+
+        Args:
+            schema:        Pydantic model class the LLM should populate.
+            system_prompt: Role/instruction for the model.
+            user_prompt:   User turn message.
+            temperature:   Sampling temperature (default 0.3 for structured).
+
+        Returns:
+            A validated instance of ``schema``.
+
+        Raises:
+            LLMResponseError: If structured output fails after retries.
+        """
+        try:
+            llm = cast(Any, self._llm.bind(temperature=temperature))
+            chain = llm.with_structured_output(schema).with_retry(
+                stop_after_attempt=2,
+                wait_exponential_jitter=True,
+            )
+            messages = self._build_messages(system_prompt, user_prompt)
+            result: T = await chain.ainvoke(messages)
+            return result
+        except Exception as exc:
+            logger.error(
+                "ainvoke_structured_failed",
+                extra={"schema": schema.__name__, "provider": self.provider, "error": str(exc)},
+            )
+            raise LLMResponseError(
+                f"Structured output failed for {schema.__name__} "
+                f"via {self.provider}: {exc}"
+            ) from exc
+
+    # ------------------------------------------------------------------
+    # Plain text + backward-compat dict methods
     # ------------------------------------------------------------------
 
     async def chat(
@@ -69,33 +163,16 @@ class GroqClient:
         temperature: float = 0.7,
         max_tokens: int = 2048,
     ) -> str:
-        """
-        Send a chat-completion request and return the raw text response.
-
-        Args:
-            system_prompt: The system / role instruction for the LLM.
-            user_prompt:   The user message / task description.
-            temperature:   Sampling temperature (0.0 = deterministic).
-            max_tokens:    Maximum tokens in the response.
-
-        Returns:
-            Raw response string from the LLM.
-
-        Raises:
-            LLMConnectionError: Network or API connectivity failure.
-            LLMRateLimitError:  API returned HTTP 429.
-            LLMResponseError:   Unexpected response structure.
-        """
-        payload: dict[str, Any] = {
-            "model": self.model,
-            "messages": [
-                {"role": "system", "content": system_prompt},
-                {"role": "user",   "content": user_prompt},
-            ],
-            "temperature": temperature,
-            "max_tokens": max_tokens,
-        }
-        return await self._post_with_retry(payload)
+        """Return a plain-text response from the LLM."""
+        try:
+            llm = self._llm.bind(temperature=temperature, max_tokens=max_tokens)
+            messages = self._build_messages(system_prompt, user_prompt)
+            response = await llm.ainvoke(messages)
+            if isinstance(response.content, str):
+                return response.content
+            return str(response.content)
+        except Exception as exc:
+            raise LLMConnectionError(f"LLM chat call failed: {exc}") from exc
 
     async def chat_json(
         self,
@@ -104,211 +181,64 @@ class GroqClient:
         temperature: float = 0.3,
     ) -> dict[str, Any]:
         """
-        Send a chat request that **enforces** structured JSON output.
+        Backward-compatible method that returns a raw dict.
 
-        Appends a JSON-only enforcement clause to the system prompt and
-        sets ``response_format`` to ``json_object``.  Retries once on
-        JSON-parse failure with an explicit correction message.
-
-        Args:
-            system_prompt: The system / role instruction.
-            user_prompt:   The user message / task description.
-            temperature:   Lower temperature → more deterministic JSON.
-
-        Returns:
-            Parsed Python dict from the LLM response.
-
-        Raises:
-            LLMConnectionError: Network or API connectivity failure.
-            LLMRateLimitError:  API returned HTTP 429.
-            LLMResponseError:   JSON cannot be parsed after retries.
+        Retained for legacy callers and tests.  New code should prefer
+        ainvoke_structured() with an explicit Pydantic schema.
         """
-        json_system_prompt = (
-            system_prompt
-            + "\n\nIMPORTANT: You MUST respond with valid JSON only. "
-            "No markdown, no code fences, no extra text. Only raw JSON."
-        )
+        import json as _json
 
-        payload: dict[str, Any] = {
-            "model": self.model,
-            "messages": [
-                {"role": "system", "content": json_system_prompt},
-                {"role": "user",   "content": user_prompt},
-            ],
-            "temperature": temperature,
-            "max_tokens": 800,
-            "response_format": {"type": "json_object"},
-        }
-
-        raw = await self._post_with_retry(payload)
-
-        # --- First parse attempt ---
-        # NOTE: Python 3 deletes `as exc` variables after the except block,
-        # so we save it explicitly before the block exits.
-        _saved_first_exc: json.JSONDecodeError | None = None
+        raw = await self.chat(system_prompt, user_prompt, temperature=temperature)
         try:
-            return json.loads(raw)
-        except json.JSONDecodeError as first_exc:
-            _saved_first_exc = first_exc
-            logger.warning(
-                "JSON parse failed on first attempt – retrying with correction",
-                extra={"raw_preview": raw[:300]},
-            )
-
-        # --- Retry: append correction turn ---
-        payload["messages"].append({"role": "assistant", "content": raw})
-        payload["messages"].append({
-            "role": "user",
-            "content": (
-                "Your previous response was not valid JSON. "
-                "Return ONLY a valid JSON object, nothing else."
-            ),
-        })
-        raw_retry = await self._post_with_retry(payload)
-
-        try:
-            return json.loads(raw_retry)
-        except json.JSONDecodeError:
-            logger.error(
-                "JSON parse failed after retry",
-                extra={"raw_preview": raw_retry[:300]},
-            )
+            return _json.loads(raw)
+        except _json.JSONDecodeError as exc:
             raise LLMResponseError(
-                f"LLM returned unparseable JSON after retry. "
-                f"Preview: {raw_retry[:300]}"
-            ) from _saved_first_exc
+                f"LLM returned unparseable JSON. Preview: {raw[:300]}"
+            ) from exc
 
-    # ------------------------------------------------------------------
-    # Internal helpers
-    # ------------------------------------------------------------------
+    async def close(self) -> None:
+        """No-op: LangChain manages HTTP connection pools internally."""
+        pass
 
-    async def _post_with_retry(self, payload: dict[str, Any]) -> str:
-        """
-        POST to ``/chat/completions`` with exponential-backoff retries.
+    def __repr__(self) -> str:
+        return f"<LangChainProvider provider={self.provider!r} model={self.model!r}>"
 
-        Retries up to ``_MAX_RETRIES`` times on:
-        - HTTP 429 (rate limit)
-        - HTTP 5xx (server errors)
-        - Network / timeout errors
 
-        Returns the raw content string from the first successful response.
-        """
-        prompt_chars = sum(
-            len(m.get("content", "")) for m in payload.get("messages", [])
-        )
-        last_exc: Exception = LLMConnectionError("Unknown error in _post_with_retry")
-
-        for attempt in range(_MAX_RETRIES + 1):
-            start_time = time.monotonic()
-            try:
-                response = await self._client.post("/chat/completions", json=payload)
-                elapsed_ms = round((time.monotonic() - start_time) * 1000, 1)
-
-                logger.info(
-                    "GROQ API call completed",
-                    extra={
-                        "model":        self.model,
-                        "status_code":  response.status_code,
-                        "elapsed_ms":   elapsed_ms,
-                        "prompt_chars": prompt_chars,
-                        "attempt":      attempt + 1,
-                    },
-                )
-
-                # --- Rate limit ---
-                if response.status_code == 429:
-                    retry_after = float(
-                        response.headers.get(
-                            "retry-after",
-                            _BACKOFF_SECONDS[min(attempt, len(_BACKOFF_SECONDS) - 1)],
-                        )
-                    )
-                    logger.warning(
-                        "Rate limited by GROQ API",
-                        extra={"retry_after_s": retry_after, "attempt": attempt + 1},
-                    )
-                    last_exc = LLMRateLimitError("GROQ API rate limit exceeded (429)")
-                    if attempt < _MAX_RETRIES:
-                        await asyncio.sleep(retry_after)
-                        continue
-                    raise last_exc
-
-                # --- Server errors ---
-                if response.status_code >= 500:
-                    logger.warning(
-                        "GROQ API server error",
-                        extra={"status_code": response.status_code, "attempt": attempt + 1},
-                    )
-                    last_exc = LLMConnectionError(
-                        f"GROQ API server error: {response.status_code}"
-                    )
-                    if attempt < _MAX_RETRIES:
-                        await asyncio.sleep(
-                            _BACKOFF_SECONDS[min(attempt, len(_BACKOFF_SECONDS) - 1)]
-                        )
-                        continue
-                    raise last_exc
-
-                response.raise_for_status()
-
-                # --- Parse response ---
-                data = response.json()
-                content: str = data["choices"][0]["message"]["content"]
-                return content
-
-            except (httpx.ConnectError, httpx.TimeoutException, httpx.NetworkError) as exc:
-                elapsed_ms = round((time.monotonic() - start_time) * 1000, 1)
-                logger.warning(
-                    "GROQ API network error",
-                    extra={
-                        "error":      str(exc),
-                        "elapsed_ms": elapsed_ms,
-                        "attempt":    attempt + 1,
-                    },
-                )
-                last_exc = LLMConnectionError(
-                    f"Network error connecting to GROQ: {exc}"
-                )
-                if attempt < _MAX_RETRIES:
-                    await asyncio.sleep(
-                        _BACKOFF_SECONDS[min(attempt, len(_BACKOFF_SECONDS) - 1)]
-                    )
-                    continue
-                raise LLMConnectionError(
-                    f"Network error after {attempt + 1} attempt(s): {exc}"
-                ) from exc
-
-            except (KeyError, IndexError) as exc:
-                raise LLMResponseError(
-                    f"Unexpected GROQ response structure: {exc}"
-                ) from exc
-
-        raise last_exc
+# ---------------------------------------------------------------------------
+# Backward-compatible alias
+# ---------------------------------------------------------------------------
+# All existing: `from app.services.llm_client import GroqClient` imports
+# resolve to LangChainProvider without any file changes required.
+GroqClient = LangChainProvider
 
 
 # ---------------------------------------------------------------------------
 # Singleton factory
 # ---------------------------------------------------------------------------
 
-_llm_client_instance: GroqClient | None = None
+_llm_client_instance: LangChainProvider | None = None
 
 
-def get_llm_client() -> GroqClient:
+def get_llm_client() -> LangChainProvider:
     """
-    Return the singleton GroqClient loaded from application settings.
+    Return the singleton LangChainProvider loaded from application settings.
 
-    Creates the instance lazily on the first call.  Import and call this
-    anywhere inside the application to share one httpx connection pool.
+    The active provider is selected via settings.LLM_PROVIDER.
+    Creates the instance lazily on the first call.
     """
     global _llm_client_instance
     if _llm_client_instance is None:
-        _llm_client_instance = GroqClient(
-            api_key=settings.GROQ_API_KEY,
-            model=settings.GROQ_MODEL,
-            base_url=settings.GROQ_BASE_URL,
-        )
-        logger.info(
-            "GroqClient singleton initialised",
-            extra={"model": settings.GROQ_MODEL, "base_url": settings.GROQ_BASE_URL},
+        provider = settings.LLM_PROVIDER
+        if provider == "openai":
+            api_key, model = settings.OPENAI_API_KEY, settings.OPENAI_MODEL
+        elif provider == "anthropic":
+            api_key, model = settings.ANTHROPIC_API_KEY, settings.ANTHROPIC_MODEL
+        else:
+            api_key, model = settings.GROQ_API_KEY, settings.GROQ_MODEL
+
+        _llm_client_instance = LangChainProvider(
+            provider=provider,
+            api_key=api_key,
+            model=model,
         )
     return _llm_client_instance

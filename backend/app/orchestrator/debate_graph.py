@@ -19,6 +19,13 @@ Builds and compiles a ``StateGraph`` wired with five nodes:
                                                 ▼
                                               END
 
+Phase 2 additions
+-----------------
+- AsyncSqliteSaver checkpointer: every graph state transition is persisted
+    in SQLite, enabling durable recovery and replay across restarts.
+- Thread config: each debate run is scoped to its thread_id so
+    concurrent debates never share state.
+
 Usage::
 
     graph = DebateGraph(llm_client=client, settings=settings)
@@ -27,9 +34,13 @@ Usage::
 
 from __future__ import annotations
 
+import asyncio
 import logging
 import time
+from collections.abc import Awaitable, Callable, Coroutine
+from typing import Any, cast
 
+from langgraph.checkpoint.sqlite.aio import AsyncSqliteSaver  # type: ignore[import-untyped]
 from langgraph.graph import END, START, StateGraph  # type: ignore[import-untyped]
 
 from app.agents.analyst_agent import AnalystAgent
@@ -49,31 +60,41 @@ from app.orchestrator.nodes import (
 )
 from app.schemas.final_decision import FinalDecision
 from app.schemas.state import DebateState
-from app.services.llm_client import GroqClient
+from app.services.llm_client import LangChainProvider
 
 
 class DebateGraph:
     """
     LangGraph orchestration layer for the multi-agent debate.
 
-    Drop-in replacement for ``DebateController``.  Accepts the same
-    constructor arguments (``llm_client``, ``settings``, optional
-    ``queue_list`` / ``replay_buffer`` for SSE streaming) and exposes
-    a single ``run()`` coroutine that returns
-    ``(DebateState, FinalDecision)``.
+    Drop-in replacement for the legacy ``DebateController``.  Accepts
+    the same constructor arguments and exposes a single ``run()``
+    coroutine that returns ``(DebateState, FinalDecision)``.
+
+    Phase 2 additions
+    -----------------
+        - ``AsyncSqliteSaver`` checkpointer is compiled into the graph so every
+      state transition is persisted per thread_id.  This enables:
+      - Pause / resume for long-running debates across restarts.
+      - LangGraph Studio time-travel debugging.
+      - interrupt_before hooks for human-in-the-loop review (future).
     """
 
     def __init__(
         self,
-        llm_client: GroqClient,
+        llm_client: LangChainProvider,
         settings: Settings,
         queue_list: list | None = None,
         replay_buffer: list | None = None,
+        on_event: Callable[[dict], Coroutine[Any, Any, None]] | None = None,
+        on_state_change: Callable[[DebateState], Awaitable[None]] | None = None,
     ) -> None:
         self.settings = settings
         self.logger = logging.getLogger("agentboard.orchestrator")
         self._queue_list = queue_list
         self._replay_buffer = replay_buffer
+        self._on_event = on_event
+        self._on_state_change = on_state_change
 
         self.agents: dict[str, BaseAgent] = {
             "Analyst": AnalystAgent(llm_client=llm_client),
@@ -82,7 +103,6 @@ class DebateGraph:
             "Ethics": EthicsAgent(llm_client=llm_client),
         }
         self.moderator = ModeratorAgent(llm_client=llm_client)
-        self._graph = self._build()
 
     # ------------------------------------------------------------------
     # SSE event emission (mirrors DebateController._emit exactly)
@@ -93,6 +113,8 @@ class DebateGraph:
         payload = {"type": event_type, **data}
         if self._replay_buffer is not None:
             self._replay_buffer.append(payload)
+        if self._on_event is not None:
+            asyncio.create_task(self._on_event(payload))
         if self._queue_list:
             for q in list(self._queue_list):  # snapshot to avoid mutation races
                 q.put_nowait(payload)
@@ -101,16 +123,16 @@ class DebateGraph:
     # Graph construction
     # ------------------------------------------------------------------
 
-    def _build(self):
-        """Assemble, wire, and compile the LangGraph StateGraph."""
+    def _build(self, checkpointer: AsyncSqliteSaver):
+        """Assemble, wire, and compile the LangGraph StateGraph with checkpointer."""
         emit = self._emit
         workflow = StateGraph(DebateGraphState)
 
-        workflow.add_node("proposals",  make_proposals_node(self.agents, emit))  # type: ignore[arg-type]
-        workflow.add_node("critiques",  make_critiques_node(self.agents, emit))  # type: ignore[arg-type]
-        workflow.add_node("revisions",  make_revisions_node(self.agents, emit))  # type: ignore[arg-type]
-        workflow.add_node("convergence", make_convergence_node(self.moderator, self.settings, emit))  # type: ignore[arg-type]
-        workflow.add_node("finalize",   make_finalize_node(self.moderator, emit))  # type: ignore[arg-type]
+        workflow.add_node("proposals",   make_proposals_node(self.agents, emit, self._on_state_change))   # type: ignore[arg-type]
+        workflow.add_node("critiques",   make_critiques_node(self.agents, emit, self._on_state_change))   # type: ignore[arg-type]
+        workflow.add_node("revisions",   make_revisions_node(self.agents, emit, self._on_state_change))   # type: ignore[arg-type]
+        workflow.add_node("convergence", make_convergence_node(self.moderator, self.settings, emit, self._on_state_change))  # type: ignore[arg-type]
+        workflow.add_node("finalize",    make_finalize_node(self.moderator, emit, self._on_state_change))  # type: ignore[arg-type]
 
         # Linear edges within a round
         workflow.add_edge(START, "proposals")
@@ -126,7 +148,7 @@ class DebateGraph:
         )
 
         workflow.add_edge("finalize", END)
-        return workflow.compile()
+        return workflow.compile(checkpointer=checkpointer)
 
     # ------------------------------------------------------------------
     # Public API
@@ -189,8 +211,17 @@ class DebateGraph:
             "final_decision": None,
         }
 
+        # Phase 2: scope graph execution to this debate's thread_id so
+        # checkpoint state is isolated across concurrent debates.
+        thread_config = cast(Any, {"configurable": {"thread_id": debate_state.thread_id}})
+
         _debate_t0 = time.monotonic()
-        result = await self._graph.ainvoke(initial_graph_state)
+        async with AsyncSqliteSaver.from_conn_string(
+            self.settings.CHECKPOINT_DATABASE_URL
+        ) as checkpointer:
+            await checkpointer.setup()
+            graph = self._build(checkpointer)
+            result = await graph.ainvoke(initial_graph_state, config=thread_config)
 
         final_debate_state: DebateState = result["debate_state"]
         final_decision: FinalDecision = result["final_decision"]
@@ -202,6 +233,59 @@ class DebateGraph:
                 "total_rounds": final_debate_state.current_round,
                 "termination_reason": final_debate_state.termination_reason,
                 "total_elapsed_ms": round((time.monotonic() - _debate_t0) * 1000),
+            },
+        )
+        return final_debate_state, final_decision
+
+    async def resume(
+        self,
+        thread_id: str,
+    ) -> tuple[DebateState, FinalDecision]:
+        """
+        Resume an interrupted debate from its last LangGraph checkpoint.
+
+        Passes ``None`` as the graph input so LangGraph loads the latest
+        persisted state for ``thread_id`` rather than restarting from the
+        beginning.  The ``AsyncSqliteSaver`` checkpoint database must contain
+        a checkpoint entry for this ``thread_id``.
+
+        Raises:
+            ValueError: If no checkpoint exists for the given ``thread_id``.
+        """
+        thread_config = cast(Any, {"configurable": {"thread_id": thread_id}})
+        _t0 = time.monotonic()
+
+        self.logger.info("debate_resume_attempt", extra={"thread_id": thread_id})
+        self._emit("debate_resumed", {"thread_id": thread_id})
+
+        async with AsyncSqliteSaver.from_conn_string(
+            self.settings.CHECKPOINT_DATABASE_URL
+        ) as checkpointer:
+            await checkpointer.setup()
+
+            # Verify a checkpoint exists before attempting to resume.
+            checkpoint_tuple = await checkpointer.aget_tuple(thread_config)
+            if checkpoint_tuple is None:
+                raise ValueError(
+                    f"No checkpoint found for thread_id '{thread_id}'. "
+                    "Cannot resume: the debate was never checkpointed."
+                )
+
+            graph = self._build(checkpointer)
+            # Passing None lets LangGraph load the state from the checkpoint
+            # instead of restarting the graph from the beginning.
+            result = await graph.ainvoke(None, config=thread_config)
+
+        final_debate_state: DebateState = result["debate_state"]
+        final_decision: FinalDecision = result["final_decision"]
+
+        self.logger.info(
+            "debate_resume_complete",
+            extra={
+                "thread_id": thread_id,
+                "total_rounds": final_debate_state.current_round,
+                "termination_reason": final_debate_state.termination_reason,
+                "total_elapsed_ms": round((time.monotonic() - _t0) * 1000),
             },
         )
         return final_debate_state, final_decision
