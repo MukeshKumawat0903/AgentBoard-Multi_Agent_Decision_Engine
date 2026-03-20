@@ -31,8 +31,24 @@ class DebateGraphState(TypedDict):
     final_decision:
         Populated by the finalize node once the debate ends.
         None for all earlier nodes.
+    skip_critique_phase:
+        When True, the graph skips critiques and revisions each round
+        (used by the 'quick' debate mode preset).
+    consensus_threshold:
+        Per-run override for the consensus threshold.  None means use
+        the value from Settings.
+    hitl_mode:
+        When True, the convergence node emits 'approval_required' after
+        each round's convergence and the graph waits for human approval.
+    awaiting_approval:
+        True when the graph has emitted 'approval_required' and is waiting
+        for a resume signal from the human.
     """
 
     debate_state: DebateState
     should_continue: bool
     final_decision: Optional[FinalDecision]
+    skip_critique_phase: bool
+    consensus_threshold: Optional[float]
+    hitl_mode: bool
+    awaiting_approval: bool

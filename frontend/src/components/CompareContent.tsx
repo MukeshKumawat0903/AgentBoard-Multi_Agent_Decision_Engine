@@ -74,6 +74,18 @@ export default function CompareContent() {
     if (inputB) loadDebate(inputB, setDebateB, setErrorB, setLoadingB);
   }
 
+  function swapAB() {
+    const tmpInput = inputA;
+    const tmpDebate = debateA;
+    const tmpError = errorA;
+    setInputA(inputB);
+    setInputB(tmpInput);
+    setDebateA(debateB);
+    setDebateB(tmpDebate);
+    setErrorA(errorB);
+    setErrorB(tmpError);
+  }
+
   function pickRecent(item: HistoryItem, slot: "a" | "b") {
     if (slot === "a") {
       setInputA(item.thread_id);
@@ -129,6 +141,16 @@ export default function CompareContent() {
           Compare
         </button>
 
+        {(inputA || inputB) && (
+          <button
+            onClick={swapAB}
+            className="px-4 py-2 rounded-lg border border-gray-300 dark:border-gray-700 text-sm font-medium text-gray-600 dark:text-gray-400 hover:bg-gray-50 dark:hover:bg-gray-800 transition"
+            title="Swap Debate A and Debate B"
+          >
+            ⇄ Swap A / B
+          </button>
+        )}
+
         {recentItems.length > 0 && (
           <div>
             <p className="text-xs text-gray-400 mb-2">Recent debates (click to fill a slot):</p>
@@ -157,22 +179,68 @@ export default function CompareContent() {
       </div>
 
       {(debateA || debateB || loadingA || loadingB || errorA || errorB) && (
-        <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
-          <DebateColumn
-            label="Debate A"
-            debate={debateA}
-            loading={loadingA}
-            error={errorA}
-            otherDebate={debateB}
-          />
-          <DebateColumn
-            label="Debate B"
-            debate={debateB}
-            loading={loadingB}
-            error={errorB}
-            otherDebate={debateA}
-          />
-        </div>
+        <>
+          <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
+            <DebateColumn
+              label="Debate A"
+              debate={debateA}
+              loading={loadingA}
+              error={errorA}
+              otherDebate={debateB}
+            />
+            <DebateColumn
+              label="Debate B"
+              debate={debateB}
+              loading={loadingB}
+              error={errorB}
+              otherDebate={debateA}
+            />
+          </div>
+
+          {/* Confidence delta summary */}
+          {debateA && debateB && (
+            <div className="bg-white dark:bg-gray-900 rounded-xl border dark:border-gray-800 p-5">
+              <h3 className="font-semibold text-gray-700 dark:text-gray-300 mb-3 text-sm">
+                Delta Summary (A vs B)
+              </h3>
+              <div className="grid grid-cols-2 sm:grid-cols-4 gap-4">
+                {[
+                  {
+                    label: "Confidence Δ",
+                    value: debateA.confidence_score - debateB.confidence_score,
+                    format: (v: number) => `${v >= 0 ? "+" : ""}${Math.round(v * 100)}%`,
+                  },
+                  {
+                    label: "Agreement Δ",
+                    value: debateA.agreement_score - debateB.agreement_score,
+                    format: (v: number) => `${v >= 0 ? "+" : ""}${Math.round(v * 100)}%`,
+                  },
+                  {
+                    label: "Rounds Δ",
+                    value: debateA.total_rounds - debateB.total_rounds,
+                    format: (v: number) => `${v >= 0 ? "+" : ""}${v}`,
+                  },
+                  {
+                    label: "Risk Flags",
+                    value: debateA.risk_flags.length - debateB.risk_flags.length,
+                    format: (v: number) => `${v >= 0 ? "+" : ""}${v} (A vs B)`,
+                  },
+                ].map(({ label, value, format }) => (
+                  <div key={label} className="text-center">
+                    <p className="text-xs text-gray-400 mb-1">{label}</p>
+                    <p className={`text-lg font-bold tabular-nums ${
+                      value > 0 ? "text-green-600 dark:text-green-400" :
+                      value < 0 ? "text-red-500 dark:text-red-400" :
+                      "text-gray-500"
+                    }`}>
+                      {format(value)}
+                    </p>
+                  </div>
+                ))}
+              </div>
+            </div>
+          )}
+        </>
       )}
     </div>
   );

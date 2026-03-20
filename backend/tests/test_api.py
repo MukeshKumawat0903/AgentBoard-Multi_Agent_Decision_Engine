@@ -232,6 +232,42 @@ class TestPostDebateStart:
 
         assert response.status_code == 503
 
+    @pytest.mark.anyio
+    async def test_supervised_sync_requires_async_endpoint(self, client, isolated_stores):
+        response = await client.post(
+            "/debate/start",
+            json={
+                "query": "Should we expand into the Asian market in Q3?",
+                "supervised": True,
+            },
+        )
+
+        assert response.status_code == 400
+        assert response.json()["detail"]["error"] == "supervised_requires_async"
+
+    @pytest.mark.anyio
+    async def test_domain_pack_is_forwarded_to_graph_as_selected_agents(self, client, isolated_stores):
+        state = _make_state()
+        decision = _make_decision(thread_id=state.thread_id)
+
+        with patch("app.api.routes.DebateGraph", return_value=_mock_graph(state, decision)) as graph_cls:
+            response = await client.post(
+                "/debate/start",
+                json={
+                    "query": "Should we expand into the Asian market in Q3?",
+                    "domain_pack": "finance",
+                },
+            )
+
+        assert response.status_code == 200
+        assert graph_cls.call_args.kwargs["selected_agents"] == [
+            "Analyst",
+            "Risk",
+            "Strategy",
+            "FinancialEthics",
+            "Moderator",
+        ]
+
 
 # ---------------------------------------------------------------------------
 # GET /debate/{thread_id}

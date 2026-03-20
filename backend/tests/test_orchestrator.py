@@ -200,6 +200,16 @@ class TestDebateGraph:
             with pytest.raises(ValueError, match="No checkpoint found"):
                 await graph.resume("nonexistent-thread-id")
 
+    def test_constructor_honors_selected_agents(self):
+        settings = _mock_settings()
+        graph = DebateGraph(
+            llm_client=_mock_llm(),
+            settings=settings,
+            selected_agents=["Analyst", "Risk"],
+        )
+
+        assert set(graph.agents.keys()) == {"Analyst", "Risk"}
+
 
 class TestNodeFactories:
 

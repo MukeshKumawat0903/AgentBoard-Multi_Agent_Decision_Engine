@@ -69,3 +69,38 @@ def get_groq_client() -> LangChainProvider:
 
 # Re-export DB dependency so routes only need to import from this module.
 get_db = _get_db
+
+
+# ---------------------------------------------------------------------------
+# P3 – Knowledge base + agent memory singletons
+# These are populated by main.py's lifespan before the first request.
+# ---------------------------------------------------------------------------
+
+_knowledge_base = None   # KnowledgeBase | None
+_memory_store = None     # AgentMemoryStore | None
+
+
+def set_knowledge_base(kb) -> None:
+    """Set the application-level KnowledgeBase singleton (called from lifespan)."""
+    global _knowledge_base
+    _knowledge_base = kb
+
+
+def get_knowledge_base():
+    """Return the KnowledgeBase singleton, or a no-op stub if not initialised."""
+    if _knowledge_base is None:
+        # Return a lazy stub so routes don't crash when KB is not configured
+        from app.services.retriever import KnowledgeBase
+        return KnowledgeBase(persist_dir=settings.KNOWLEDGE_BASE_DIR)
+    return _knowledge_base
+
+
+def set_memory_store(ms) -> None:
+    """Set the application-level AgentMemoryStore singleton (called from lifespan)."""
+    global _memory_store
+    _memory_store = ms
+
+
+def get_memory_store():
+    """Return the AgentMemoryStore singleton, or None if not initialised."""
+    return _memory_store

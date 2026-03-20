@@ -25,10 +25,13 @@ import logging
 import time
 from typing import Awaitable, Callable
 
+from langgraph.types import interrupt  # type: ignore[import-untyped]
+
 from app.agents.base_agent import BaseAgent
 from app.agents.moderator_agent import ModeratorAgent
 from app.core.config import Settings
 from app.orchestrator.lg_state import DebateGraphState
+from app.schemas.final_decision import FinalDecision, MinorityReportEntry
 from app.schemas.state import DebateRound, DebateState
 from app.services.consensus import ConsensusEngine, SemanticConsensusEngine
 
@@ -375,7 +378,10 @@ def make_convergence_node(
         # Mirror DebateController._should_terminate logic
         should_continue = True
 
-        if agreement_score >= settings.CONSENSUS_THRESHOLD:
+        # Per-run threshold overrides the settings default
+        effective_threshold = state.get("consensus_threshold") or settings.CONSENSUS_THRESHOLD
+
+        if agreement_score >= effective_threshold:
             ds.termination_reason = "consensus_reached"
             should_continue = False
         elif ds.current_round >= ds.max_rounds:
@@ -385,6 +391,43 @@ def make_convergence_node(
             if all(s > 0.9 for s in ds.confidence_scores.values()):
                 ds.termination_reason = "consensus_reached"
                 should_continue = False
+
+        # --- P4.1 Human-in-the-Loop ---
+        # When hitl_mode is enabled and the convergence would end the debate,
+        # pause the graph with a LangGraph interrupt and wait for approval.
+        hitl_active = state.get("hitl_mode", False)
+        awaiting_approval = False
+        if hitl_active and not should_continue:
+            ds.status = "awaiting_approval"
+            ds.touch()
+            if persist_state is not None:
+                await persist_state(ds)
+
+            approval = interrupt({
+                "round_number": ds.current_round,
+                "agreement_score": agreement_score,
+                "termination_reason": ds.termination_reason,
+                "synthesis_summary": synthesis.summary,
+                "options": ["approve", "override", "add_round"],
+            })
+
+            action = approval.get("action", "approve") if isinstance(approval, dict) else "approve"
+            feedback = approval.get("feedback", "") if isinstance(approval, dict) else ""
+
+            ds.status = "in_progress"
+            ds.touch()
+
+            if action == "override":
+                ds.human_feedback = feedback
+                ds.termination_reason = "human_override"
+                should_continue = False
+            elif action == "add_round":
+                ds.max_rounds += 1
+                should_continue = True
+            else:
+                should_continue = False
+
+            awaiting_approval = False
 
         logger.info(
             "phase_timing",
@@ -398,7 +441,11 @@ def make_convergence_node(
                 "elapsed_ms": round((time.monotonic() - _t0) * 1000),
             },
         )
-        return {"debate_state": ds, "should_continue": should_continue}
+        return {
+            "debate_state": ds,
+            "should_continue": should_continue,
+            "awaiting_approval": awaiting_approval,
+        }
 
     return convergence_node
 
@@ -411,6 +458,7 @@ def make_finalize_node(
     moderator: ModeratorAgent,
     emit: _Emit,
     persist_state: _PersistState = None,
+    memory_store=None,
 ) -> _NodeFn:
     """Return an async node that asks the moderator for the FinalDecision."""
 
@@ -421,6 +469,57 @@ def make_finalize_node(
         decision = await moderator.finalize(ds)
         # Guarantee debate_trace always reflects ground-truth state
         decision = decision.model_copy(update={"debate_trace": list(ds.rounds)})
+
+        # --- P1.5: populate richer output fields ---
+        # Agent contribution scores: mean confidence across all rounds per agent
+        contribution: dict[str, float] = {}
+        for name in ds.confidence_scores:
+            scores = [
+                output.confidence_score
+                for round_data in ds.rounds
+                for output in round_data.agent_outputs
+                if output.agent_name == name
+            ]
+            contribution[name] = sum(scores) / len(scores) if scores else 0.0
+
+        # Minority report: agents whose final confidence < mean (diverged)
+        if contribution:
+            mean_conf = sum(contribution.values()) / len(contribution)
+            minority: list[MinorityReportEntry] = []
+            for round_data in reversed(ds.rounds):
+                seen = {m.agent_name for m in minority}
+                for output in round_data.agent_outputs:
+                    if output.agent_name not in seen and output.confidence_score < mean_conf - 0.1:
+                        minority.append(MinorityReportEntry(
+                            agent_name=output.agent_name,
+                            final_position=output.position[:300],
+                            dissent_reason=(
+                                f"Confidence ({output.confidence_score:.2f}) below group mean "
+                                f"({mean_conf:.2f}) in final round."
+                            ),
+                            confidence_score=output.confidence_score,
+                        ))
+        else:
+            minority = []
+
+        # Key disagreements: collect from the moderator's dissenting_opinions
+        # and unique critique summary points across all rounds
+        key_disags: list[str] = list(decision.dissenting_opinions or [])
+        for round_data in ds.rounds:
+            for critique in round_data.critiques:
+                for pt in critique.critique_points:
+                    if pt and pt not in key_disags:
+                        key_disags.append(pt)
+                        if len(key_disags) >= 10:
+                            break
+                if len(key_disags) >= 10:
+                    break
+
+        decision = decision.model_copy(update={
+            "minority_report": minority,
+            "key_disagreements": key_disags[:10],  # cap at 10 items
+            "agent_contribution_scores": contribution,
+        })
 
         ds.status = (
             "converged"
@@ -455,6 +554,23 @@ def make_finalize_node(
                 "elapsed_ms": round((time.monotonic() - _t0) * 1000),
             },
         )
+
+        # --- P3.3 Agent Memory: save one memory entry per agent ---
+        if memory_store is not None and ds.enable_agent_memory:
+            for round_data in reversed(ds.rounds):
+                saved_names: set[str] = set()
+                for output in round_data.agent_outputs:
+                    if output.agent_name not in saved_names:
+                        asyncio.create_task(
+                            memory_store.save_memory(
+                                output.agent_name,
+                                ds.thread_id,
+                                output.position,
+                            )
+                        )
+                        saved_names.add(output.agent_name)
+                break  # only save from the last round
+
         return {"debate_state": ds, "final_decision": decision}
 
     return finalize_node

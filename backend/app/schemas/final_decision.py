@@ -12,6 +12,15 @@ from pydantic import BaseModel, ConfigDict, Field
 from app.schemas.state import DebateRound
 
 
+class MinorityReportEntry(BaseModel):
+    """A dissenting position held by a single agent after the debate concludes."""
+
+    agent_name: str = Field(description="Name of the dissenting agent.")
+    final_position: str = Field(description="The agent's final stated position.")
+    dissent_reason: str = Field(description="Why this position differs from the consensus.")
+    confidence_score: float = Field(ge=0.0, le=1.0, description="Agent's self-assessed confidence.")
+
+
 class FinalDecision(BaseModel):
     """
     The converged output of a completed multi-agent debate session.
@@ -72,6 +81,19 @@ class FinalDecision(BaseModel):
         default_factory=lambda: datetime.now(timezone.utc),
         description="UTC timestamp when the final decision was produced.",
     )
+    # --- P1.5: Richer output fields ---
+    minority_report: list[MinorityReportEntry] = Field(
+        default_factory=list,
+        description="Structured dissent records for agents whose final position diverged from consensus.",
+    )
+    key_disagreements: list[str] = Field(
+        default_factory=list,
+        description="Top thematic disagreements that persisted across rounds.",
+    )
+    agent_contribution_scores: dict[str, float] = Field(
+        default_factory=dict,
+        description="Per-agent contribution score (0–1) based on confidence trajectory across rounds.",
+    )
 
     model_config = ConfigDict(
         json_schema_extra={
@@ -91,6 +113,9 @@ class FinalDecision(BaseModel):
                     "Delay expansion to Q1 next year – rejected due to competitive pressure",
                 ],
                 "dissenting_opinions": [],
+                "minority_report": [],
+                "key_disagreements": [],
+                "agent_contribution_scores": {},
                 "debate_trace": [],
                 "total_rounds": 3,
                 "termination_reason": "consensus_reached",

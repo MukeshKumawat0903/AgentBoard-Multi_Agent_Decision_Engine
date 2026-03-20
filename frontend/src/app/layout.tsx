@@ -53,6 +53,30 @@ export default function RootLayout({
               >
                 Compare
               </a>
+              <a
+                href="/simulate"
+                className="text-sm text-gray-500 dark:text-gray-400 hover:text-gray-800 dark:hover:text-gray-100 transition px-2 py-1 rounded"
+              >
+                Simulate
+              </a>
+              <a
+                href="/knowledge"
+                className="text-sm text-gray-500 dark:text-gray-400 hover:text-gray-800 dark:hover:text-gray-100 transition px-2 py-1 rounded"
+              >
+                Knowledge
+              </a>
+              <a
+                href="/memory"
+                className="text-sm text-gray-500 dark:text-gray-400 hover:text-gray-800 dark:hover:text-gray-100 transition px-2 py-1 rounded"
+              >
+                Memory
+              </a>
+              <a
+                href="/analytics"
+                className="text-sm text-gray-500 dark:text-gray-400 hover:text-gray-800 dark:hover:text-gray-100 transition px-2 py-1 rounded"
+              >
+                Analytics
+              </a>
               <ThemeToggle />
             </nav>
           </div>

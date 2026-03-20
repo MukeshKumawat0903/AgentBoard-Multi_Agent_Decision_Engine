@@ -5,11 +5,12 @@
 
 "use client";
 
-import { useEffect, useReducer, useRef } from "react";
+import { useEffect, useReducer, useRef, useState, useCallback } from "react";
 import { useRouter } from "next/navigation";
 import { connectToStream } from "@/lib/api";
 import type {
   AgentOutputEvent,
+  ApprovalRequiredEvent,
   CritiqueCompletedEvent,
   DebatePhase,
   DebateRound,
@@ -22,6 +23,8 @@ import AgentCard from "./AgentCard";
 import CritiqueView from "./CritiqueView";
 import FinalDecisionPanel from "./FinalDecisionPanel";
 import ConfidenceMeter from "./ConfidenceMeter";
+import ConfidenceDriftChart from "./ConfidenceDriftChart";
+import HITLPanel from "./HITLPanel";
 
 /* ------------------------------------------------------------------ */
 /* State shape                                                         */
@@ -37,6 +40,8 @@ interface StreamState {
   syntheses: Record<number, SynthesisEvent>;
   finalDecision: FinalDecision | null;
   error: string | null;
+  agentStatus: Record<string, "waiting" | "working" | "done">;
+  approvalRequired: ApprovalRequiredEvent | null;
 }
 
 const initial: StreamState = {
@@ -49,13 +54,15 @@ const initial: StreamState = {
   syntheses: {},
   finalDecision: null,
   error: null,
+  agentStatus: {},
+  approvalRequired: null,
 };
 
 /* ------------------------------------------------------------------ */
 /* Reducer                                                             */
 /* ------------------------------------------------------------------ */
 
-type Action = { event: DebateSSEEvent } | { type: "stream_error" };
+type Action = { event: DebateSSEEvent } | { type: "stream_error" } | { type: "clear_approval" };
 
 function ensureRound(rounds: DebateRound[], roundNumber: number): DebateRound[] {
   if (rounds.some((r) => r.round_number === roundNumber)) return rounds;
@@ -68,6 +75,10 @@ function ensureRound(rounds: DebateRound[], roundNumber: number): DebateRound[] 
 function reducer(state: StreamState, action: Action): StreamState {
   if ("type" in action && action.type === "stream_error") {
     return { ...state, status: "error", error: "Stream connection lost." };
+  }
+
+  if ("type" in action && action.type === "clear_approval") {
+    return { ...state, approvalRequired: null };
   }
 
   const { event } = action as { event: DebateSSEEvent };
@@ -86,6 +97,7 @@ function reducer(state: StreamState, action: Action): StreamState {
         ...state,
         currentRound: event.round_number,
         rounds: ensureRound(state.rounds, event.round_number),
+        agentStatus: Object.fromEntries(Object.keys(AGENT_META).map((k) => [k, "waiting"])),
       };
 
     case "phase_started":
@@ -95,6 +107,8 @@ function reducer(state: StreamState, action: Action): StreamState {
         rounds: state.rounds.map((r) =>
           r.round_number === event.round_number ? { ...r, phase: event.phase } : r
         ),
+        // Mark all agents as working when a new phase starts
+        agentStatus: Object.fromEntries(Object.keys(AGENT_META).map((k) => [k, "working"])),
       };
 
     case "agent_output": {
@@ -119,6 +133,7 @@ function reducer(state: StreamState, action: Action): StreamState {
               : [...r.agent_outputs, agentResp];
           return { ...r, agent_outputs: updated };
         }),
+        agentStatus: { ...state.agentStatus, [e.agent_name]: "done" },
       };
     }
 
@@ -154,6 +169,11 @@ function reducer(state: StreamState, action: Action): StreamState {
     case "debate_completed":
       return { ...state, status: "streaming" };
 
+    case "approval_required": {
+      const e = event as ApprovalRequiredEvent;
+      return { ...state, approvalRequired: e };
+    }
+
     case "final_decision": {
       // eslint-disable-next-line @typescript-eslint/no-unused-vars
       const { type, ...decision } = event as FinalDecision & { type: string };
@@ -161,7 +181,13 @@ function reducer(state: StreamState, action: Action): StreamState {
     }
 
     case "error":
-      return { ...state, status: "error", error: event.message };
+      return {
+        ...state,
+        status: "error",
+        error: (event as { type: string; detail?: string; error?: string }).detail
+          || (event as { type: string; detail?: string; error?: string }).error
+          || "A debate error occurred.",
+      };
 
     default:
       return state;
@@ -171,6 +197,33 @@ function reducer(state: StreamState, action: Action): StreamState {
 /* ------------------------------------------------------------------ */
 /* Component                                                           */
 /* ------------------------------------------------------------------ */
+/* ConfidenceDriftSection – collapsible chart panel                    */
+/* ------------------------------------------------------------------ */
+
+function ConfidenceDriftSection({ rounds }: { rounds: DebateRound[] }) {
+  const [open, setOpen] = useState(false);
+  if (rounds.length === 0) return null;
+  return (
+    <div className="rounded-xl border border-gray-200 dark:border-gray-700 bg-white dark:bg-gray-800 overflow-hidden">
+      <button
+        onClick={() => setOpen((o) => !o)}
+        className="w-full flex items-center justify-between px-4 py-3 text-sm font-semibold text-gray-700 dark:text-gray-200 hover:bg-gray-50 dark:hover:bg-gray-700/50 transition-colors"
+      >
+        <span className="flex items-center gap-2">
+          <span>📈</span> Agent Confidence Drift
+        </span>
+        <span className="text-gray-400">{open ? "▲" : "▼"}</span>
+      </button>
+      {open && (
+        <div className="px-4 pb-4">
+          <ConfidenceDriftChart rounds={rounds} />
+        </div>
+      )}
+    </div>
+  );
+}
+
+/* ------------------------------------------------------------------ */
 
 interface Props {
   threadId: string;
@@ -179,22 +232,85 @@ interface Props {
 export default function DebateStreamViewer({ threadId }: Props) {
   const router = useRouter();
   const [state, dispatch] = useReducer(reducer, initial);
+  const [connStatus, setConnStatus] = useState<"connected" | "reconnecting" | "disconnected">("connected");
+  const [maxReconnectsHit, setMaxReconnectsHit] = useState(false);
+  const [focusedRoundIdx, setFocusedRoundIdx] = useState<number | null>(null);
   const bottomRef = useRef<HTMLDivElement>(null);
+  const controllerRef = useRef<AbortController | null>(null);
+
+  function startStream() {
+    if (controllerRef.current) controllerRef.current.abort();
+    setMaxReconnectsHit(false);
+    const ctrl = connectToStream(threadId, {
+      onEvent: (event) => dispatch({ event }),
+      onError: () => {
+        setMaxReconnectsHit(true);
+        setConnStatus("disconnected");
+      },
+      onStatusChange: setConnStatus,
+    });
+    controllerRef.current = ctrl;
+  }
 
   useEffect(() => {
-    const cleanup = connectToStream(threadId, {
-      onEvent: (event) => dispatch({ event }),
-      onError: () => dispatch({ type: "stream_error" }),
-    });
-    return cleanup;
+    startStream();
+    return () => {
+      controllerRef.current?.abort();
+    };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [threadId]);
+
+  // Keyboard J/K navigation through rounds
+  useEffect(() => {
+    function handleKey(e: KeyboardEvent) {
+      if (state.rounds.length === 0) return;
+      if (e.target instanceof HTMLInputElement || e.target instanceof HTMLTextAreaElement) return;
+      if (e.key === "j" || e.key === "J") {
+        setFocusedRoundIdx((prev) => Math.min((prev ?? -1) + 1, state.rounds.length - 1));
+      } else if (e.key === "k" || e.key === "K") {
+        setFocusedRoundIdx((prev) => Math.max((prev ?? state.rounds.length) - 1, 0));
+      } else if (e.key === "Escape") {
+        setFocusedRoundIdx(null);
+      }
+    }
+    document.addEventListener("keydown", handleKey);
+    return () => document.removeEventListener("keydown", handleKey);
+  }, [state.rounds]);
+
+  // Scroll focused round into view
+  const roundRefs = useRef<Map<number, HTMLDivElement>>(new Map());
+  useEffect(() => {
+    if (focusedRoundIdx === null) return;
+    const round = state.rounds[focusedRoundIdx];
+    if (!round) return;
+    const el = roundRefs.current.get(round.round_number);
+    el?.scrollIntoView({ behavior: "smooth", block: "start" });
+  }, [focusedRoundIdx, state.rounds]);
 
   // Auto-scroll as new events arrive while streaming
   useEffect(() => {
-    if (state.status === "streaming") {
+    if (state.status === "streaming" && focusedRoundIdx === null) {
       bottomRef.current?.scrollIntoView({ behavior: "smooth" });
     }
-  }, [state.rounds, state.status]);
+  }, [state.rounds, state.status, focusedRoundIdx]);
+
+  /* ---- Connection status badge ---- */
+  const statusBadge = (
+    <span className={`inline-flex items-center gap-1.5 text-xs px-2 py-0.5 rounded-full font-medium ${
+      connStatus === "connected"
+        ? "bg-green-100 dark:bg-green-900/40 text-green-700 dark:text-green-400"
+        : connStatus === "reconnecting"
+        ? "bg-yellow-100 dark:bg-yellow-900/40 text-yellow-700 dark:text-yellow-400"
+        : "bg-red-100 dark:bg-red-900/40 text-red-700 dark:text-red-400"
+    }`}>
+      <span className={`w-1.5 h-1.5 rounded-full ${
+        connStatus === "connected" ? "bg-green-500 animate-pulse" :
+        connStatus === "reconnecting" ? "bg-yellow-500 animate-pulse" :
+        "bg-red-500"
+      }`}/>
+      {connStatus === "connected" ? "● Connected" : connStatus === "reconnecting" ? "↺ Reconnecting…" : "✕ Disconnected"}
+    </span>
+  );
 
   /* ---- Error ---- */
   if (state.status === "error") {
@@ -225,51 +341,136 @@ export default function DebateStreamViewer({ threadId }: Props) {
 
   return (
     <div className="space-y-6">
-      {/* Query banner */}
+      {/* Query banner + connection status */}
       {state.query && (
-        <div className="bg-blue-50 dark:bg-blue-950/30 border border-blue-200 dark:border-blue-800 rounded-xl p-4">
-          <p className="text-xs text-blue-500 font-semibold uppercase tracking-wide mb-1">
-            Debate Query
-          </p>
-          <p className="text-gray-800 dark:text-gray-200 leading-relaxed">{state.query}</p>
+        <div className="bg-blue-50 dark:bg-blue-950/30 border border-blue-200 dark:border-blue-800 rounded-xl p-4 flex items-start justify-between gap-3">
+          <div>
+            <p className="text-xs text-blue-500 font-semibold uppercase tracking-wide mb-1">
+              Debate Query
+            </p>
+            <p className="text-gray-800 dark:text-gray-200 leading-relaxed">{state.query}</p>
+          </div>
+          {state.status !== "done" && statusBadge}
         </div>
       )}
 
-      {/* Status bar */}
-      {state.status === "streaming" && (
-        <div className="flex items-center gap-3 text-sm text-gray-500 dark:text-gray-400">
-          <span className="inline-flex items-center gap-1.5">
-            <span className="w-2 h-2 bg-green-500 rounded-full animate-pulse" />
-            Live
-          </span>
-          <span>
-            Round {state.currentRound} / {state.maxRounds}
-            {state.currentPhase ? ` — ${state.currentPhase}` : ""}
-          </span>
+      {/* Connection lost banner */}
+      {maxReconnectsHit && (
+        <div className="flex items-center justify-between p-3 rounded-lg bg-red-50 dark:bg-red-950/30 border border-red-200 dark:border-red-800 text-sm text-red-700 dark:text-red-400">
+          <span>Connection lost after multiple retries.</span>
+          <button
+            onClick={startStream}
+            className="ml-4 px-3 py-1 rounded-lg bg-red-600 text-white text-xs font-medium hover:bg-red-700 transition"
+          >
+            Reconnect
+          </button>
+        </div>
+      )}
+
+      {/* Round progress bar */}
+      {state.status === "streaming" && state.maxRounds > 0 && (
+        <div className="space-y-1">
+          <div className="flex items-center justify-between text-xs text-gray-500 dark:text-gray-400">
+            <span className="font-medium">
+              Round {state.currentRound} of {state.maxRounds}
+              {state.currentPhase ? (
+                <span className="ml-2 px-2 py-0.5 rounded-full bg-blue-100 dark:bg-blue-900/40 text-blue-700 dark:text-blue-300 capitalize">
+                  {state.currentPhase}
+                </span>
+              ) : null}
+            </span>
+            <span className="flex items-center gap-1.5">
+              <span className="w-1.5 h-1.5 bg-green-500 rounded-full animate-pulse" />
+              Live
+            </span>
+          </div>
+          <div className="w-full h-1.5 bg-gray-200 dark:bg-gray-700 rounded-full overflow-hidden">
+            <div
+              className="h-full bg-blue-500 rounded-full transition-all duration-700"
+              style={{ width: `${Math.min((state.currentRound / state.maxRounds) * 100, 100)}%` }}
+            />
+          </div>
+        </div>
+      )}
+
+      {/* Per-agent status rows (only during active streaming) */}
+      {state.status === "streaming" && Object.keys(state.agentStatus).length > 0 && (
+        <div className="bg-white dark:bg-gray-900 rounded-xl border dark:border-gray-800 shadow-sm p-3">
+          <p className="text-xs font-semibold text-gray-400 uppercase tracking-wide mb-2">Agent status</p>
+          <div className="flex flex-wrap gap-2">
+            {Object.entries(state.agentStatus).map(([name, st]) => {
+              const meta = AGENT_META[name as keyof typeof AGENT_META];
+              return (
+                <span
+                  key={name}
+                  className={`inline-flex items-center gap-1.5 px-2.5 py-1 rounded-full text-xs font-medium border transition ${
+                    st === "done"
+                      ? "border-green-300 dark:border-green-700 bg-green-50 dark:bg-green-900/20 text-green-700 dark:text-green-400"
+                      : st === "working"
+                      ? "border-blue-300 dark:border-blue-700 bg-blue-50 dark:bg-blue-900/20 text-blue-700 dark:text-blue-400"
+                      : "border-gray-200 dark:border-gray-700 bg-gray-50 dark:bg-gray-800 text-gray-500"
+                  }`}
+                >
+                  {st === "done" ? (
+                    <span className="w-3 h-3 flex items-center justify-center text-xs">✓</span>
+                  ) : st === "working" ? (
+                    <span className="w-3 h-3 border-2 border-current border-t-transparent rounded-full animate-spin block" />
+                  ) : (
+                    <span className="w-3 h-3 rounded-full bg-gray-300 dark:bg-gray-600 block" />
+                  )}
+                  {meta?.icon ?? ""} {name}
+                </span>
+              );
+            })}
+          </div>
         </div>
       )}
 
       {/* Live rounds */}
-      {state.rounds.map((round) => {
+      {state.rounds.map((round, rIdx) => {
         const synthesis = state.syntheses[round.round_number];
+        const isFocused = focusedRoundIdx !== null && state.rounds[focusedRoundIdx]?.round_number === round.round_number;
+        const PHASE_BADGE: Record<string, string> = {
+          proposal: "bg-blue-100 dark:bg-blue-900/40 text-blue-700 dark:text-blue-300",
+          critique: "bg-orange-100 dark:bg-orange-900/40 text-orange-700 dark:text-orange-400",
+          revision: "bg-purple-100 dark:bg-purple-900/40 text-purple-700 dark:text-purple-400",
+          convergence: "bg-green-100 dark:bg-green-900/40 text-green-700 dark:text-green-400",
+        };
         return (
           <div
             key={round.round_number}
-            className="bg-white dark:bg-gray-900 rounded-xl border dark:border-gray-800 shadow-sm overflow-hidden"
+            ref={(el) => { if (el) roundRefs.current.set(round.round_number, el); }}
+            onClick={() => setFocusedRoundIdx(rIdx)}
+            className={`bg-white dark:bg-gray-900 rounded-xl border shadow-sm overflow-hidden transition-all duration-200 cursor-pointer ${
+              isFocused
+                ? "border-blue-400 dark:border-blue-600 ring-2 ring-blue-200 dark:ring-blue-800"
+                : "dark:border-gray-800 hover:border-gray-300 dark:hover:border-gray-700"
+            }`}
           >
             {/* Round header */}
             <div className="px-5 py-3 border-b dark:border-gray-800 flex items-center justify-between">
-              <h3 className="font-semibold text-gray-700 dark:text-gray-300 text-sm">
-                Round {round.round_number}
-                {" "}
-                <span className="capitalize text-gray-400 font-normal ml-1">
+              <div className="flex items-center gap-2">
+                <h3 className="font-semibold text-gray-700 dark:text-gray-300 text-sm">
+                  Round {round.round_number}
+                </h3>
+                <span className={`px-2 py-0.5 rounded-full text-xs font-medium capitalize ${
+                  PHASE_BADGE[round.phase] ?? "bg-gray-100 dark:bg-gray-700 text-gray-600 dark:text-gray-300"
+                }`}>
                   {round.phase}
                 </span>
-              </h3>
+              </div>
               {synthesis && (
-                <span className="text-xs text-gray-400">
-                  Agreement {(synthesis.agreement_score * 100).toFixed(0)}%
-                </span>
+                <div className="flex items-center gap-2">
+                  <div className="w-16 h-1.5 bg-gray-200 dark:bg-gray-700 rounded-full overflow-hidden">
+                    <div
+                      className="h-full bg-green-500 rounded-full"
+                      style={{ width: `${Math.round(synthesis.agreement_score * 100)}%` }}
+                    />
+                  </div>
+                  <span className="text-xs text-gray-400 tabular-nums">
+                    {Math.round(synthesis.agreement_score * 100)}% agreement
+                  </span>
+                </div>
               )}
             </div>
 
@@ -346,10 +547,27 @@ export default function DebateStreamViewer({ threadId }: Props) {
             Debate complete — consensus reached
           </div>
           <FinalDecisionPanel decision={state.finalDecision} />
+          <ConfidenceDriftSection rounds={state.rounds} />
         </div>
       )}
 
+      {/* Keyboard hint */}
+      {state.rounds.length > 1 && (
+        <p className="text-center text-xs text-gray-400 dark:text-gray-500 mt-2">
+          Press <kbd className="px-1 py-0.5 rounded border border-gray-300 dark:border-gray-600 font-mono text-xs">J</kbd> / <kbd className="px-1 py-0.5 rounded border border-gray-300 dark:border-gray-600 font-mono text-xs">K</kbd> to navigate between rounds
+        </p>
+      )}
+
       <div ref={bottomRef} />
+
+      {/* P4.1 – HITL approval overlay */}
+      {state.approvalRequired && (
+        <HITLPanel
+          event={state.approvalRequired}
+          threadId={threadId}
+          onDone={() => dispatch({ type: "clear_approval" })}
+        />
+      )}
     </div>
   );
 }

@@ -90,6 +90,15 @@ class LangChainProvider:
             raise ValueError(f"Unsupported LLM provider: {provider!r}")
 
     @staticmethod
+    def get_llm(provider: str, api_key: str, model: str):
+        """Build and return a raw LangChain chat model instance.
+
+        Convenience factory used by the AgentRegistry to construct
+        per-agent model overrides without creating a full LangChainProvider.
+        """
+        return LangChainProvider._build_llm(provider, api_key, model)
+
+    @staticmethod
     def _build_messages(system_prompt: str, user_prompt: str):
         """Compose the chat turn using ChatPromptTemplate."""
         template = ChatPromptTemplate.from_messages(

@@ -5,12 +5,15 @@
 
 "use client";
 
-import { useEffect, useState, useCallback } from "react";
+import { useEffect, useState, useCallback, useMemo } from "react";
 import { useRouter } from "next/navigation";
 import type { HistoryItem, HistoryListResponse } from "@/lib/types";
 import { getHistory, ApiError } from "@/lib/api";
 
 const LIMIT = 15;
+
+type TerminationFilter = "all" | "consensus_reached" | "max_rounds_reached";
+type SortOrder = "newest" | "oldest" | "highest_agreement";
 
 export default function HistoryPage() {
   const router = useRouter();
@@ -20,6 +23,8 @@ export default function HistoryPage() {
   const [inputValue, setInputValue] = useState("");
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
+  const [terminationFilter, setTerminationFilter] = useState<TerminationFilter>("all");
+  const [sortOrder, setSortOrder] = useState<SortOrder>("newest");
 
   const load = useCallback(
     async (p: number, q: string) => {
@@ -51,7 +56,21 @@ export default function HistoryPage() {
     setInputValue("");
     setPage(1);
     setQuery("");
+    setTerminationFilter("all");
+    setSortOrder("newest");
   }
+
+  const filteredItems = useMemo(() => {
+    if (!data) return [];
+    let items = [...data.items];
+    if (terminationFilter !== "all") {
+      items = items.filter((i) => i.termination_reason === terminationFilter);
+    }
+    if (sortOrder === "oldest") items.sort((a, b) => a.created_at.localeCompare(b.created_at));
+    else if (sortOrder === "highest_agreement") items.sort((a, b) => b.agreement_score - a.agreement_score);
+    else items.sort((a, b) => b.created_at.localeCompare(a.created_at));
+    return items;
+  }, [data, terminationFilter, sortOrder]);
 
   const totalPages = data ? Math.ceil(data.total / LIMIT) : 0;
 
@@ -82,16 +101,48 @@ export default function HistoryPage() {
         >
           Search
         </button>
-        {query && (
+        {(query || terminationFilter !== "all" || sortOrder !== "newest") && (
           <button
             type="button"
             onClick={handleClear}
             className="px-4 py-2 rounded-lg bg-gray-200 dark:bg-gray-700 text-gray-600 dark:text-gray-300 text-sm font-medium hover:bg-gray-300 dark:hover:bg-gray-600 transition"
           >
-            Clear
+            Reset
           </button>
         )}
       </form>
+
+      {/* Filter chips + sort */}
+      <div className="flex flex-wrap items-center gap-2">
+        <span className="text-xs text-gray-400 font-medium">Filter:</span>
+        {(["all", "consensus_reached", "max_rounds_reached"] as TerminationFilter[]).map((f) => (
+          <button
+            key={f}
+            type="button"
+            onClick={() => { setTerminationFilter(f); setPage(1); }}
+            className={`px-3 py-1 rounded-full text-xs font-medium border transition ${
+              terminationFilter === f
+                ? "bg-blue-600 border-blue-600 text-white"
+                : "border-gray-300 dark:border-gray-600 text-gray-600 dark:text-gray-400 hover:border-blue-400"
+            }`}
+          >
+            {f === "all" ? "All" : f === "consensus_reached" ? "✓ Consensus" : "Max Rounds"}
+          </button>
+        ))}
+
+        <span className="ml-auto flex items-center gap-2 text-xs text-gray-400">
+          Sort:
+          <select
+            value={sortOrder}
+            onChange={(e) => setSortOrder(e.target.value as SortOrder)}
+            className="text-xs rounded border border-gray-300 dark:border-gray-600 bg-white dark:bg-gray-800 text-gray-700 dark:text-gray-300 px-2 py-1 focus:outline-none focus:ring-1 focus:ring-blue-500"
+          >
+            <option value="newest">Newest first</option>
+            <option value="oldest">Oldest first</option>
+            <option value="highest_agreement">Highest agreement</option>
+          </select>
+        </span>
+      </div>
 
       {/* Results */}
       {error && (
@@ -104,13 +155,15 @@ export default function HistoryPage() {
         <div className="flex justify-center py-16">
           <div className="w-6 h-6 border-4 border-blue-500 border-t-transparent rounded-full animate-spin" />
         </div>
-      ) : data && data.items.length === 0 ? (
+      ) : filteredItems.length === 0 ? (
         <div className="text-center py-16 text-gray-400">
-          {query ? `No debates found for "${query}".` : "No completed debates yet."}
+          {query || terminationFilter !== "all"
+            ? "No debates match the current filters."
+            : "No completed debates yet."}
         </div>
       ) : (
         <div className="space-y-3">
-          {data?.items.map((item) => (
+          {filteredItems.map((item) => (
             <HistoryCard key={item.thread_id} item={item} router={router} />
           ))}
         </div>
@@ -157,6 +210,9 @@ function HistoryCard({
 }) {
   const date = new Date(item.created_at);
   const agreementPercent = Math.round(item.agreement_score * 100);
+  const barColor =
+    agreementPercent >= 75 ? "bg-green-500" :
+    agreementPercent >= 50 ? "bg-yellow-500" : "bg-red-500";
 
   return (
     <div
@@ -170,7 +226,7 @@ function HistoryCard({
           </p>
           <div className="flex flex-wrap items-center gap-3 mt-2 text-xs text-gray-400">
             <span>{date.toLocaleDateString()} {date.toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" })}</span>
-            <span>{item.total_rounds} rounds</span>
+            <span>{item.total_rounds} round{item.total_rounds !== 1 ? "s" : ""}</span>
             <span
               className={`px-2 py-0.5 rounded-full font-medium ${
                 item.termination_reason === "consensus_reached"
@@ -178,25 +234,26 @@ function HistoryCard({
                   : "bg-orange-100 dark:bg-orange-900/40 text-orange-700 dark:text-orange-400"
               }`}
             >
-              {item.termination_reason.replace(/_/g, " ")}
+              {item.termination_reason === "consensus_reached" ? "✓ Consensus" : "Max Rounds"}
             </span>
           </div>
-        </div>
 
-        {/* Agreement gauge */}
-        <div className="flex flex-col items-center shrink-0">
-          <span
-            className={`text-xl font-bold tabular-nums ${
-              agreementPercent >= 75
-                ? "text-green-600 dark:text-green-400"
-                : agreementPercent >= 50
-                ? "text-yellow-600 dark:text-yellow-400"
-                : "text-red-500 dark:text-red-400"
-            }`}
-          >
-            {agreementPercent}%
-          </span>
-          <span className="text-xs text-gray-400">agreement</span>
+          {/* Agreement bar */}
+          <div className="flex items-center gap-2 mt-2">
+            <div className="flex-1 h-1.5 bg-gray-200 dark:bg-gray-700 rounded-full overflow-hidden">
+              <div
+                className={`h-full rounded-full transition-all ${barColor}`}
+                style={{ width: `${agreementPercent}%` }}
+              />
+            </div>
+            <span className={`text-xs font-semibold tabular-nums ${
+              agreementPercent >= 75 ? "text-green-600 dark:text-green-400" :
+              agreementPercent >= 50 ? "text-yellow-600 dark:text-yellow-400" :
+              "text-red-500 dark:text-red-400"
+            }`}>
+              {agreementPercent}% agreement
+            </span>
+          </div>
         </div>
 
         {/* Buttons */}

@@ -42,9 +42,15 @@ class Settings(BaseSettings):
     SECRET_KEY: str = "change-me-in-production-use-a-32-char-secret"
     RATE_LIMIT_PER_MINUTE: int = 30
 
+    # --- Agent Registry ---
+    # Comma-separated list of agent names that are enabled by default.
+    # Override via ENABLED_AGENTS env var to enable/disable agents at runtime.
+    ENABLED_AGENTS: str = "Analyst,Risk,Strategy,Ethics,Moderator"
+
     # --- Persistence ---
     DATABASE_URL: str = "agentboard.db"
     CHECKPOINT_DATABASE_URL: str = "agentboard_checkpoints.db"
+    DEBATE_TTL_DAYS: int = 90  # Debates older than this are removed at startup
 
     # --- LangSmith Observability (Phase 5) ---
     # Set LANGSMITH_TRACING=true in .env to enable full LLM call tracing.
@@ -59,6 +65,14 @@ class Settings(BaseSettings):
     SEMANTIC_MODEL: str = "all-MiniLM-L6-v2"
     # Weight of semantic score vs confidence proxy (0.0 = all confidence, 1.0 = all semantic).
     SEMANTIC_CONSENSUS_WEIGHT: float = 0.5
+
+    # --- Phase 3: Knowledge Base RAG ---
+    # Directory for persistent ChromaDB vector store.
+    KNOWLEDGE_BASE_DIR: str = "knowledge_base"
+
+    # --- Phase 4: Human-in-the-Loop ---
+    # Set False to disable HITL even when supervised mode is requested.
+    HITL_ENABLED: bool = True
 
     model_config = SettingsConfigDict(
         env_file=".env",
