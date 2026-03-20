@@ -197,12 +197,24 @@ export default function CompareContent() {
             />
           </div>
 
-          {/* Confidence delta summary */}
+          {/* Confidence delta summary + run again */}
           {debateA && debateB && (
             <div className="bg-white dark:bg-gray-900 rounded-xl border dark:border-gray-800 p-5">
-              <h3 className="font-semibold text-gray-700 dark:text-gray-300 mb-3 text-sm">
-                Delta Summary (A vs B)
-              </h3>
+              <div className="flex items-center justify-between mb-3">
+                <h3 className="font-semibold text-gray-700 dark:text-gray-300 text-sm">
+                  Delta Summary (A vs B)
+                </h3>
+                <button
+                  onClick={() => {
+                    const q = encodeURIComponent(debateA.user_query);
+                    router.push(`/simulate?query=${q}`);
+                  }}
+                  className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg bg-indigo-600 text-white text-xs font-medium hover:bg-indigo-700 transition"
+                  title="Run both queries again as a simulation to test consistency"
+                >
+                  ↺ Run both debates again
+                </button>
+              </div>
               <div className="grid grid-cols-2 sm:grid-cols-4 gap-4">
                 {[
                   {

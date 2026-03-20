@@ -5,7 +5,7 @@
 
 "use client";
 
-import { useState } from "react";
+import { useState, useEffect } from "react";
 import { runSimulation } from "@/lib/api";
 import type { SimulationResult } from "@/lib/types";
 
@@ -39,6 +39,13 @@ export default function SimulatePage() {
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [result, setResult] = useState<SimulationResult | null>(null);
+
+  // Pre-fill query from URL ?query= param (e.g. navigated from compare page)
+  useEffect(() => {
+    const params = new URLSearchParams(window.location.search);
+    const q = params.get("query");
+    if (q) setQuery(q);
+  }, []);
 
   async function handleSubmit(e: React.FormEvent) {
     e.preventDefault();
