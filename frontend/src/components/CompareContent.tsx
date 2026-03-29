@@ -206,7 +206,7 @@ export default function CompareContent() {
                 </h3>
                 <button
                   onClick={() => {
-                    const q = encodeURIComponent(debateA.user_query);
+                    const q = encodeURIComponent(debateA.query ?? debateA.decision);
                     router.push(`/simulate?query=${q}`);
                   }}
                   className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg bg-indigo-600 text-white text-xs font-medium hover:bg-indigo-700 transition"

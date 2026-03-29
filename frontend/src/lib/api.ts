@@ -21,11 +21,28 @@ import type {
   FinalDecision,
   HistoryListResponse,
   KnowledgeDocument,
+  LLMSettingsResponse,
+  LLMSettingsUpdate,
   SimulationResult,
 } from "./types";
 
+// Use the Next.js proxy path by default (/backend → proxied to localhost:8000).
+// Set NEXT_PUBLIC_API_URL in .env.local to override (e.g. for direct access).
 const API_BASE =
-  process.env.NEXT_PUBLIC_API_URL ?? "http://localhost:8000";
+  process.env.NEXT_PUBLIC_API_URL ?? "/backend";
+
+/**
+ * Build an absolute URL from a path, handling both absolute and relative API_BASE.
+ * `new URL(path)` requires an absolute base, so we prepend window.location.origin
+ * when API_BASE is a relative path (e.g. "/backend").
+ */
+function toAbsoluteURL(path: string): URL {
+  if (API_BASE.startsWith("http://") || API_BASE.startsWith("https://")) {
+    return new URL(path);
+  }
+  // Relative base — resolve against the current page origin (browser only)
+  return new URL(path, window.location.origin);
+}
 
 /* ------------------------------------------------------------------ */
 /* Generic fetcher                                                     */
@@ -171,28 +188,56 @@ export function connectToStream(
   let attempts = 0;
   let lastEventId: string | null = null;
   let retryTimeout: ReturnType<typeof setTimeout> | null = null;
+  // Heartbeat: if no SSE event arrives within 60 s we treat the connection as stale
+  // and force a reconnect so the UI doesn't hang silently.
+  const HEARTBEAT_MS = 60_000;
+  let heartbeatTimer: ReturnType<typeof setTimeout> | null = null;
+
+  function resetHeartbeat(es: EventSource) {
+    if (heartbeatTimer !== null) clearTimeout(heartbeatTimer);
+    heartbeatTimer = setTimeout(() => {
+      es.close();
+      // Trigger the onerror reconnect path by synthesising a close
+      if (!controller.signal.aborted) {
+        attempts += 1;
+        if (attempts > 10) {
+          handlers.onStatusChange?.("disconnected");
+          handlers.onError?.(new Event("max_reconnects"));
+          return;
+        }
+        const delay = Math.min(1000 * Math.pow(2, attempts - 1), 30_000);
+        handlers.onStatusChange?.("reconnecting");
+        retryTimeout = setTimeout(() => {
+          if (!controller.signal.aborted) connect();
+        }, delay);
+      }
+    }, HEARTBEAT_MS);
+  }
 
   function connect() {
     if (controller.signal.aborted) return;
 
-    const url = new URL(`${API_BASE}/debate/${threadId}/stream`);
+    const url = toAbsoluteURL(`${API_BASE}/debate/${threadId}/stream`);
     if (lastEventId !== null) {
       url.searchParams.set("last_event_id", lastEventId);
     }
 
     handlers.onStatusChange?.(attempts === 0 ? "connected" : "reconnecting");
     const eventSource = new EventSource(url.toString());
+    resetHeartbeat(eventSource);
 
     for (const eventType of SSE_EVENTS) {
       eventSource.addEventListener(eventType, (e: MessageEvent) => {
         // Reset backoff on a successful message
         attempts = 0;
+        resetHeartbeat(eventSource);
         // Track SSE id for reconnection
         if (e.lastEventId) lastEventId = e.lastEventId;
         try {
           const data = JSON.parse(e.data) as DebateSSEEvent;
           handlers.onEvent(data);
           if (eventType === "final_decision") {
+            if (heartbeatTimer !== null) clearTimeout(heartbeatTimer);
             handlers.onStatusChange?.("disconnected");
             handlers.onDone?.();
             eventSource.close();
@@ -204,6 +249,7 @@ export function connectToStream(
     }
 
     eventSource.onerror = () => {
+      if (heartbeatTimer !== null) clearTimeout(heartbeatTimer);
       eventSource.close();
       if (controller.signal.aborted) return;
 
@@ -222,6 +268,7 @@ export function connectToStream(
     };
 
     controller.signal.addEventListener("abort", () => {
+      if (heartbeatTimer !== null) clearTimeout(heartbeatTimer);
       eventSource.close();
       if (retryTimeout !== null) clearTimeout(retryTimeout);
     });
@@ -387,6 +434,42 @@ export async function getAnalyticsConvergence(): Promise<AnalyticsConvergence> {
   return requireResult(apiFetch<AnalyticsConvergence>("/analytics/convergence"));
 }
 
+/* ------------------------------------------------------------------ */
+/* LLM provider settings                                              */
+/* ------------------------------------------------------------------ */
+
+export async function getLLMSettings(): Promise<LLMSettingsResponse> {
+  return requireResult(apiFetch<LLMSettingsResponse>("/llm-settings"));
+}
+
+export async function setLLMSettings(
+  update: LLMSettingsUpdate,
+): Promise<LLMSettingsResponse> {
+  return requireResult(
+    apiFetch<LLMSettingsResponse>("/llm-settings", {
+      method: "POST",
+      body: JSON.stringify(update),
+    }),
+  );
+}
+
 export async function getAnalyticsQuality(): Promise<AnalyticsQuality> {
   return requireResult(apiFetch<AnalyticsQuality>("/analytics/quality"));
+}
+
+/* ------------------------------------------------------------------ */
+/* Export                                                              */
+/* ------------------------------------------------------------------ */
+
+export async function exportDecision(
+  threadId: string,
+  format: "markdown" | "pdf",
+): Promise<Blob> {
+  const url = `${API_BASE}/decision/${encodeURIComponent(threadId)}/export?format=${format}`;
+  const res = await fetch(url);
+  const json = res.headers.get("content-type")?.includes("application/json")
+    ? await res.json().catch(() => null)
+    : null;
+  if (!res.ok) throw new ApiError(res.status, json);
+  return res.blob();
 }

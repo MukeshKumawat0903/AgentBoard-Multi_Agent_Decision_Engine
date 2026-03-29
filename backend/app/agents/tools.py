@@ -37,29 +37,15 @@ def _safe_calc(expression: str) -> str:
     """Evaluate a safe arithmetic expression using numexpr."""
     try:
         import numexpr  # type: ignore[import-untyped]
+    except ImportError:
+        return "Error: calculator unavailable — install numexpr (pip install numexpr)."
+    try:
         # Restrict to safe characters to prevent injection
         allowed = set("0123456789+-*/()., eE_abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ^%")
         if not all(c in allowed for c in expression):
             return "Error: expression contains unsafe characters"
         result = numexpr.evaluate(expression.replace("^", "**"))
         return str(result.item() if hasattr(result, "item") else result)
-    except ImportError:
-        # Fallback: evaluate only safe arithmetic using ast
-        import ast
-        try:
-            tree = ast.parse(expression, mode="eval")
-            # Only permit arithmetic nodes
-            _SAFE_NODES = (
-                ast.Expression, ast.BinOp, ast.UnaryOp, ast.Constant,
-                ast.Add, ast.Sub, ast.Mult, ast.Div, ast.Pow, ast.Mod,
-                ast.FloorDiv, ast.USub, ast.UAdd,
-            )
-            for node in ast.walk(tree):
-                if not isinstance(node, _SAFE_NODES):
-                    return "Error: unsupported operation in expression"
-            return str(eval(compile(tree, "<calc>", "eval")))  # noqa: S307
-        except Exception as exc:
-            return f"Error: {exc}"
     except Exception as exc:
         return f"Error: {exc}"
 

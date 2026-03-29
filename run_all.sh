@@ -21,7 +21,7 @@ cd backend
 # Use the virtual environment python to run the application
 # Assuming main.py is the entry point
 # Change to the absolute path or relative path from project root
-./venv/Scripts/python -m uvicorn app.main:app --reload --port 8000 &
+./venv/Scripts/python -m uvicorn app.main:app --reload --host 0.0.0.0 --port 8000 &
 BACKEND_PID=$!
 cd ..
 

@@ -1,5 +1,5 @@
 ﻿/**
- * DebateInput â€“ form for starting a new debate.
+ * DebateInput – form for starting a new debate.
  *
  * Contains a textarea (min 10 chars), debate mode selector, and a submit
  * button with loading state. Supports AbortController-based cancellation
@@ -14,19 +14,19 @@ import { getAgents } from "@/lib/api";
 type DebateMode = "quick" | "standard" | "thorough";
 
 const MODE_OPTIONS: { value: DebateMode; label: string; description: string }[] = [
-  { value: "quick",    label: "âš¡ Quick",    description: "2 rounds Â· No critiques Â· Threshold 0.60" },
-  { value: "standard", label: "âš–ï¸ Standard", description: "4 rounds Â· Full critique Â· Threshold 0.75" },
-  { value: "thorough", label: "ðŸ”¬ Thorough", description: "6 rounds Â· Full critique Â· Threshold 0.85" },
+  { value: "quick",    label: "⚡ Quick",    description: "2 rounds · No critiques · Threshold 0.60" },
+  { value: "standard", label: "⚖️ Standard", description: "4 rounds · Full critique · Threshold 0.75" },
+  { value: "thorough", label: "🔬 Thorough", description: "6 rounds · Full critique · Threshold 0.85" },
 ];
 
 interface AgentOption { name: string; icon: string; role: string; }
 
 const DEFAULT_AGENTS: AgentOption[] = [
-  { name: "Analyst",   icon: "ðŸ“Š", role: "Objective data analyst" },
-  { name: "Risk",      icon: "âš ï¸", role: "Adversarial risk assessor" },
-  { name: "Strategy",  icon: "ðŸŽ¯", role: "Actionable strategy proposer" },
-  { name: "Ethics",    icon: "âš–ï¸", role: "Ethics and compliance guardian" },
-  { name: "Moderator", icon: "ðŸ›ï¸", role: "Neutral synthesizer" },
+  { name: "Analyst",   icon: "📊", role: "Objective data analyst" },
+  { name: "Risk",      icon: "⚠️", role: "Adversarial risk assessor" },
+  { name: "Strategy",  icon: "🎯", role: "Actionable strategy proposer" },
+  { name: "Ethics",    icon: "⚖️", role: "Ethics and compliance guardian" },
+  { name: "Moderator", icon: "🏛️", role: "Neutral synthesizer" },
 ];
 
 export interface DebateOptions {
@@ -132,6 +132,7 @@ export default function DebateInput({
           onBlur={() => setTouched(true)}
           placeholder="e.g. Should our company expand into the Asian market in Q3?"
           disabled={isLoading}
+          maxLength={5000}
           className="w-full rounded-lg border border-gray-300 dark:border-gray-600 px-4 py-3 text-sm
                      bg-white dark:bg-gray-800 text-gray-900 dark:text-gray-100
                      placeholder:text-gray-400 dark:placeholder:text-gray-500
@@ -238,7 +239,7 @@ export default function DebateInput({
           />
           <span className="text-sm text-gray-700 dark:text-gray-300">
             <span className="font-medium">Agent Memory</span>
-            <span className="text-gray-400 dark:text-gray-500 ml-1">â€” use lessons learned from prior debates</span>
+            <span className="text-gray-400 dark:text-gray-500 ml-1">— use lessons learned from prior debates</span>
           </span>
         </label>
         <label className="flex items-center gap-3 cursor-pointer select-none">
@@ -251,7 +252,7 @@ export default function DebateInput({
           />
           <span className="text-sm text-gray-700 dark:text-gray-300">
             <span className="font-medium">Supervised mode</span>
-            <span className="text-gray-400 dark:text-gray-500 ml-1">â€” pause for human review before finalising</span>
+            <span className="text-gray-400 dark:text-gray-500 ml-1">— pause for human review before finalising</span>
           </span>
         </label>
       </div>
@@ -265,7 +266,7 @@ export default function DebateInput({
                      hover:bg-blue-700 focus:ring-2 focus:ring-blue-400 focus:ring-offset-2
                      disabled:opacity-50 disabled:cursor-not-allowed transition"
         >
-          {isLoading ? "Agents are debatingâ€¦" : "Start Debate"}
+          {isLoading ? "Agents are debating…" : "Start Debate"}
         </button>
         {isLoading && onCancel && (
           <button

@@ -75,9 +75,9 @@ class DebateStartRequest(BaseModel):
     )
     consensus_threshold: float | None = Field(
         default=None,
-        ge=0.0,
-        le=1.0,
-        description="Agreement score (0–1) at which debate stops early. Overrides mode preset.",
+        ge=0.1,
+        le=0.95,
+        description="Agreement score (0.1–0.95) at which debate stops early. Overrides mode preset.",
     )
     skip_critique_phase: bool | None = Field(
         default=None,
@@ -243,3 +243,65 @@ class HistoryListResponse(BaseModel):
     total: int
     page: int
     limit: int
+
+
+# ---------------------------------------------------------------------------
+# LLM provider settings – runtime switching from the UI
+# ---------------------------------------------------------------------------
+
+LLMProvider = Literal["groq", "openai", "anthropic"]
+
+# Canonical model lists per provider (used by both backend and frontend).
+PROVIDER_MODELS: dict[str, list[str]] = {
+    "groq": [
+        "llama-3.3-70b-versatile",
+        "llama-3.1-8b-instant",
+        "mixtral-8x7b-32768",
+        "gemma2-9b-it",
+    ],
+    "openai": [
+        "gpt-4o",
+        "gpt-4o-mini",
+        "gpt-4-turbo",
+        "gpt-3.5-turbo",
+    ],
+    "anthropic": [
+        "claude-sonnet-4-20250514",
+        "claude-3-5-haiku-20241022",
+        "claude-3-opus-20240229",
+    ],
+}
+
+
+class LLMSettingsResponse(BaseModel):
+    """Response for GET /llm-settings."""
+
+    provider: LLMProvider
+    model: str
+    available_models: dict[str, list[str]]
+    using_custom_key: bool = Field(
+        description="True when a user-supplied API key is active (non-Groq providers)."
+    )
+
+
+class LLMSettingsUpdate(BaseModel):
+    """Request body for POST /llm-settings."""
+
+    provider: LLMProvider
+    model: str
+    api_key: str | None = Field(
+        default=None,
+        description="Required when provider is 'openai' or 'anthropic'.",
+    )
+
+    @model_validator(mode="after")
+    def require_key_for_non_groq(self) -> "LLMSettingsUpdate":
+        if self.provider != "groq" and not self.api_key:
+            raise ValueError(
+                f"api_key is required when switching to provider '{self.provider}'."
+            )
+        if self.model not in PROVIDER_MODELS.get(self.provider, []):
+            raise ValueError(
+                f"Model '{self.model}' is not available for provider '{self.provider}'."
+            )
+        return self

@@ -85,7 +85,19 @@ class AgentRegistry:
         agent_class: Type[BaseAgent],
         config: AgentConfig,
     ) -> None:
-        """Register an agent class together with its config."""
+        """Register an agent class together with its config.
+
+        Validates that every name in ``config.allowed_tools`` exists in
+        ``TOOL_REGISTRY``.  Raises ``ValueError`` for unknown tool names.
+        """
+        if config.allowed_tools:
+            from app.agents.tools import TOOL_REGISTRY
+            unknown_tools = [t for t in config.allowed_tools if t not in TOOL_REGISTRY]
+            if unknown_tools:
+                raise ValueError(
+                    f"Agent '{config.name}' references unknown tool(s): {unknown_tools}. "
+                    f"Available tools: {sorted(TOOL_REGISTRY)}"
+                )
         self._configs[config.name] = config
         self._classes[config.name] = agent_class
         logger.debug("agent_registered", extra={"name": config.name, "enabled": config.enabled})
@@ -142,6 +154,11 @@ class AgentRegistry:
             "anthropic": settings.ANTHROPIC_API_KEY,
         }
         api_key = api_key_map.get(provider, "")
+        if not api_key:
+            raise ValueError(
+                f"Agent '{config.name}' requests provider '{provider}' but no API key "
+                f"is configured for it.  Set the corresponding *_API_KEY environment variable."
+            )
 
         return LC(provider=provider, api_key=api_key, model=model)
 

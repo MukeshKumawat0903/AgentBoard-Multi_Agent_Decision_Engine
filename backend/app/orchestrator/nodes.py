@@ -99,6 +99,17 @@ def make_proposals_node(
                         "assumptions": result.assumptions,
                     })
                 return result
+            except asyncio.TimeoutError:
+                logger.warning(
+                    "agent_proposal_timeout",
+                    extra={"agent": agent.name, "timeout": _PROPOSAL_TIMEOUT},
+                )
+                emit("agent_timeout", {
+                    "round_number": ds.current_round,
+                    "phase": "proposal",
+                    "agent_name": agent.name,
+                })
+                return None
             except Exception as exc:
                 logger.error(
                     "agent_proposal_failed",
@@ -166,6 +177,17 @@ def make_critiques_node(
                         "confidence_score": result.confidence_score,
                     })
                 return result
+            except asyncio.TimeoutError:
+                logger.warning(
+                    "agent_critique_timeout",
+                    extra={"critic": agent.name, "target": target.agent_name, "timeout": _CRITIQUE_TIMEOUT},
+                )
+                emit("agent_timeout", {
+                    "round_number": ds.current_round,
+                    "phase": "critique",
+                    "agent_name": agent.name,
+                })
+                return None
             except Exception as exc:
                 logger.error(
                     "agent_critique_failed",
@@ -250,6 +272,17 @@ def make_revisions_node(
                         "assumptions": result.assumptions,
                     })
                 return result
+            except asyncio.TimeoutError:
+                logger.warning(
+                    "agent_revision_timeout",
+                    extra={"agent": agent.name, "timeout": _REVISION_TIMEOUT},
+                )
+                emit("agent_timeout", {
+                    "round_number": ds.current_round,
+                    "phase": "revision",
+                    "agent_name": agent.name,
+                })
+                return None
             except Exception as exc:
                 logger.error(
                     "agent_revision_failed",
@@ -561,11 +594,17 @@ def make_finalize_node(
                 saved_names: set[str] = set()
                 for output in round_data.agent_outputs:
                     if output.agent_name not in saved_names:
-                        asyncio.create_task(
+                        task = asyncio.create_task(
                             memory_store.save_memory(
                                 output.agent_name,
                                 ds.thread_id,
                                 output.position,
+                            )
+                        )
+                        task.add_done_callback(
+                            lambda t: t.exception() and logger.warning(
+                                "agent_memory_save_failed",
+                                extra={"error": str(t.exception())},
                             )
                         )
                         saved_names.add(output.agent_name)

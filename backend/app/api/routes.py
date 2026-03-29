@@ -38,15 +38,19 @@ from app.schemas.api_models import (
     ErrorResponse,
     HistoryItem,
     HistoryListResponse,
+    LLMSettingsResponse,
+    LLMSettingsUpdate,
+    PROVIDER_MODELS,
     resolve_debate_config,
 )
 from app.schemas.final_decision import FinalDecision
 from app.core.audit import audit_event
 from app.core.metrics import app_metrics
 from app.core.rate_limiter import limiter
-from app.services.llm_client import LangChainProvider
+from app.services.llm_client import LangChainProvider, get_active_provider_info, reset_llm_client
 from app.agents.registry import registry
 from app.data.templates import TEMPLATES, TEMPLATES_BY_ID
+from app.api.dependencies import get_thread_lock
 
 router = APIRouter()
 logger = logging.getLogger("agentboard.api")
@@ -146,6 +150,7 @@ async def _run_debate_background(
     """Run the debate graph, persist results, then close all subscriber queues."""
     thread_id = debate_state.thread_id
     should_close_streams = True
+    lock = get_thread_lock(thread_id)
     try:
         final_state, decision = await graph.run(
             debate_state.user_query,
@@ -154,7 +159,8 @@ async def _run_debate_background(
             skip_critique_phase=skip_critique_phase,
             hitl_mode=hitl_mode,
         )
-        debate_store[thread_id] = final_state
+        async with lock:
+            debate_store[thread_id] = final_state
         if decision is None and final_state.status == "awaiting_approval":
             should_close_streams = False
             app_metrics.increment_event("debate.awaiting_approval")
@@ -162,7 +168,8 @@ async def _run_debate_background(
             logger.info("background_debate_paused_for_approval", extra={"thread_id": thread_id})
             return
 
-        decision_store[thread_id] = decision
+        async with lock:
+            decision_store[thread_id] = decision
         app_metrics.increment_event("debate.completed_async")
         await _persist_debate(final_state, decision, database_url)
         final_payload = json.loads(decision.model_dump_json())
@@ -1262,4 +1269,63 @@ async def list_domain_packs():
     from app.data.domain_packs import DOMAIN_PACKS_BY_ID
 
     return list(DOMAIN_PACKS_BY_ID.values())
+
+
+# ---------------------------------------------------------------------------
+# LLM provider settings — runtime switching from the UI
+# ---------------------------------------------------------------------------
+
+@router.get(
+    "/llm-settings",
+    response_model=LLMSettingsResponse,
+    tags=["system"],
+    summary="Get the currently active LLM provider and model.",
+)
+async def get_llm_settings() -> LLMSettingsResponse:
+    """
+    Returns the active provider, model, available choices, and whether
+    a user-supplied API key is in use.  Never exposes API key values.
+    """
+    info = get_active_provider_info()
+    return LLMSettingsResponse(
+        provider=info["provider"],
+        model=info["model"],
+        available_models=PROVIDER_MODELS,
+        using_custom_key=info["using_custom_key"],
+    )
+
+
+@router.post(
+    "/llm-settings",
+    response_model=LLMSettingsResponse,
+    tags=["system"],
+    summary="Switch the active LLM provider and model at runtime.",
+)
+async def update_llm_settings(body: LLMSettingsUpdate) -> LLMSettingsResponse:
+    """
+    Switches the global LLM singleton to the requested provider/model.
+
+    - **Groq**: uses the server-side GROQ_API_KEY from .env (no user key needed).
+    - **OpenAI / Anthropic**: ``api_key`` must be supplied by the caller and is
+      held in memory only — never persisted to disk.
+    """
+    from app.core.config import settings as app_settings
+
+    if body.provider == "groq":
+        # Always fall back to the server-configured Groq key
+        api_key = app_settings.GROQ_API_KEY
+    else:
+        api_key = body.api_key or ""
+
+    reset_llm_client(provider=body.provider, api_key=api_key, model=body.model)
+    logger.info(
+        "llm_provider_switched_via_api",
+        extra={"provider": body.provider, "model": body.model},
+    )
+    return LLMSettingsResponse(
+        provider=body.provider,
+        model=body.model,
+        available_models=PROVIDER_MODELS,
+        using_custom_key=(body.provider != "groq"),
+    )
 

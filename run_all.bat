@@ -23,7 +23,7 @@ if exist "%BACKEND_DIR%\.env" (
 
 REM Start backend using the ROOT venv Python (has all pip-installed deps incl. langgraph)
 REM backend\venv is a separate, incomplete venv – always use %ROOT%venv\Scripts\python.exe
-start "Backend" cmd /c "cd /d "%BACKEND_DIR%" && "%ROOT%venv\Scripts\python.exe" -m uvicorn app.main:app --reload --app-dir "%BACKEND_DIR%" --host 127.0.0.1 --port 8000"
+start "Backend" cmd /c "cd /d "%BACKEND_DIR%" && "%ROOT%venv\Scripts\python.exe" -m uvicorn app.main:app --reload --app-dir "%BACKEND_DIR%" --host 0.0.0.0 --port 8000"
 
 REM 2. Start Frontend (Next.js)
 echo Starting Frontend (Next.js)...

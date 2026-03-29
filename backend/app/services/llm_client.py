@@ -226,6 +226,9 @@ GroqClient = LangChainProvider
 # ---------------------------------------------------------------------------
 
 _llm_client_instance: LangChainProvider | None = None
+# True when the active client was configured via a user-supplied API key
+# (i.e. not the key baked into .env).
+_using_custom_key: bool = False
 
 
 def get_llm_client() -> LangChainProvider:
@@ -251,3 +254,34 @@ def get_llm_client() -> LangChainProvider:
             model=model,
         )
     return _llm_client_instance
+
+
+def reset_llm_client(provider: str, api_key: str, model: str) -> LangChainProvider:
+    """
+    Replace the global singleton with a new provider/model/key combination.
+
+    Called by the POST /llm-settings endpoint so all subsequent debate
+    requests use the user-selected backend without a server restart.
+    """
+    global _llm_client_instance, _using_custom_key
+    _llm_client_instance = LangChainProvider(
+        provider=provider,
+        api_key=api_key,
+        model=model,
+    )
+    _using_custom_key = True
+    logger.info(
+        "llm_client_switched",
+        extra={"provider": provider, "model": model},
+    )
+    return _llm_client_instance
+
+
+def get_active_provider_info() -> dict:
+    """Return a snapshot of the current provider, model, and custom-key flag."""
+    client = get_llm_client()
+    return {
+        "provider": client.provider,
+        "model": client.model,
+        "using_custom_key": _using_custom_key,
+    }

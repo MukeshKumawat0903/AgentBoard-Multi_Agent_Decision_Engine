@@ -19,6 +19,17 @@ from app.services.llm_client import LangChainProvider, get_llm_client
 _debate_store: dict[str, DebateState] = {}
 _decision_store: dict[str, FinalDecision] = {}
 
+# Per-thread asyncio locks – prevent concurrent mutation of the same debate
+# state from a background task and an SSE handler running in the same loop.
+_thread_locks: dict[str, asyncio.Lock] = {}
+
+
+def get_thread_lock(thread_id: str) -> asyncio.Lock:
+    """Return (creating if needed) the asyncio.Lock for a given thread_id."""
+    if thread_id not in _thread_locks:
+        _thread_locks[thread_id] = asyncio.Lock()
+    return _thread_locks[thread_id]
+
 # SSE streaming – per thread_id list of asyncio.Queue objects that receive
 # broadcast events from a running DebateController.
 _event_queues: dict[str, list] = {}

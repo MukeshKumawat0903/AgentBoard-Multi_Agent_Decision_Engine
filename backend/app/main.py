@@ -209,7 +209,7 @@ async def lifespan(app: FastAPI):
 app = FastAPI(
     title="AgentBoard",
     description="Multi-Agent Decision Engine – AI agents debate, critique, and converge to structured decisions.",
-    version="0.2.0",
+    version=settings.APP_VERSION,
     lifespan=lifespan,
 )
 
@@ -244,8 +244,8 @@ app.add_middleware(
     CORSMiddleware,
     allow_origins=settings.CORS_ORIGINS,
     allow_credentials=True,
-    allow_methods=["*"],
-    allow_headers=["*"],
+    allow_methods=["GET", "POST", "DELETE", "OPTIONS"],
+    allow_headers=["Content-Type", "Authorization", "X-Request-ID", "Last-Event-ID"],
 )
 
 # --- Include API Routers ---

@@ -2,6 +2,7 @@ import type { Metadata } from "next";
 import { Inter } from "next/font/google";
 import "./globals.css";
 import ThemeToggle from "@/components/ThemeToggle";
+import LLMSettingsPanel from "@/components/LLMSettingsPanel";
 
 const inter = Inter({ subsets: ["latin"] });
 
@@ -77,6 +78,7 @@ export default function RootLayout({
               >
                 Analytics
               </a>
+              <LLMSettingsPanel />
               <ThemeToggle />
             </nav>
           </div>
@@ -89,7 +91,7 @@ export default function RootLayout({
         <footer className="border-t border-gray-200 dark:border-gray-800 mt-12">
           <div className="max-w-5xl mx-auto px-4 py-6 text-center text-xs text-gray-400 dark:text-gray-600">
             AgentBoard &copy; {new Date().getFullYear()} &mdash; Powered by
-            GROQ &amp; LLaMA
+            Groq, OpenAI &amp; Anthropic via LangChain
           </div>
         </footer>
       </body>

@@ -6,11 +6,9 @@
 
 import { useState, useEffect, useCallback } from "react";
 import type { FinalDecision, EvaluationResult } from "@/lib/types";
-import { evaluateDecision } from "@/lib/api";
+import { evaluateDecision, exportDecision } from "@/lib/api";
 import ConfidenceMeter from "./ConfidenceMeter";
 import DebateTimeline from "./DebateTimeline";
-
-const API_BASE = process.env.NEXT_PUBLIC_API_URL ?? "http://localhost:8000";
 
 interface FinalDecisionPanelProps {
   decision: FinalDecision;
@@ -55,11 +53,7 @@ export default function FinalDecisionPanel({ decision }: FinalDecisionPanelProps
   async function handleExport(format: "markdown" | "pdf") {
     setExportLoading(format);
     try {
-      const res = await fetch(
-        `${API_BASE}/decision/${decision.thread_id}/export?format=${format}`
-      );
-      if (!res.ok) throw new Error(`Export failed: ${res.status}`);
-      const blob = await res.blob();
+      const blob = await exportDecision(decision.thread_id, format);
       const url = URL.createObjectURL(blob);
       const a = document.createElement("a");
       a.href = url;

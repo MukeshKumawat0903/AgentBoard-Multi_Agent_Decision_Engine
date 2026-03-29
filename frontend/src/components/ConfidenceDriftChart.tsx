@@ -7,6 +7,7 @@
 
 "use client";
 
+import { useMemo } from "react";
 import {
   LineChart,
   Line,
@@ -37,20 +38,28 @@ export default function ConfidenceDriftChart({
 }: ChartProps) {
   if (rounds.length === 0) return null;
 
-  // Collect all agent names across rounds
-  const agentNames = Array.from(
-    new Set(rounds.flatMap((r) => r.agent_outputs.map((o) => o.agent_name)))
+  // Collect all agent names across rounds — memoised to avoid re-building on every render
+  const agentNames = useMemo(
+    () =>
+      Array.from(
+        new Set(rounds.flatMap((r) => r.agent_outputs.map((o) => o.agent_name)))
+      ),
+    [rounds]
   );
 
-  // Build per-round data rows
-  const data: ChartRow[] = rounds.map((round) => {
-    const row: ChartRow = { round: round.round_number };
-    for (const name of agentNames) {
-      const output = round.agent_outputs.find((o) => o.agent_name === name);
-      if (output) row[name] = output.confidence_score;
-    }
-    return row;
-  });
+  // Build per-round data rows — memoised alongside agentNames
+  const data = useMemo<ChartRow[]>(
+    () =>
+      rounds.map((round) => {
+        const row: ChartRow = { round: round.round_number };
+        for (const name of agentNames) {
+          const output = round.agent_outputs.find((o) => o.agent_name === name);
+          if (output) row[name] = output.confidence_score;
+        }
+        return row;
+      }),
+    [rounds, agentNames]
+  );
 
   // Find convergence round (last round if debate is done)
   const convergenceRound =

@@ -423,3 +423,38 @@ export interface AnalyticsQuality {
   best_performing_templates: string[];
   worst_performing_templates: string[];
 }
+
+/* ------------------------------------------------------------------ */
+/* LLM provider settings                                               */
+/* ------------------------------------------------------------------ */
+
+export type LLMProvider = "groq" | "openai" | "anthropic";
+
+export interface LLMSettingsResponse {
+  provider: LLMProvider;
+  model: string;
+  available_models: Record<LLMProvider, string[]>;
+  using_custom_key: boolean;
+}
+
+export interface LLMSettingsUpdate {
+  provider: LLMProvider;
+  model: string;
+  api_key?: string;
+}
+
+/** Client-side canonical model lists — kept in sync with PROVIDER_MODELS in backend. */
+export const PROVIDER_MODELS: Record<LLMProvider, string[]> = {
+  groq: [
+    "llama-3.3-70b-versatile",
+    "llama-3.1-8b-instant",
+    "mixtral-8x7b-32768",
+    "gemma2-9b-it",
+  ],
+  openai: ["gpt-4o", "gpt-4o-mini", "gpt-4-turbo", "gpt-3.5-turbo"],
+  anthropic: [
+    "claude-sonnet-4-20250514",
+    "claude-3-5-haiku-20241022",
+    "claude-3-opus-20240229",
+  ],
+};
