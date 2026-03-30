@@ -64,7 +64,7 @@ export default function SimulatePage() {
   }
 
   return (
-    <div className="max-w-3xl mx-auto px-4 py-8 space-y-8">
+    <div className="max-w-3xl mx-auto px-4 py-8 space-y-8 animate-fadeIn">
       <div>
         <h1 className="text-2xl font-bold text-gray-800 dark:text-gray-100 mb-1">Scenario Simulation</h1>
         <p className="text-sm text-gray-500 dark:text-gray-400">

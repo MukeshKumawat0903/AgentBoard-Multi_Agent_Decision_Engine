@@ -12,10 +12,14 @@ import {
   deleteKnowledgeDocument,
 } from "@/lib/api";
 import type { KnowledgeDocument } from "@/lib/types";
+import { useToast } from "@/components/Toast";
+import { SkeletonList } from "@/components/Skeleton";
 
 export default function KnowledgePage() {
+  const { showToast } = useToast();
   const [docs, setDocs] = useState<KnowledgeDocument[]>([]);
   const [loading, setLoading] = useState(true);
+  const [fetchError, setFetchError] = useState<string | null>(null);
   const [uploading, setUploading] = useState(false);
   const [uploadError, setUploadError] = useState<string | null>(null);
   const [deleteTarget, setDeleteTarget] = useState<string | null>(null);
@@ -23,9 +27,12 @@ export default function KnowledgePage() {
 
   async function fetchDocs() {
     setLoading(true);
+    setFetchError(null);
     try {
       const result = await listKnowledgeDocuments();
       setDocs(result);
+    } catch (err) {
+      setFetchError(err instanceof Error ? err.message : "Failed to load documents.");
     } finally {
       setLoading(false);
     }
@@ -55,14 +62,14 @@ export default function KnowledgePage() {
       await deleteKnowledgeDocument(name);
       setDocs((prev) => prev.filter((d) => d.name !== name));
     } catch (err) {
-      alert(err instanceof Error ? err.message : "Delete failed.");
+      showToast(err instanceof Error ? err.message : "Delete failed.", "error");
     } finally {
       setDeleteTarget(null);
     }
   }
 
   return (
-    <div className="max-w-3xl mx-auto px-4 py-8 space-y-8">
+    <div className="max-w-3xl mx-auto px-4 py-8 space-y-8 animate-fadeIn">
       <div>
         <h1 className="text-2xl font-bold text-gray-800 dark:text-gray-100 mb-1">Knowledge Base</h1>
         <p className="text-sm text-gray-500 dark:text-gray-400">
@@ -116,13 +123,38 @@ export default function KnowledgePage() {
         </div>
 
         {loading ? (
-          <div className="flex items-center justify-center py-12 text-gray-400">
-            <div className="w-5 h-5 border-2 border-blue-400 border-t-transparent rounded-full animate-spin mr-2" />
-            Loading…
+          <SkeletonList count={3} className="px-4 py-4" />
+        ) : fetchError ? (
+          <div className="py-8 text-center space-y-3">
+            <p className="text-sm text-red-500 dark:text-red-400">{fetchError}</p>
+            <button
+              onClick={fetchDocs}
+              className="text-xs text-blue-600 dark:text-blue-400 hover:underline"
+            >
+              Retry
+            </button>
           </div>
         ) : docs.length === 0 ? (
-          <div className="py-12 text-center text-sm text-gray-400">
-            No documents indexed yet. Upload a file above.
+          <div className="flex flex-col items-center justify-center py-14 gap-4 text-center">
+            <svg width="56" height="56" viewBox="0 0 56 56" fill="none" aria-hidden="true">
+              <rect width="56" height="56" rx="14" className="fill-gray-100 dark:fill-gray-800" />
+              <rect x="16" y="12" width="24" height="30" rx="3" className="fill-gray-300 dark:fill-gray-600" />
+              <rect x="20" y="18" width="16" height="2" rx="1" className="fill-white dark:fill-gray-500" />
+              <rect x="20" y="23" width="12" height="2" rx="1" className="fill-white dark:fill-gray-500" />
+              <rect x="20" y="28" width="14" height="2" rx="1" className="fill-white dark:fill-gray-500" />
+              <circle cx="38" cy="38" r="9" className="fill-blue-500" />
+              <path d="M38 34v8M34 38h8" stroke="white" strokeWidth="1.5" strokeLinecap="round" />
+            </svg>
+            <div>
+              <p className="font-semibold text-gray-700 dark:text-gray-300">No documents indexed yet</p>
+              <p className="text-sm text-gray-400 dark:text-gray-500 mt-1">Upload a PDF, TXT, or Markdown file above to get started.</p>
+            </div>
+            <button
+              onClick={() => fileInputRef.current?.click()}
+              className="px-4 py-2 rounded-lg bg-blue-600 text-white text-sm font-medium hover:bg-blue-700 transition focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-blue-500"
+            >
+              Upload a document
+            </button>
           </div>
         ) : (
           <ul className="divide-y dark:divide-gray-800">

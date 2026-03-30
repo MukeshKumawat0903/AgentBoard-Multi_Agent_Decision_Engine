@@ -8,6 +8,7 @@
 import { useState, useEffect } from "react";
 import { getAgentMemory, clearAgentMemory } from "@/lib/api";
 import type { MemoryEntry } from "@/lib/api";
+import { SkeletonText } from "@/components/Skeleton";
 
 const KNOWN_AGENTS = [
   { name: "analyst", label: "Analyst", icon: "🔍" },
@@ -94,7 +95,7 @@ export default function MemoryPage() {
   }
 
   return (
-    <div className="max-w-3xl mx-auto px-4 py-8 space-y-6">
+    <div className="max-w-3xl mx-auto px-4 py-8 space-y-6 animate-fadeIn">
       <div>
         <h1 className="text-2xl font-bold text-gray-800 dark:text-gray-100 mb-1">Agent Memory</h1>
         <p className="text-sm text-gray-500 dark:text-gray-400">
@@ -135,14 +136,22 @@ export default function MemoryPage() {
 
             <div className="px-5 py-3">
               {state.loading ? (
-                <div className="flex items-center gap-2 text-sm text-gray-400 py-2">
-                  <div className="w-4 h-4 border-2 border-blue-400 border-t-transparent rounded-full animate-spin" />
-                  Loading…
+                <div className="py-3">
+                  <SkeletonText lines={3} />
                 </div>
               ) : state.error ? (
                 <p className="text-xs text-red-500 py-2">{state.error}</p>
               ) : !hasEntries ? (
-                <p className="text-xs text-gray-400 py-2">No memories stored yet.</p>
+                <div className="flex flex-col items-center gap-3 py-6 text-center">
+                  <svg width="40" height="40" viewBox="0 0 40 40" fill="none" aria-hidden="true">
+                    <rect width="40" height="40" rx="10" className="fill-gray-100 dark:fill-gray-800" />
+                    <circle cx="20" cy="16" r="5" className="fill-gray-300 dark:fill-gray-600" />
+                    <rect x="10" y="25" width="20" height="3" rx="1.5" className="fill-gray-200 dark:fill-gray-700" />
+                    <rect x="14" y="31" width="12" height="2.5" rx="1.25" className="fill-gray-200 dark:fill-gray-700" />
+                  </svg>
+                  <p className="text-xs text-gray-500 dark:text-gray-400">No memories stored yet.</p>
+                  <p className="text-xs text-gray-400 dark:text-gray-500">Run a debate with <span className="font-medium">Agent Memory</span> enabled to populate this.</p>
+                </div>
               ) : (
                 <ul className="space-y-3 py-1">
                   {state.entries.map((entry, i) => (

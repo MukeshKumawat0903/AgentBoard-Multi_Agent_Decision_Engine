@@ -9,6 +9,7 @@ import { useEffect, useState, useCallback, useMemo } from "react";
 import { useRouter } from "next/navigation";
 import type { HistoryItem, HistoryListResponse } from "@/lib/types";
 import { getHistory, ApiError } from "@/lib/api";
+import { SkeletonList } from "@/components/Skeleton";
 
 const LIMIT = 15;
 
@@ -46,6 +47,15 @@ export default function HistoryPage() {
     load(page, query);
   }, [page, query, load]);
 
+  // Debounce inputValue → query (300 ms). Resets to page 1 on each new search.
+  useEffect(() => {
+    const timer = setTimeout(() => {
+      setPage(1);
+      setQuery(inputValue.trim());
+    }, 300);
+    return () => clearTimeout(timer);
+  }, [inputValue]);
+
   function handleSearch(e: React.FormEvent) {
     e.preventDefault();
     setPage(1);
@@ -75,7 +85,7 @@ export default function HistoryPage() {
   const totalPages = data ? Math.ceil(data.total / LIMIT) : 0;
 
   return (
-    <div className="max-w-4xl mx-auto space-y-6">
+    <div className="max-w-4xl mx-auto space-y-6 animate-fadeIn">
       {/* Header */}
       <div>
         <h1 className="text-2xl font-bold text-gray-800 dark:text-gray-100">
@@ -146,20 +156,49 @@ export default function HistoryPage() {
 
       {/* Results */}
       {error && (
-        <div className="p-4 rounded-lg bg-red-50 dark:bg-red-900/30 border border-red-200 dark:border-red-800 text-sm text-red-700 dark:text-red-400">
-          {error}
+        <div className="flex items-center justify-between gap-4 p-4 rounded-lg bg-red-50 dark:bg-red-900/30 border border-red-200 dark:border-red-800 text-sm text-red-700 dark:text-red-400">
+          <span>{error}</span>
+          <button
+            type="button"
+            onClick={() => load(page, query)}
+            className="shrink-0 text-xs font-medium underline hover:no-underline"
+          >
+            Retry
+          </button>
         </div>
       )}
 
       {loading ? (
-        <div className="flex justify-center py-16">
-          <div className="w-6 h-6 border-4 border-blue-500 border-t-transparent rounded-full animate-spin" />
-        </div>
-      ) : filteredItems.length === 0 ? (
-        <div className="text-center py-16 text-gray-400">
-          {query || terminationFilter !== "all"
-            ? "No debates match the current filters."
-            : "No completed debates yet."}
+        <SkeletonList count={5} />
+      ) : !error && filteredItems.length === 0 ? (
+        <div className="flex flex-col items-center justify-center py-20 gap-5 text-center">
+          <svg width="64" height="64" viewBox="0 0 64 64" fill="none" aria-hidden="true">
+            <rect width="64" height="64" rx="16" className="fill-gray-100 dark:fill-gray-800" />
+            <rect x="16" y="20" width="32" height="4" rx="2" className="fill-gray-300 dark:fill-gray-600" />
+            <rect x="16" y="29" width="24" height="3" rx="1.5" className="fill-gray-200 dark:fill-gray-700" />
+            <rect x="16" y="36" width="28" height="3" rx="1.5" className="fill-gray-200 dark:fill-gray-700" />
+            <rect x="16" y="43" width="20" height="3" rx="1.5" className="fill-gray-200 dark:fill-gray-700" />
+          </svg>
+          <div>
+            <p className="font-semibold text-gray-700 dark:text-gray-300 text-base">
+              {query || terminationFilter !== "all"
+                ? "No debates match the current filters."
+                : "No debates yet"}
+            </p>
+            {!query && terminationFilter === "all" && (
+              <p className="text-sm text-gray-400 dark:text-gray-500 mt-1">
+                Start your first debate to see it here.
+              </p>
+            )}
+          </div>
+          {!query && terminationFilter === "all" && (
+            <a
+              href="/"
+              className="px-5 py-2.5 rounded-lg bg-blue-600 text-white text-sm font-medium hover:bg-blue-700 transition focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-blue-500"
+            >
+              Start your first debate →
+            </a>
+          )}
         </div>
       ) : (
         <div className="space-y-3">

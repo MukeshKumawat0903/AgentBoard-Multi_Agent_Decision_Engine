@@ -44,6 +44,7 @@ import type {
   AnalyticsConvergence,
   AnalyticsQuality,
 } from "@/lib/types";
+import { SkeletonKpi, SkeletonChart } from "@/components/Skeleton";
 
 /* ------------------------------------------------------------------ */
 /* Helpers                                                             */
@@ -119,7 +120,7 @@ function AgreementMatrix({ matrix }: { matrix: Record<string, Record<string, num
     return <p className="text-sm text-gray-400">No agent data yet.</p>;
 
   return (
-    <div className="overflow-x-auto">
+    <div className="overflow-x-auto custom-scroll">
       <table className="text-xs border-collapse">
         <thead>
           <tr>
@@ -398,8 +399,24 @@ export default function AnalyticsPage() {
 
   if (isLoading)
     return (
-      <div className="flex justify-center py-24">
-        <div className="w-8 h-8 border-4 border-blue-500 border-t-transparent rounded-full animate-spin" />
+      <div className="max-w-5xl mx-auto space-y-6 animate-fadeIn">
+        <div>
+          <div className="h-7 w-48 rounded bg-gray-200 dark:bg-gray-700 animate-pulse mb-2" />
+          <div className="h-4 w-72 rounded bg-gray-100 dark:bg-gray-800 animate-pulse" />
+        </div>
+        {/* Tab bar skeleton */}
+        <div className="flex gap-4 border-b border-gray-200 dark:border-gray-700 pb-2">
+          {["Overview", "Agents", "Quality"].map((t) => (
+            <div key={t} className="h-5 w-16 rounded bg-gray-200 dark:bg-gray-700 animate-pulse" />
+          ))}
+        </div>
+        {/* KPI grid */}
+        <div className="grid grid-cols-2 sm:grid-cols-4 gap-4">
+          {Array.from({ length: 4 }).map((_, i) => <SkeletonKpi key={i} />)}
+        </div>
+        {/* Chart placeholders */}
+        <SkeletonChart height={240} className="rounded-xl border border-gray-200 dark:border-gray-700" />
+        <SkeletonChart height={200} className="rounded-xl border border-gray-200 dark:border-gray-700" />
       </div>
     );
 
@@ -413,7 +430,7 @@ export default function AnalyticsPage() {
     );
 
   return (
-    <div className="max-w-5xl mx-auto space-y-6">
+    <div className="max-w-5xl mx-auto space-y-6 animate-fadeIn">
       {/* Header */}
       <div>
         <h1 className="text-2xl font-bold text-gray-800 dark:text-gray-100">
@@ -467,6 +484,29 @@ export default function AnalyticsPage() {
               sub="converged debates"
             />
           </div>
+
+          {/* Illustrated empty state when no debates yet */}
+          {(overview?.total_debates ?? 0) === 0 && (
+            <div className="flex flex-col items-center justify-center py-16 gap-5 text-center rounded-xl border border-dashed border-gray-300 dark:border-gray-700">
+              <svg width="64" height="64" viewBox="0 0 64 64" fill="none" aria-hidden="true">
+                <rect width="64" height="64" rx="16" className="fill-blue-50 dark:fill-blue-950/30" />
+                <rect x="12" y="36" width="8" height="16" rx="2" className="fill-blue-200 dark:fill-blue-700" />
+                <rect x="24" y="28" width="8" height="24" rx="2" className="fill-blue-400 dark:fill-blue-500" />
+                <rect x="36" y="20" width="8" height="32" rx="2" className="fill-blue-600 dark:fill-blue-400" />
+                <path d="M10 50 Q16 38 28 30 Q40 22 52 18" stroke="#3B82F6" strokeWidth="1.5" strokeDasharray="3 2" strokeLinecap="round" fill="none" />
+              </svg>
+              <div>
+                <p className="font-semibold text-gray-700 dark:text-gray-300">Analytics appear after your first debate</p>
+                <p className="text-sm text-gray-400 dark:text-gray-500 mt-1">Run a debate to start seeing performance insights.</p>
+              </div>
+              <a
+                href="/"
+                className="px-5 py-2.5 rounded-lg bg-blue-600 text-white text-sm font-medium hover:bg-blue-700 transition focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-blue-500"
+              >
+                Start a debate →
+              </a>
+            </div>
+          )}
 
           {/* Debate trend */}
           <Section title="Debates per day (last 30 days)">

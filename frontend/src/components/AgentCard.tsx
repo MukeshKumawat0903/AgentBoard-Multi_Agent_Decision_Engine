@@ -23,7 +23,7 @@ export default function AgentCard({ response }: AgentCardProps) {
 
   return (
     <div
-      className="rounded-xl border shadow-sm overflow-hidden dark:bg-gray-900"
+      className="rounded-xl border shadow-sm overflow-hidden dark:bg-gray-900 transition-all duration-200 hover:-translate-y-0.5 hover:shadow-md"
       style={{ borderColor: meta.color }}
     >
       {/* Header */}

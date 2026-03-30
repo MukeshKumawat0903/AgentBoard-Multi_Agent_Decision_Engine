@@ -1,8 +1,8 @@
 import type { Metadata } from "next";
 import { Inter } from "next/font/google";
 import "./globals.css";
-import ThemeToggle from "@/components/ThemeToggle";
-import LLMSettingsPanel from "@/components/LLMSettingsPanel";
+import NavBar from "@/components/NavBar";
+import { ToastProvider } from "@/components/Toast";
 
 const inter = Inter({ subsets: ["latin"] });
 
@@ -28,72 +28,21 @@ export default function RootLayout({
         />
       </head>
       <body className={inter.className}>
-        {/* Top navigation */}
-        <header className="sticky top-0 z-50 bg-white/80 dark:bg-gray-900/80 backdrop-blur border-b border-gray-200 dark:border-gray-800">
-          <div className="max-w-5xl mx-auto px-4 h-14 flex items-center justify-between">
-            <a href="/" className="flex items-center gap-2 font-bold text-gray-800 dark:text-gray-100">
-              <span className="text-xl">🎯</span>
-              <span>AgentBoard</span>
-            </a>
-            <nav className="flex items-center gap-1 sm:gap-3">
-              <a
-                href="/"
-                className="text-sm text-gray-500 dark:text-gray-400 hover:text-gray-800 dark:hover:text-gray-100 transition px-2 py-1 rounded"
-              >
-                New Debate
-              </a>
-              <a
-                href="/history"
-                className="text-sm text-gray-500 dark:text-gray-400 hover:text-gray-800 dark:hover:text-gray-100 transition px-2 py-1 rounded"
-              >
-                History
-              </a>
-              <a
-                href="/compare"
-                className="text-sm text-gray-500 dark:text-gray-400 hover:text-gray-800 dark:hover:text-gray-100 transition px-2 py-1 rounded"
-              >
-                Compare
-              </a>
-              <a
-                href="/simulate"
-                className="text-sm text-gray-500 dark:text-gray-400 hover:text-gray-800 dark:hover:text-gray-100 transition px-2 py-1 rounded"
-              >
-                Simulate
-              </a>
-              <a
-                href="/knowledge"
-                className="text-sm text-gray-500 dark:text-gray-400 hover:text-gray-800 dark:hover:text-gray-100 transition px-2 py-1 rounded"
-              >
-                Knowledge
-              </a>
-              <a
-                href="/memory"
-                className="text-sm text-gray-500 dark:text-gray-400 hover:text-gray-800 dark:hover:text-gray-100 transition px-2 py-1 rounded"
-              >
-                Memory
-              </a>
-              <a
-                href="/analytics"
-                className="text-sm text-gray-500 dark:text-gray-400 hover:text-gray-800 dark:hover:text-gray-100 transition px-2 py-1 rounded"
-              >
-                Analytics
-              </a>
-              <LLMSettingsPanel />
-              <ThemeToggle />
-            </nav>
-          </div>
-        </header>
+        <ToastProvider>
+          {/* Top navigation */}
+          <NavBar />
 
-        {/* Main content */}
-        <main className="max-w-5xl mx-auto px-4 py-8">{children}</main>
+          {/* Main content */}
+          <main id="main-content" className="max-w-5xl mx-auto px-4 py-8">{children}</main>
 
-        {/* Footer */}
-        <footer className="border-t border-gray-200 dark:border-gray-800 mt-12">
-          <div className="max-w-5xl mx-auto px-4 py-6 text-center text-xs text-gray-400 dark:text-gray-600">
-            AgentBoard &copy; {new Date().getFullYear()} &mdash; Powered by
-            Groq, OpenAI &amp; Anthropic via LangChain
-          </div>
-        </footer>
+          {/* Footer */}
+          <footer className="border-t border-gray-200 dark:border-gray-800 mt-12">
+            <div className="max-w-5xl mx-auto px-4 py-6 text-center text-xs text-gray-400 dark:text-gray-600">
+              AgentBoard &copy; {new Date().getFullYear()} &mdash; Powered by
+              Groq, OpenAI &amp; Anthropic via LangChain
+            </div>
+          </footer>
+        </ToastProvider>
       </body>
     </html>
   );

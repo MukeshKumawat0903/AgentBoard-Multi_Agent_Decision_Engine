@@ -230,7 +230,7 @@ export default function LLMSettingsPanel() {
 
       {/* ---- Modal overlay — rendered via portal to escape header stacking context ---- */}
       {mounted && open && createPortal(
-        <div className="fixed inset-0 z-[9999] flex items-start justify-center pt-20 px-4 pb-8 bg-black/50 backdrop-blur-sm overflow-y-auto">
+        <div className="fixed inset-0 z-[9999] flex items-start justify-center pt-20 px-4 pb-8 bg-black/50 backdrop-blur-sm overflow-y-auto custom-scroll">
           <div
             ref={panelRef}
             role="dialog"

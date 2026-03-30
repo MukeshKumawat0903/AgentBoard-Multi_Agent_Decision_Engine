@@ -9,6 +9,7 @@ import type { FinalDecision, EvaluationResult } from "@/lib/types";
 import { evaluateDecision, exportDecision } from "@/lib/api";
 import ConfidenceMeter from "./ConfidenceMeter";
 import DebateTimeline from "./DebateTimeline";
+import { useToast } from "./Toast";
 
 interface FinalDecisionPanelProps {
   decision: FinalDecision;
@@ -28,6 +29,7 @@ function useLocalBool(key: string, defaultValue = false): [boolean, (v: boolean)
 }
 
 export default function FinalDecisionPanel({ decision }: FinalDecisionPanelProps) {
+  const { showToast } = useToast();
   const [showTrace, setShowTrace] = useLocalBool("fdp:showTrace", false);
   const [showMinority, setShowMinority] = useLocalBool("fdp:showMinority", false);
   const [showDisagreements, setShowDisagreements] = useLocalBool("fdp:showDisagreements", false);
@@ -61,7 +63,7 @@ export default function FinalDecisionPanel({ decision }: FinalDecisionPanelProps
       a.click();
       URL.revokeObjectURL(url);
     } catch (err) {
-      alert(err instanceof Error ? err.message : "Export failed.");
+      showToast(err instanceof Error ? err.message : "Export failed.", "error");
     } finally {
       setExportLoading(null);
     }

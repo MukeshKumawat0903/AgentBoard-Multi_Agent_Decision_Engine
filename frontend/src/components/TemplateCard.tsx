@@ -28,7 +28,8 @@ export default function TemplateCard({ template, onSelect }: TemplateCardProps) 
       type="button"
       onClick={() => onSelect(template)}
       className="text-left w-full rounded-xl border border-gray-200 dark:border-gray-700 bg-white dark:bg-gray-900 p-4
-                 hover:border-blue-400 dark:hover:border-blue-500 hover:shadow-md transition group"
+                 hover:border-blue-400 dark:hover:border-blue-500 hover:shadow-md
+                 hover:-translate-y-0.5 transition-all duration-200 group"
     >
       <div className="flex items-start justify-between mb-2">
         <span className="text-2xl">{template.icon}</span>

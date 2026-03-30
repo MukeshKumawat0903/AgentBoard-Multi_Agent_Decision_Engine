@@ -36,6 +36,8 @@ declare module "next/font/google" {
 declare module "next/navigation" {
   export function useRouter(): { push(url: string): void };
   export function useParams<T = Record<string, string>>(): T;
+  export function usePathname(): string;
+  export function useSearchParams(): URLSearchParams;
 }
 
 /* Node.js globals -------------------------------------------------- */

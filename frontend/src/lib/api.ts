@@ -53,7 +53,23 @@ class ApiError extends Error {
   body: unknown;
 
   constructor(status: number, body: unknown) {
-    super(`API error ${status}`);
+    // When the Next.js proxy can't reach the backend (ECONNREFUSED) it returns
+    // a 500 or 502/503/504 with no parseable JSON body. Give a human-friendly
+    // message instead of the raw "API error 500" so users know to start the server.
+    let message: string;
+    if ((status >= 500) && (body === null || body === undefined)) {
+      message = "Backend unreachable. Is the server running?";
+    } else if (status === 502 || status === 503 || status === 504) {
+      message = "Backend unavailable — please try again shortly.";
+    } else {
+      // Try to extract a detail message from the response body
+      const detail =
+        body && typeof body === "object" && "detail" in body
+          ? String((body as Record<string, unknown>).detail)
+          : null;
+      message = detail ?? `API error ${status}`;
+    }
+    super(message);
     this.name = "ApiError";
     this.status = status;
     this.body = body;

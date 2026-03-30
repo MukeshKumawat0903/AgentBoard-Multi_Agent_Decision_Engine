@@ -180,14 +180,19 @@ function reducer(state: StreamState, action: Action): StreamState {
       return { ...state, status: "done", finalDecision: decision as FinalDecision };
     }
 
-    case "error":
-      return {
-        ...state,
-        status: "error",
-        error: (event as { type: string; detail?: string; error?: string }).detail
-          || (event as { type: string; detail?: string; error?: string }).error
-          || "A debate error occurred.",
+    case "error": {
+      const ev = event as { type: string; detail?: string; error?: string };
+      const raw = ev.detail || ev.error || "A debate error occurred.";
+      // Map known backend error codes to human-friendly messages
+      const errorMessages: Record<string, string> = {
+        LLMResponseError: "The AI model failed to produce a valid response. This often happens when Groq (LLM Provider) is overloaded or the prompt is too complex. Please try again.",
+        LLMConnectionError: "Could not connect to the AI provider. Check that the backend is running and your API key is configured.",
+        LLMRateLimitError: "Rate limit reached on the AI provider. Please wait a moment and try again.",
+        DebateError: "The debate engine encountered an unrecoverable error. Please try again.",
       };
+      const friendly = Object.entries(errorMessages).find(([k]) => raw.includes(k))?.[1];
+      return { ...state, status: "error", error: friendly ?? raw };
+    }
 
     default:
       return state;
@@ -296,7 +301,10 @@ export default function DebateStreamViewer({ threadId }: Props) {
 
   /* ---- Connection status badge ---- */
   const statusBadge = (
-    <span className={`inline-flex items-center gap-1.5 text-xs px-2 py-0.5 rounded-full font-medium ${
+    <span
+      aria-live="polite"
+      aria-atomic="true"
+      className={`inline-flex items-center gap-1.5 text-xs px-2 py-0.5 rounded-full font-medium ${
       connStatus === "connected"
         ? "bg-green-100 dark:bg-green-900/40 text-green-700 dark:text-green-400"
         : connStatus === "reconnecting"
@@ -315,16 +323,32 @@ export default function DebateStreamViewer({ threadId }: Props) {
   /* ---- Error ---- */
   if (state.status === "error") {
     return (
-      <div className="max-w-2xl mx-auto text-center py-20 space-y-4">
-        <p className="text-red-600 dark:text-red-400 font-medium">
-          {state.error ?? "An error occurred while streaming the debate."}
-        </p>
-        <button
-          onClick={() => router.push("/")}
-          className="px-4 py-2 rounded-lg bg-gray-800 text-white text-sm font-medium hover:bg-gray-700 transition"
-        >
-          Back to Home
-        </button>
+      <div className="max-w-xl mx-auto py-16 space-y-5 px-4">
+        <div className="bg-red-50 dark:bg-red-950/30 border border-red-200 dark:border-red-800 rounded-xl p-6 space-y-4">
+          <div className="flex items-start gap-3">
+            <span className="text-2xl" aria-hidden="true">⚠️</span>
+            <div className="space-y-1">
+              <h2 className="text-base font-semibold text-red-700 dark:text-red-400">Debate failed</h2>
+              <p className="text-sm text-gray-600 dark:text-gray-400 leading-relaxed">
+                {state.error ?? "An error occurred while streaming the debate."}
+              </p>
+            </div>
+          </div>
+          <div className="flex flex-wrap gap-3">
+            <button
+              onClick={() => window.location.reload()}
+              className="px-4 py-2 rounded-lg bg-red-600 text-white text-sm font-medium hover:bg-red-700 transition"
+            >
+              Retry stream
+            </button>
+            <button
+              onClick={() => router.push("/")}
+              className="px-4 py-2 rounded-lg bg-gray-200 dark:bg-gray-700 text-gray-700 dark:text-gray-300 text-sm font-medium hover:bg-gray-300 dark:hover:bg-gray-600 transition"
+            >
+              Start new debate
+            </button>
+          </div>
+        </div>
       </div>
     );
   }
@@ -370,7 +394,11 @@ export default function DebateStreamViewer({ threadId }: Props) {
       {/* Round progress bar */}
       {state.status === "streaming" && state.maxRounds > 0 && (
         <div className="space-y-1">
-          <div className="flex items-center justify-between text-xs text-gray-500 dark:text-gray-400">
+          <div
+            aria-live="polite"
+            aria-atomic="true"
+            className="flex items-center justify-between text-xs text-gray-500 dark:text-gray-400"
+          >
             <span className="font-medium">
               Round {state.currentRound} of {state.maxRounds}
               {state.currentPhase ? (
