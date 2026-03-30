@@ -7,6 +7,8 @@ Role in the debate:
   - Categorize and rate every risk by probability and severity
 """
 
+from langchain_core.prompts import PromptTemplate
+
 from app.agents.base_agent import BaseAgent
 from app.schemas.agent_response import AgentResponse, CritiqueResponse
 from app.schemas.state import DebateState
@@ -29,16 +31,42 @@ Rules:
 - Categorize risks: operational, financial, reputational, technical, regulatory
 - Rate severity as: low, medium, high, critical
 - Always state your confidence from 0.0 to 1.0
-
-You MUST respond with a single valid JSON object that matches this schema exactly:
-{
-  "position": "<summary of risk landscape>",
-  "reasoning": "<step-by-step risk derivation>",
-  "assumptions": ["<assumption 1>", "<assumption 2>"],
-  "confidence_score": <float 0.0-1.0>
-}
-Output ONLY the JSON object. Do not include any prose before or after it.
 """
+
+
+# ---------------------------------------------------------------------------
+# Prompt templates (Phase 1.5 – replaces raw f-strings with named variables)
+# ---------------------------------------------------------------------------
+
+_PROPOSAL_TEMPLATE = PromptTemplate.from_template(
+    "Problem statement:\n{problem}\n\n"
+    "{analyst_context}"
+    "Identify all significant risks in this problem. Categorize each "
+    "risk (operational, financial, reputational, technical, regulatory) "
+    "and rate its severity. Surface hidden assumptions and tail risks. "
+    "Do NOT propose solutions."
+)
+
+_CRITIQUE_TEMPLATE = PromptTemplate.from_template(
+    "Problem statement:\n{problem}\n\n"
+    "You are critiquing the position of the {target_agent} agent:\n"
+    "Position: {target_position}\n"
+    "Reasoning: {target_reasoning}\n"
+    "Confidence: {target_confidence}\n\n"
+    "Focus on risks the agent has overlooked or underestimated. "
+    "Challenge any overly optimistic confidence scores. "
+    "Identify hidden assumptions that could invalidate their position."
+)
+
+_REVISION_TEMPLATE = PromptTemplate.from_template(
+    "Problem statement:\n{problem}\n\n"
+    "Your previous risk assessment in round {round_number}:\n"
+    "{prior_position}\n\n"
+    "Critiques received:\n{critiques}\n"
+    "Revise your risk assessment. Add any newly identified risks that "
+    "emerged from other agents' positions. If a critique disputes one "
+    "of your risks, either defend it with stronger evidence or withdraw it."
+)
 
 
 class RiskAgent(BaseAgent):
@@ -63,49 +91,30 @@ class RiskAgent(BaseAgent):
     # ------------------------------------------------------------------
 
     def _build_proposal_prompt(self, state: DebateState) -> str:
-        analyst_context = self._analyst_context(state)
-        return (
-            f"Problem statement:\n{state.user_query}\n\n"
-            f"{analyst_context}"
-            "Identify all significant risks in this problem. Categorize each "
-            "risk (operational, financial, reputational, technical, regulatory) "
-            "and rate its severity. Surface hidden assumptions and tail risks. "
-            "Do NOT propose solutions."
+        return _PROPOSAL_TEMPLATE.format(
+            problem=state.user_query,
+            analyst_context=self._analyst_context(state),
         )
 
     def _build_critique_prompt(
         self, state: DebateState, target: AgentResponse
     ) -> str:
-        return (
-            f"Problem statement:\n{state.user_query}\n\n"
-            f"You are critiquing the position of the {target.agent_name} agent:\n"
-            f"Position: {target.position}\n"
-            f"Reasoning: {target.reasoning}\n"
-            f"Confidence: {target.confidence_score}\n\n"
-            "Focus on risks the agent has overlooked or underestimated. "
-            "Challenge any overly optimistic confidence scores. "
-            "Identify hidden assumptions that could invalidate their position.\n\n"
-            "Respond with a JSON object:\n"
-            "{\n"
-            '  "critique_points": ["<risk point 1>", "<risk point 2>"],\n'
-            '  "severity": "<low|medium|high|critical>",\n'
-            '  "suggested_revision": "<optional concrete suggestion or null>",\n'
-            '  "confidence_score": <float 0.0-1.0>\n'
-            "}"
+        return _CRITIQUE_TEMPLATE.format(
+            problem=state.user_query,
+            target_agent=target.agent_name,
+            target_position=target.position,
+            target_reasoning=target.reasoning,
+            target_confidence=target.confidence_score,
         )
 
     def _build_revision_prompt(
         self, state: DebateState, critiques: list[CritiqueResponse]
     ) -> str:
-        critique_text = self._format_critiques(critiques)
-        return (
-            f"Problem statement:\n{state.user_query}\n\n"
-            f"Your previous risk assessment in round {state.current_round}:\n"
-            f"{self._last_position(state)}\n\n"
-            f"Critiques received:\n{critique_text}\n"
-            "Revise your risk assessment. Add any newly identified risks that "
-            "emerged from other agents' positions. If a critique disputes one "
-            "of your risks, either defend it with stronger evidence or withdraw it."
+        return _REVISION_TEMPLATE.format(
+            problem=state.user_query,
+            round_number=state.current_round,
+            prior_position=self._last_position(state),
+            critiques=self._format_critiques(critiques),
         )
 
     # ------------------------------------------------------------------

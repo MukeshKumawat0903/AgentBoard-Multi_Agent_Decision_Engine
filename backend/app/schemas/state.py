@@ -19,6 +19,7 @@ DebateStatus = Literal[
     "in_progress",
     "converged",
     "max_rounds_reached",
+    "awaiting_approval",
     "error",
 ]
 
@@ -114,6 +115,29 @@ class DebateState(BaseModel):
     status: DebateStatus = Field(
         default="initialized",
         description="Lifecycle status of this debate session.",
+    )
+    # --- P3.1 Knowledge Base RAG ---
+    use_knowledge_base: bool = Field(
+        default=False,
+        description="When True, agents retrieve context from the knowledge base.",
+    )
+    # --- P3.3 Agent Memory ---
+    enable_agent_memory: bool = Field(
+        default=False,
+        description="When True, agents receive lessons from prior debates in their prompts.",
+    )
+    selected_agents: list[str] | None = Field(
+        default=None,
+        description="Optional per-debate agent list. When None, the enabled default set is used.",
+    )
+    domain_pack: str | None = Field(
+        default=None,
+        description="Optional domain pack ID that determined the selected agent set.",
+    )
+    # --- P4.1 Human-in-the-Loop ---
+    human_feedback: str | None = Field(
+        default=None,
+        description="Optional human feedback injected during a HITL override.",
     )
     created_at: datetime = Field(
         default_factory=lambda: datetime.now(timezone.utc),
