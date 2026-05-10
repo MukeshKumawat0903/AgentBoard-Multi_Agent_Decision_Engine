@@ -50,6 +50,7 @@ export type DebateStatus =
   | "in_progress"
   | "converged"
   | "max_rounds_reached"
+  | "awaiting_approval"
   | "error";
 
 export interface DebateStatusResponse {
@@ -65,6 +66,13 @@ export interface DebateStatusResponse {
 /* Final decision                                                      */
 /* ------------------------------------------------------------------ */
 
+export interface MinorityReportEntry {
+  agent_name: string;
+  final_position: string;
+  dissent_reason: string;
+  confidence_score: number;
+}
+
 export interface FinalDecision {
   thread_id: string;
   query?: string;
@@ -79,20 +87,250 @@ export interface FinalDecision {
   total_rounds: number;
   termination_reason: string;
   created_at: string;
+  // P1.5 richer output fields
+  minority_report?: MinorityReportEntry[];
+  key_disagreements?: string[];
+  agent_contribution_scores?: Record<string, number>;
 }
 
 /* ------------------------------------------------------------------ */
 /* API request / error                                                 */
 /* ------------------------------------------------------------------ */
 
+export type DebateMode = "quick" | "standard" | "thorough";
+
 export interface DebateStartRequest {
   query: string;
+  mode?: DebateMode;
   max_rounds?: number;
+  consensus_threshold?: number;
+  skip_critique_phase?: boolean;
+  agents?: string[];
+  // P3 extensions
+  use_knowledge_base?: boolean;
+  enable_agent_memory?: boolean;
+  domain_pack?: string | null;
+  supervised?: boolean;
+}
+
+export interface AgentConfigResponse {
+  name: string;
+  role: string;
+  icon: string;
+  enabled: boolean;
+  model_provider: string | null;
+  model_name: string | null;
+}
+
+export interface AsyncDebateStartResponse {
+  thread_id: string;
+  status: string;
+  stream_url: string;
+}
+
+export interface ApprovalStatusResponse {
+  thread_id: string;
+  status: DebateStatus;
+  current_round: number;
+  total_rounds: number;
 }
 
 export interface ErrorResponse {
   error: string;
   detail?: string;
+}
+
+/* ------------------------------------------------------------------ */
+/* Templates                                                           */
+/* ------------------------------------------------------------------ */
+
+export type TemplateCategory = "Business" | "Technology" | "Strategy" | "Personal" | "Finance";
+
+export interface DebateTemplate {
+  id: string;
+  title: string;
+  category: TemplateCategory;
+  icon: string;
+  query: string;
+  mode: DebateMode;
+  tags: string[];
+}
+
+/* ------------------------------------------------------------------ */
+/* History                                                             */
+/* ------------------------------------------------------------------ */
+
+export interface HistoryItem {
+  thread_id: string;
+  user_query: string;
+  created_at: string;
+  status: string;
+  total_rounds: number;
+  agreement_score: number;
+  termination_reason: string;
+}
+
+export interface HistoryListResponse {
+  items: HistoryItem[];
+  total: number;
+  page: number;
+  limit: number;
+}
+
+/* ------------------------------------------------------------------ */
+/* SSE events                                                          */
+/* ------------------------------------------------------------------ */
+
+export interface DebateStartedEvent {
+  type: "debate_started";
+  thread_id: string;
+  user_query: string;
+  max_rounds: number;
+}
+
+export interface RoundStartedEvent {
+  type: "round_started";
+  round_number: number;
+  max_rounds: number;
+}
+
+export interface PhaseStartedEvent {
+  type: "phase_started";
+  round_number: number;
+  phase: DebatePhase;
+}
+
+export interface AgentOutputEvent {
+  type: "agent_output";
+  round_number: number;
+  phase: DebatePhase;
+  agent_name: string;
+  position: string;
+  reasoning: string;
+  confidence_score: number;
+  assumptions: string[];
+}
+
+export interface CritiqueCompletedEvent {
+  type: "critique_completed";
+  round_number: number;
+  critic_agent: string;
+  target_agent: string;
+  severity: "low" | "medium" | "high" | "critical";
+  critique_points: string[];
+  confidence_score: number;
+}
+
+export interface SynthesisEvent {
+  type: "synthesis";
+  round_number: number;
+  agreement_score: number;
+  should_continue: boolean;
+  summary: string;
+  agreement_areas: string[];
+  disagreement_areas: string[];
+}
+
+export interface DebateCompletedEvent {
+  type: "debate_completed";
+  thread_id: string;
+  termination_reason: string;
+  total_rounds: number;
+  agreement_score: number;
+}
+
+export interface FinalDecisionEvent extends FinalDecision {
+  type: "final_decision";
+}
+
+export interface ErrorEvent {
+  type: "error";
+  message: string;
+}
+
+// P4.1 – HITL approval_required SSE event
+export interface ApprovalRequiredEvent {
+  type: "approval_required";
+  round_number: number;
+  agreement_score: number;
+  termination_reason: string;
+  synthesis_summary: string;
+  options: string[];
+}
+
+// P3.2 – Tool called SSE event
+export interface ToolCalledEvent {
+  type: "tool_called";
+  agent_name: string;
+  tool_name: string;
+  input: string;
+  output_snippet: string;
+}
+
+export type DebateSSEEvent =
+  | DebateStartedEvent
+  | RoundStartedEvent
+  | PhaseStartedEvent
+  | AgentOutputEvent
+  | CritiqueCompletedEvent
+  | SynthesisEvent
+  | DebateCompletedEvent
+  | FinalDecisionEvent
+  | ApprovalRequiredEvent
+  | ToolCalledEvent
+  | ErrorEvent;
+
+/* ------------------------------------------------------------------ */
+/* P3.1 – Knowledge base                                              */
+/* ------------------------------------------------------------------ */
+
+export interface KnowledgeDocument {
+  name: string;
+  chunks: number;
+}
+
+/* ------------------------------------------------------------------ */
+/* P3.4 – Domain packs                                                */
+/* ------------------------------------------------------------------ */
+
+export interface DomainPack {
+  id: string;
+  name: string;
+  description: string;
+  icon: string;
+  agents: string[];
+  paired_template_categories: string[];
+  domain_focus: string;
+}
+
+/* ------------------------------------------------------------------ */
+/* P4.2 – Simulation                                                  */
+/* ------------------------------------------------------------------ */
+
+export interface SimulationResult {
+  query: string;
+  runs: number;
+  decisions: FinalDecision[];
+  consistency_score: number;
+  confidence_variance: number;
+  avg_agreement_score: number;
+  stable_risk_flags: string[];
+  stability_rating: "High" | "Medium" | "Low";
+}
+
+/* ------------------------------------------------------------------ */
+/* P4.3 – Evaluation                                                  */
+/* ------------------------------------------------------------------ */
+
+export interface EvaluationResult {
+  thread_id: string;
+  completeness: number;
+  consistency: number;
+  actionability: number;
+  risk_awareness: number;
+  overall: number;
+  reasoning: string;
+  evaluated_at: string;
 }
 
 /* ------------------------------------------------------------------ */
@@ -145,4 +383,78 @@ export const AGENT_META: Record<AgentName, AgentMeta> = {
     icon: "🏛️",
     role: "Neutral synthesizer",
   },
+};
+
+/* ------------------------------------------------------------------ */
+/* Phase 5 — Analytics & Evaluation                                   */
+/* ------------------------------------------------------------------ */
+
+export interface AnalyticsOverview {
+  total_debates: number;
+  avg_rounds_to_consensus: number;
+  avg_agreement_score: number;
+  debates_by_termination: Record<string, number>;
+  debates_per_day: { date: string; count: number }[];
+}
+
+export interface AgentStats {
+  avg_confidence: number;
+  avg_critique_severity_given: Record<string, number>;
+  avg_contribution_score: number;
+}
+
+export interface AnalyticsAgents {
+  agents: Record<string, AgentStats>;
+  agreement_matrix: Record<string, Record<string, number>>;
+}
+
+export interface AnalyticsConvergence {
+  avg_agreement_by_round: number[];
+  mode_breakdown: Record<string, number>;
+  domain_pack_breakdown: Record<string, number>;
+}
+
+export interface AnalyticsQuality {
+  evaluated_count: number;
+  avg_quality_score: number | null;
+  scores_by_template: Record<string, number>;
+  scores_by_mode: Record<string, number>;
+  scores_by_domain_pack: Record<string, number>;
+  best_performing_templates: string[];
+  worst_performing_templates: string[];
+}
+
+/* ------------------------------------------------------------------ */
+/* LLM provider settings                                               */
+/* ------------------------------------------------------------------ */
+
+export type LLMProvider = "groq" | "openai" | "anthropic";
+
+export interface LLMSettingsResponse {
+  provider: LLMProvider;
+  model: string;
+  available_models: Record<LLMProvider, string[]>;
+  using_custom_key: boolean;
+}
+
+export interface LLMSettingsUpdate {
+  provider: LLMProvider;
+  model: string;
+  api_key?: string;
+}
+
+/** Client-side canonical model lists — kept in sync with PROVIDER_MODELS in backend. */
+export const PROVIDER_MODELS: Record<LLMProvider, string[]> = {
+  groq: [
+    "llama-3.3-70b-versatile",
+    "llama-3.1-8b-instant",
+    "mixtral-8x7b-32768",
+    "gemma2-9b-it",
+  ],
+  openai: ["gpt-4o", "gpt-4o-mini", "gpt-4-turbo", "gpt-3.5-turbo"],
+  anthropic: [
+    "claude-sonnet-4-20250514",
+    "claude-3-5-haiku-20241022",
+    "claude-3-opus-20240229",
+  ],
 };

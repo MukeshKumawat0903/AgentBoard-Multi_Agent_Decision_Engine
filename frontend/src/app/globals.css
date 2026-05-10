@@ -23,7 +23,10 @@ body {
   font-feature-settings: "cv02", "cv03", "cv04", "cv11";
 }
 
-/* Utility for scrollbar styling */
+/* ------------------------------------------------------------------ */
+/* Scrollbar styling                                                   */
+/* ------------------------------------------------------------------ */
+
 .custom-scroll::-webkit-scrollbar {
   width: 6px;
 }
@@ -32,4 +35,86 @@ body {
 }
 .custom-scroll::-webkit-scrollbar-track {
   background: transparent;
+}
+
+/* ------------------------------------------------------------------ */
+/* Focus-visible indicators                                            */
+/* Ensure all interactive elements show a visible focus ring on       */
+/* keyboard navigation (not on mouse click).                          */
+/* ------------------------------------------------------------------ */
+
+/* Remove default browser outline; replace with consistent ring */
+:focus-visible {
+  outline: 2px solid #3b82f6;
+  outline-offset: 2px;
+  border-radius: 4px;
+}
+
+/* Dark mode ring */
+.dark :focus-visible {
+  outline-color: #60a5fa;
+}
+
+/* Buttons and links explicitly */
+a:focus-visible,
+button:focus-visible,
+input:focus-visible,
+select:focus-visible,
+textarea:focus-visible,
+[tabindex]:focus-visible {
+  outline: 2px solid #3b82f6;
+  outline-offset: 2px;
+  border-radius: 4px;
+}
+
+/* ------------------------------------------------------------------ */
+/* Print styles                                                        */
+/* Hide nav/footer; format decision panels cleanly.                   */
+/* ------------------------------------------------------------------ */
+
+@media print {
+  /* Hide navigation and footer */
+  header,
+  footer,
+  nav,
+  [data-print-hide],
+  .no-print {
+    display: none !important;
+  }
+
+  /* Full-width content */
+  main {
+    max-width: 100% !important;
+    padding: 0 !important;
+    margin: 0 !important;
+  }
+
+  body {
+    background: white !important;
+    color: black !important;
+  }
+
+  /* Remove shadows and borders for cleaner print */
+  .shadow-sm,
+  .shadow-md,
+  .shadow-lg {
+    box-shadow: none !important;
+  }
+
+  /* Decision panel: clean typography */
+  section {
+    break-inside: avoid;
+    page-break-inside: avoid;
+    border: 1px solid #e5e7eb !important;
+    margin-bottom: 1rem;
+  }
+
+  /* Charts may not print well — add a note */
+  canvas::after {
+    content: "[Chart not available in print]";
+    display: block;
+    text-align: center;
+    font-size: 0.75rem;
+    color: #6b7280;
+  }
 }

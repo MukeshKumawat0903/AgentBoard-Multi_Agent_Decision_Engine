@@ -7,6 +7,8 @@ Role in the debate:
   - Flag regulatory/legal risk that others may have missed
 """
 
+from langchain_core.prompts import PromptTemplate
+
 from app.agents.base_agent import BaseAgent
 from app.schemas.agent_response import AgentResponse, CritiqueResponse
 from app.schemas.state import DebateState
@@ -29,16 +31,44 @@ Rules:
 - If something is compliant but ethically questionable, flag it
 - Rate severity of ethical concerns: low, medium, high, critical
 - Rate your confidence from 0.0 to 1.0
-
-You MUST respond with a single valid JSON object that matches this schema exactly:
-{
-  "position": "<your ethical assessment, including VETO if applicable>",
-  "reasoning": "<step-by-step ethical reasoning>",
-  "assumptions": ["<assumption 1>", "<assumption 2>"],
-  "confidence_score": <float 0.0-1.0>
-}
-Output ONLY the JSON object. Do not include any prose before or after it.
 """
+
+
+# ---------------------------------------------------------------------------
+# Prompt templates (Phase 1.5 – replaces raw f-strings with named variables)
+# ---------------------------------------------------------------------------
+
+_PROPOSAL_TEMPLATE = PromptTemplate.from_template(
+    "Problem statement:\n{problem}\n\n"
+    "{strategy_context}"
+    "Assess the ethical landscape of this problem and any proposed "
+    "strategies. Identify fairness, bias, regulatory, and societal "
+    "concerns. Issue a VETO (clearly marked in your position) if any "
+    "aspect is fundamentally unethical. Reference specific ethical "
+    "principles where applicable."
+)
+
+_CRITIQUE_TEMPLATE = PromptTemplate.from_template(
+    "Problem statement:\n{problem}\n\n"
+    "You are critiquing the position of the {target_agent} agent:\n"
+    "Position: {target_position}\n"
+    "Reasoning: {target_reasoning}\n"
+    "Confidence: {target_confidence}\n\n"
+    "Evaluate whether the position has ethical blind spots. Does it "
+    "account for all stakeholders? Are there fairness, bias, or "
+    "compliance issues? Would any regulatory body object?"
+)
+
+_REVISION_TEMPLATE = PromptTemplate.from_template(
+    "Problem statement:\n{problem}\n\n"
+    "Your previous ethical assessment in round {round_number}:\n"
+    "{prior_position}\n\n"
+    "Critiques received:\n{critiques}\n"
+    "Revise your ethical assessment in light of the debate. "
+    "If other agents have addressed your concerns, you may withdraw or "
+    "downgrade them. If new ethical issues have emerged from the debate, "
+    "add them. Maintain or strengthen any VETO that remains justified."
+)
 
 
 class EthicsAgent(BaseAgent):
@@ -63,51 +93,30 @@ class EthicsAgent(BaseAgent):
     # ------------------------------------------------------------------
 
     def _build_proposal_prompt(self, state: DebateState) -> str:
-        strategy_context = self._strategy_context(state)
-        return (
-            f"Problem statement:\n{state.user_query}\n\n"
-            f"{strategy_context}"
-            "Assess the ethical landscape of this problem and any proposed "
-            "strategies. Identify fairness, bias, regulatory, and societal "
-            "concerns. Issue a VETO (clearly marked in your position) if any "
-            "aspect is fundamentally unethical. Reference specific ethical "
-            "principles where applicable."
+        return _PROPOSAL_TEMPLATE.format(
+            problem=state.user_query,
+            strategy_context=self._strategy_context(state),
         )
 
     def _build_critique_prompt(
         self, state: DebateState, target: AgentResponse
     ) -> str:
-        return (
-            f"Problem statement:\n{state.user_query}\n\n"
-            f"You are critiquing the position of the {target.agent_name} agent:\n"
-            f"Position: {target.position}\n"
-            f"Reasoning: {target.reasoning}\n"
-            f"Confidence: {target.confidence_score}\n\n"
-            "Evaluate whether the position has ethical blind spots. Does it "
-            "account for all stakeholders? Are there fairness, bias, or "
-            "compliance issues? Would any regulatory body object?\n\n"
-            "Respond with a JSON object:\n"
-            "{\n"
-            '  "critique_points": ["<ethical issue 1>", "<ethical issue 2>"],\n'
-            '  "severity": "<low|medium|high|critical>",\n'
-            '  "suggested_revision": "<optional concrete suggestion or null>",\n'
-            '  "confidence_score": <float 0.0-1.0>\n'
-            "}"
+        return _CRITIQUE_TEMPLATE.format(
+            problem=state.user_query,
+            target_agent=target.agent_name,
+            target_position=target.position,
+            target_reasoning=target.reasoning,
+            target_confidence=target.confidence_score,
         )
 
     def _build_revision_prompt(
         self, state: DebateState, critiques: list[CritiqueResponse]
     ) -> str:
-        critique_text = self._format_critiques(critiques)
-        return (
-            f"Problem statement:\n{state.user_query}\n\n"
-            f"Your previous ethical assessment in round {state.current_round}:\n"
-            f"{self._last_position(state)}\n\n"
-            f"Critiques received:\n{critique_text}\n"
-            "Revise your ethical assessment in light of the debate. "
-            "If other agents have addressed your concerns, you may withdraw or "
-            "downgrade them. If new ethical issues have emerged from the debate, "
-            "add them. Maintain or strengthen any VETO that remains justified."
+        return _REVISION_TEMPLATE.format(
+            problem=state.user_query,
+            round_number=state.current_round,
+            prior_position=self._last_position(state),
+            critiques=self._format_critiques(critiques),
         )
 
     # ------------------------------------------------------------------

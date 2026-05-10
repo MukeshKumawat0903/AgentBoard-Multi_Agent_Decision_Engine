@@ -45,16 +45,16 @@ chmod +x run_all.sh  # Only needed once
 
 ### 2.1 Create the virtual environment
 
+Run from the **project root** (not inside `backend/`):
+
 ```powershell
 # Windows (PowerShell)
-cd backend
 python -m venv venv
-.\venv\Scripts\activate
+.\venv\Scripts\Activate.ps1
 ```
 
 ```bash
 # macOS / Linux
-cd backend
 python3 -m venv venv
 source venv/bin/activate
 ```
@@ -62,27 +62,28 @@ source venv/bin/activate
 ### 2.2 Install dependencies
 
 ```bash
+cd backend
 pip install -r requirements.txt
 ```
 
 > Install dev tools (pytest etc.) as well if you want to run tests:
 >
 > ```bash
-> pip install -r requirements-dev.txt
+> pip install -r backend/requirements-dev.txt
 > ```
 
 ### 2.3 Create the environment file
 
-Copy the example and fill in your GROQ API key:
+Copy the example and fill in your GROQ API key (run from the project root):
 
 ```powershell
 # Windows
-copy .env.example .env
+copy backend\.env.example backend\.env
 ```
 
 ```bash
 # macOS / Linux
-cp .env.example .env
+cp backend/.env.example backend/.env
 ```
 
 Open `.env` and set your key:
@@ -100,6 +101,14 @@ LOG_LEVEL=INFO
 ### 2.4 Start the backend server
 
 ```bash
+# From the project root, with venv active:
+uvicorn app.main:app --reload --host 0.0.0.0 --port 8000 --app-dir backend
+```
+
+Or navigate into `backend/` first:
+
+```bash
+cd backend
 uvicorn app.main:app --reload --host 0.0.0.0 --port 8000
 ```
 
@@ -206,10 +215,11 @@ The app is now running at **http://localhost:3000**
 ## 5. Running tests (backend)
 
 ```bash
-# Make sure the venv is active and you're in backend/
+# Make sure the venv is active and you're in the project root
+.\venv\Scripts\Activate.ps1   # Windows
+# or: source venv/bin/activate  # macOS/Linux
+
 cd backend
-.\venv\Scripts\activate        # Windows
-# or: source venv/bin/activate # macOS/Linux
 
 # Run all unit tests (no GROQ API calls, fast)
 pytest -v --tb=short
@@ -276,10 +286,13 @@ npm start          # starts the production server on port 3000
 ```
 Terminal 1 – Backend
 ─────────────────────────────────────────
+# From the project root:
+python -m venv venv
+.\venv\Scripts\Activate.ps1      # Windows
+# source venv/bin/activate       # macOS/Linux
+pip install -r backend/requirements.txt
+copy backend\.env.example backend\.env   # then add GROQ_API_KEY
 cd backend
-python -m venv venv && .\venv\Scripts\activate
-pip install -r requirements.txt
-copy .env.example .env   # then add GROQ_API_KEY
 uvicorn app.main:app --reload --port 8000
 
 Terminal 2 – Frontend

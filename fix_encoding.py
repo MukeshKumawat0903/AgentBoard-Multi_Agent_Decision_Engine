@@ -1,0 +1,10 @@
+path = r'frontend\src\components\DebateInput.tsx'
+text = open(path, encoding='utf-8').read()
+bad = chr(0xe2) + chr(0x20ac) + chr(0x201c)
+good = chr(0x2013)
+count = text.count(bad)
+print('en-dash mojibake occurrences:', count)
+text = text.replace(bad, good)
+print('euro signs remaining:', text.count(chr(0x20ac)))
+open(path, 'w', encoding='utf-8').write(text)
+print('line 2:', text.split('\n')[1])
