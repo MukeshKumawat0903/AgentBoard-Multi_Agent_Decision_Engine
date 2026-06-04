@@ -8,17 +8,21 @@
 import { useEffect, useReducer, useRef, useState, useCallback } from "react";
 import { useRouter } from "next/navigation";
 import { connectToStream } from "@/lib/api";
-import type {
-  AgentOutputEvent,
-  ApprovalRequiredEvent,
-  CritiqueCompletedEvent,
-  DebatePhase,
-  DebateRound,
-  DebateSSEEvent,
-  FinalDecision,
-  SynthesisEvent,
-} from "@/lib/types";
-import { AGENT_META } from "@/lib/types";
+import type { ApprovalRequiredEvent, DebatePhase, DebateRound, FinalDecision, SynthesisEvent } from "@/lib/types";
+// B4: import domain agent metadata so domain-pack agents render with proper icons/colours
+import { AGENT_META, DOMAIN_AGENT_META } from "@/lib/types";
+// Reducer extracted to a separate module for unit-testability (Phase 6.1)
+import {
+  debateStreamReducer,
+  initialStreamState,
+  type StreamState,
+  type StreamAction,
+} from "@/lib/debateStreamReducer";
+
+const ALL_AGENT_META = { ...AGENT_META, ...DOMAIN_AGENT_META } as Record<
+  string,
+  { icon: string; color?: string; lightColor?: string; role: string; name: string }
+>;
 import AgentCard from "./AgentCard";
 import CritiqueView from "./CritiqueView";
 import FinalDecisionPanel from "./FinalDecisionPanel";
@@ -27,177 +31,10 @@ import ConfidenceDriftChart from "./ConfidenceDriftChart";
 import HITLPanel from "./HITLPanel";
 
 /* ------------------------------------------------------------------ */
-/* State shape                                                         */
+/* State and reducer — imported from debateStreamReducer (Phase 6.1)  */
 /* ------------------------------------------------------------------ */
-
-interface StreamState {
-  status: "connecting" | "streaming" | "done" | "error";
-  query: string;
-  maxRounds: number;
-  currentRound: number;
-  currentPhase: DebatePhase | "";
-  rounds: DebateRound[];
-  syntheses: Record<number, SynthesisEvent>;
-  finalDecision: FinalDecision | null;
-  error: string | null;
-  agentStatus: Record<string, "waiting" | "working" | "done">;
-  approvalRequired: ApprovalRequiredEvent | null;
-}
-
-const initial: StreamState = {
-  status: "connecting",
-  query: "",
-  maxRounds: 4,
-  currentRound: 0,
-  currentPhase: "",
-  rounds: [],
-  syntheses: {},
-  finalDecision: null,
-  error: null,
-  agentStatus: {},
-  approvalRequired: null,
-};
-
-/* ------------------------------------------------------------------ */
-/* Reducer                                                             */
-/* ------------------------------------------------------------------ */
-
-type Action = { event: DebateSSEEvent } | { type: "stream_error" } | { type: "clear_approval" };
-
-function ensureRound(rounds: DebateRound[], roundNumber: number): DebateRound[] {
-  if (rounds.some((r) => r.round_number === roundNumber)) return rounds;
-  return [
-    ...rounds,
-    { round_number: roundNumber, phase: "proposal", agent_outputs: [], critiques: [] },
-  ];
-}
-
-function reducer(state: StreamState, action: Action): StreamState {
-  if ("type" in action && action.type === "stream_error") {
-    return { ...state, status: "error", error: "Stream connection lost." };
-  }
-
-  if ("type" in action && action.type === "clear_approval") {
-    return { ...state, approvalRequired: null };
-  }
-
-  const { event } = action as { event: DebateSSEEvent };
-
-  switch (event.type) {
-    case "debate_started":
-      return {
-        ...state,
-        status: "streaming",
-        query: event.user_query,
-        maxRounds: event.max_rounds,
-      };
-
-    case "round_started":
-      return {
-        ...state,
-        currentRound: event.round_number,
-        rounds: ensureRound(state.rounds, event.round_number),
-        agentStatus: Object.fromEntries(Object.keys(AGENT_META).map((k) => [k, "waiting"])),
-      };
-
-    case "phase_started":
-      return {
-        ...state,
-        currentPhase: event.phase,
-        rounds: state.rounds.map((r) =>
-          r.round_number === event.round_number ? { ...r, phase: event.phase } : r
-        ),
-        // Mark all agents as working when a new phase starts
-        agentStatus: Object.fromEntries(Object.keys(AGENT_META).map((k) => [k, "working"])),
-      };
-
-    case "agent_output": {
-      const e = event as AgentOutputEvent;
-      const agentResp = {
-        agent_name: e.agent_name,
-        round_number: e.round_number,
-        position: e.position,
-        reasoning: e.reasoning,
-        assumptions: e.assumptions,
-        confidence_score: e.confidence_score,
-        timestamp: new Date().toISOString(),
-      };
-      return {
-        ...state,
-        rounds: ensureRound(state.rounds, e.round_number).map((r) => {
-          if (r.round_number !== e.round_number) return r;
-          const existing = r.agent_outputs.findIndex((o) => o.agent_name === e.agent_name);
-          const updated =
-            existing >= 0
-              ? r.agent_outputs.map((o, i) => (i === existing ? agentResp : o))
-              : [...r.agent_outputs, agentResp];
-          return { ...r, agent_outputs: updated };
-        }),
-        agentStatus: { ...state.agentStatus, [e.agent_name]: "done" },
-      };
-    }
-
-    case "critique_completed": {
-      const e = event as CritiqueCompletedEvent;
-      const critique = {
-        critic_agent: e.critic_agent,
-        target_agent: e.target_agent,
-        round_number: e.round_number,
-        critique_points: e.critique_points,
-        severity: e.severity,
-        suggested_revision: null,
-        confidence_score: e.confidence_score,
-      };
-      return {
-        ...state,
-        rounds: state.rounds.map((r) =>
-          r.round_number === e.round_number
-            ? { ...r, critiques: [...r.critiques, critique] }
-            : r
-        ),
-      };
-    }
-
-    case "synthesis": {
-      const e = event as SynthesisEvent;
-      return {
-        ...state,
-        syntheses: { ...state.syntheses, [e.round_number]: e },
-      };
-    }
-
-    case "debate_completed":
-      return { ...state, status: "streaming" };
-
-    case "approval_required": {
-      const e = event as ApprovalRequiredEvent;
-      return { ...state, approvalRequired: e };
-    }
-
-    case "final_decision": {
-      // eslint-disable-next-line @typescript-eslint/no-unused-vars
-      const { type, ...decision } = event as FinalDecision & { type: string };
-      return { ...state, status: "done", finalDecision: decision as FinalDecision };
-    }
-
-    case "error": {
-      const ev = event as { type: string; detail?: string; error?: string };
-      const raw = ev.detail || ev.error || "A debate error occurred.";
-      // Map known backend error codes to human-friendly messages
-      const errorMessages: Record<string, string> = {
-        LLMResponseError: "The AI model failed to produce a valid response. This often happens when Groq (LLM Provider) is overloaded or the prompt is too complex. Please try again.",
-        LLMConnectionError: "Could not connect to the AI provider. Check that the backend is running and your API key is configured.",
-        LLMRateLimitError: "Rate limit reached on the AI provider. Please wait a moment and try again.",
-        DebateError: "The debate engine encountered an unrecoverable error. Please try again.",
-      };
-      const friendly = Object.entries(errorMessages).find(([k]) => raw.includes(k))?.[1];
-      return { ...state, status: "error", error: friendly ?? raw };
-    }
-
-    default:
-      return state;
-  }
-}
+// StreamState, StreamAction, initialStreamState, debateStreamReducer
+// are all defined in @/lib/debateStreamReducer and imported above.
 
 /* ------------------------------------------------------------------ */
 /* Component                                                           */
@@ -236,7 +73,7 @@ interface Props {
 
 export default function DebateStreamViewer({ threadId }: Props) {
   const router = useRouter();
-  const [state, dispatch] = useReducer(reducer, initial);
+  const [state, dispatch] = useReducer(debateStreamReducer, initialStreamState);
   const [connStatus, setConnStatus] = useState<"connected" | "reconnecting" | "disconnected">("connected");
   const [maxReconnectsHit, setMaxReconnectsHit] = useState(false);
   const [focusedRoundIdx, setFocusedRoundIdx] = useState<number | null>(null);
@@ -427,7 +264,8 @@ export default function DebateStreamViewer({ threadId }: Props) {
           <p className="text-xs font-semibold text-gray-400 uppercase tracking-wide mb-2">Agent status</p>
           <div className="flex flex-wrap gap-2">
             {Object.entries(state.agentStatus).map(([name, st]) => {
-              const meta = AGENT_META[name as keyof typeof AGENT_META];
+              // B4 Fix: look up in ALL_AGENT_META (standard + domain agents)
+              const meta = ALL_AGENT_META[name];
               return (
                 <span
                   key={name}
@@ -572,7 +410,12 @@ export default function DebateStreamViewer({ threadId }: Props) {
         <div className="space-y-4">
           <div className="text-center text-sm font-semibold text-green-600 dark:text-green-400 flex items-center justify-center gap-2">
             <span className="w-2 h-2 bg-green-500 rounded-full" />
-            Debate complete — consensus reached
+            {/* B5 Fix: reflect the actual termination reason instead of hardcoding "consensus reached" */}
+            {state.finalDecision.termination_reason === "max_rounds_reached"
+              ? "Debate complete — max rounds reached"
+              : state.finalDecision.termination_reason === "human_override"
+              ? "Debate complete — human override applied"
+              : "Debate complete — consensus reached"}
           </div>
           <FinalDecisionPanel decision={state.finalDecision} />
           <ConfidenceDriftSection rounds={state.rounds} />

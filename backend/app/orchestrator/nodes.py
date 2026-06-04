@@ -35,6 +35,9 @@ from app.schemas.final_decision import FinalDecision, MinorityReportEntry
 from app.schemas.state import DebateRound, DebateState
 from app.services.consensus import ConsensusEngine, SemanticConsensusEngine
 
+# B11: threshold below which agents are considered "stuck" (drift-based early stop)
+_DRIFT_EARLY_STOP_THRESHOLD: float = 0.05
+
 _PROPOSAL_TIMEOUT: float = 15.0
 _CRITIQUE_TIMEOUT: float = 15.0
 _REVISION_TIMEOUT: float = 15.0
@@ -425,42 +428,39 @@ def make_convergence_node(
                 ds.termination_reason = "consensus_reached"
                 should_continue = False
 
-        # --- P4.1 Human-in-the-Loop ---
-        # When hitl_mode is enabled and the convergence would end the debate,
-        # pause the graph with a LangGraph interrupt and wait for approval.
-        hitl_active = state.get("hitl_mode", False)
-        awaiting_approval = False
-        if hitl_active and not should_continue:
-            ds.status = "awaiting_approval"
-            ds.touch()
-            if persist_state is not None:
-                await persist_state(ds)
+        # B11: Drift-based early termination — stop when agents have stopped moving,
+        # even if the agreement threshold hasn't been crossed yet.
+        if should_continue and len(ds.rounds) >= 2:
+            drift = ConsensusEngine().detect_position_drift(
+                ds.rounds[-2].agent_outputs,
+                round_data.agent_outputs,
+            )
+            if drift < _DRIFT_EARLY_STOP_THRESHOLD and ds.confidence_scores:
+                logger.info(
+                    "drift_early_termination",
+                    extra={
+                        "drift": round(drift, 4),
+                        "round": ds.current_round,
+                        "agreement_score": agreement_score,
+                    },
+                )
+                ds.termination_reason = "consensus_reached"
+                should_continue = False
 
-            approval = interrupt({
+        # B2 Fix: Build the HITL interrupt payload here (in convergence_node) and
+        # store it in graph state.  The actual interrupt() call lives in the
+        # dedicated hitl_node, which LangGraph only reaches when should_continue
+        # is False AND hitl_mode is True.  This prevents the expensive
+        # moderator.synthesize() call from re-running on resume.
+        hitl_interrupt_payload: dict | None = None
+        if state.get("hitl_mode", False) and not should_continue:
+            hitl_interrupt_payload = {
                 "round_number": ds.current_round,
                 "agreement_score": agreement_score,
                 "termination_reason": ds.termination_reason,
                 "synthesis_summary": synthesis.summary,
                 "options": ["approve", "override", "add_round"],
-            })
-
-            action = approval.get("action", "approve") if isinstance(approval, dict) else "approve"
-            feedback = approval.get("feedback", "") if isinstance(approval, dict) else ""
-
-            ds.status = "in_progress"
-            ds.touch()
-
-            if action == "override":
-                ds.human_feedback = feedback
-                ds.termination_reason = "human_override"
-                should_continue = False
-            elif action == "add_round":
-                ds.max_rounds += 1
-                should_continue = True
-            else:
-                should_continue = False
-
-            awaiting_approval = False
+            }
 
         logger.info(
             "phase_timing",
@@ -477,10 +477,78 @@ def make_convergence_node(
         return {
             "debate_state": ds,
             "should_continue": should_continue,
-            "awaiting_approval": awaiting_approval,
+            "awaiting_approval": False,
+            "hitl_interrupt_payload": hitl_interrupt_payload,
         }
 
     return convergence_node
+
+
+# ---------------------------------------------------------------------------
+# hitl_node  (B2 fix — HITL approval lives here, not in convergence_node)
+# ---------------------------------------------------------------------------
+
+def make_hitl_node(
+    emit: _Emit,
+    persist_state: _PersistState = None,
+) -> _NodeFn:
+    """
+    Human-in-the-Loop pause node.
+
+    Only reached when hitl_mode=True and convergence_node decided to stop.
+    Calls LangGraph interrupt() exactly once; on resume the node re-runs
+    but interrupt() immediately returns the approval dict, so moderator.synthesize()
+    is never invoked a second time (it lives in convergence_node).
+    """
+
+    async def hitl_node(state: DebateGraphState) -> dict:
+        ds = state["debate_state"]
+        payload = state.get("hitl_interrupt_payload") or {
+            "round_number": ds.current_round,
+            "agreement_score": ds.agreement_score,
+            "termination_reason": ds.termination_reason,
+            "synthesis_summary": "",
+            "options": ["approve", "override", "add_round"],
+        }
+
+        ds.status = "awaiting_approval"
+        ds.touch()
+        if persist_state is not None:
+            await persist_state(ds)
+
+        # On first entry: pauses here and emits approval_required via debate_graph.py.
+        # On resume:      interrupt() returns the Command(resume=...) value immediately.
+        approval = interrupt(payload)
+
+        action = approval.get("action", "approve") if isinstance(approval, dict) else "approve"
+        feedback = approval.get("feedback", "") if isinstance(approval, dict) else ""
+
+        ds.status = "in_progress"
+        ds.touch()
+
+        should_continue = False
+        if action == "override":
+            ds.human_feedback = feedback
+            ds.termination_reason = "human_override"
+        elif action == "add_round":
+            ds.max_rounds += 1
+            should_continue = True
+
+        logger.info(
+            "hitl_decision",
+            extra={
+                "thread_id": ds.thread_id,
+                "action": action,
+                "should_continue": should_continue,
+            },
+        )
+        return {
+            "debate_state": ds,
+            "should_continue": should_continue,
+            "hitl_interrupt_payload": None,  # consumed; clear from state
+        }
+
+    return hitl_node
 
 
 # ---------------------------------------------------------------------------
@@ -515,25 +583,28 @@ def make_finalize_node(
             ]
             contribution[name] = sum(scores) / len(scores) if scores else 0.0
 
-        # Minority report: agents whose final confidence < mean (diverged)
-        if contribution:
-            mean_conf = sum(contribution.values()) / len(contribution)
-            minority: list[MinorityReportEntry] = []
-            for round_data in reversed(ds.rounds):
-                seen = {m.agent_name for m in minority}
-                for output in round_data.agent_outputs:
-                    if output.agent_name not in seen and output.confidence_score < mean_conf - 0.1:
-                        minority.append(MinorityReportEntry(
-                            agent_name=output.agent_name,
-                            final_position=output.position[:300],
-                            dissent_reason=(
-                                f"Confidence ({output.confidence_score:.2f}) below group mean "
-                                f"({mean_conf:.2f}) in final round."
-                            ),
-                            confidence_score=output.confidence_score,
-                        ))
-        else:
-            minority = []
+        # B3 Fix: Minority report — use FINAL round only and the 0.20 threshold from spec.
+        # Previous code used an all-rounds mean with a 0.10 band, which caused agents
+        # who converged in later rounds to still be flagged as dissenters.
+        minority: list[MinorityReportEntry] = []
+        if ds.rounds:
+            final_outputs = ds.rounds[-1].agent_outputs
+            if final_outputs:
+                final_confidences = {o.agent_name: o.confidence_score for o in final_outputs}
+                mean_conf = sum(final_confidences.values()) / len(final_confidences)
+                minority = [
+                    MinorityReportEntry(
+                        agent_name=output.agent_name,
+                        final_position=output.position[:300],
+                        dissent_reason=(
+                            f"Confidence ({output.confidence_score:.2f}) is more than 0.20 below "
+                            f"the group mean ({mean_conf:.2f}) in the final round."
+                        ),
+                        confidence_score=output.confidence_score,
+                    )
+                    for output in final_outputs
+                    if output.confidence_score < mean_conf - 0.20
+                ]
 
         # Key disagreements: collect from the moderator's dissenting_opinions
         # and unique critique summary points across all rounds

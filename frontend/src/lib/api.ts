@@ -185,6 +185,8 @@ const SSE_EVENTS = [
   "debate_completed",
   "final_decision",
   "approval_required",
+  "tool_called",
+  "agent_timeout",  // B6: backend emits this when an agent call times out
   "error",
 ] as const;
 

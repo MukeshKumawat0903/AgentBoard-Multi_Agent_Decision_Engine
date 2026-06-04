@@ -122,6 +122,10 @@ class AgentRegistry:
         agent_class = cast(Any, self._classes[name])
         instance: BaseAgent = agent_class(llm_client=effective_client)
         instance.allowed_tools = list(config.allowed_tools)
+        # B7 Fix: wire per-agent temperature and retry budget so AgentConfig values
+        # actually reach the LLM call instead of being silently ignored.
+        instance.temperature = config.temperature
+        instance.max_retries = config.max_retries
         logger.debug(
             "agent_instantiated",
             extra={

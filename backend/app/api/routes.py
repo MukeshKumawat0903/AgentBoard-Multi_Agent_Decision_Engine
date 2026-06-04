@@ -420,8 +420,14 @@ async def stream_debate_events(
     If the debate is already finished (in memory or DB), emits the
     final_decision event immediately and closes.
     """
-    # Parse Last-Event-ID for reconnect replay
-    last_event_id_raw = request.headers.get("Last-Event-ID") or request.headers.get("last-event-id")
+    # Parse Last-Event-ID for reconnect replay.
+    # B1 Fix: browser EventSource re-connections send the cursor as a query param
+    # (last_event_id) rather than the native Last-Event-ID header, so check both.
+    last_event_id_raw = (
+        request.headers.get("Last-Event-ID")
+        or request.headers.get("last-event-id")
+        or request.query_params.get("last_event_id")
+    )
     last_event_id: int | None = None
     if last_event_id_raw:
         try:
@@ -1024,6 +1030,7 @@ async def approve_debate(
     summary="Run N independent parallel debates and return stability metrics.",
 )
 @limiter.limit(f"{app_settings.RATE_LIMIT_PER_MINUTE}/minute")
+@limiter.limit("2/hour")  # B9: simulation fans out to 2–5 full debates; tighter hourly cap
 async def simulate_debate(
     request: Request,
     query: str = Query(..., min_length=10, description="The decision question to simulate."),

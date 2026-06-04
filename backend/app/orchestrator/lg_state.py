@@ -38,11 +38,16 @@ class DebateGraphState(TypedDict):
         Per-run override for the consensus threshold.  None means use
         the value from Settings.
     hitl_mode:
-        When True, the convergence node emits 'approval_required' after
-        each round's convergence and the graph waits for human approval.
+        When True, the graph routes through the hitl_node after convergence
+        decides to stop, pausing for human approval before finalisation.
     awaiting_approval:
         True when the graph has emitted 'approval_required' and is waiting
         for a resume signal from the human.
+    hitl_interrupt_payload:
+        Payload dict built by convergence_node and consumed by hitl_node.
+        Holds the data passed to LangGraph interrupt() so the hitl_node
+        can re-run cleanly without re-invoking the moderator.  None when
+        HITL is not active or after the hitl_node has consumed it.
     """
 
     debate_state: DebateState
@@ -52,3 +57,4 @@ class DebateGraphState(TypedDict):
     consensus_threshold: Optional[float]
     hitl_mode: bool
     awaiting_approval: bool
+    hitl_interrupt_payload: Optional[dict]

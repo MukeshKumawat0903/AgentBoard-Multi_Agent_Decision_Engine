@@ -122,19 +122,21 @@ class LangChainProvider:
         system_prompt: str,
         user_prompt: str,
         temperature: float = 0.3,
+        max_retries: int = 2,
     ) -> T:
         """
         Invoke the LLM and return a validated Pydantic model instance.
 
         Uses LangChain's with_structured_output() for reliable schema
         binding via tool/function calling.  No manual JSON parsing needed.
-        Built-in retry on transient failures (max 2 attempts).
+        Built-in retry on transient failures.
 
         Args:
             schema:        Pydantic model class the LLM should populate.
             system_prompt: Role/instruction for the model.
             user_prompt:   User turn message.
             temperature:   Sampling temperature (default 0.3 for structured).
+            max_retries:   Max LangChain retry attempts (B7: wired from AgentConfig).
 
         Returns:
             A validated instance of ``schema``.
@@ -145,7 +147,7 @@ class LangChainProvider:
         try:
             llm = cast(Any, self._llm.bind(temperature=temperature))
             chain = llm.with_structured_output(schema).with_retry(
-                stop_after_attempt=2,
+                stop_after_attempt=max_retries,
                 wait_exponential_jitter=True,
             )
             messages = self._build_messages(system_prompt, user_prompt)
@@ -269,7 +271,8 @@ def reset_llm_client(provider: str, api_key: str, model: str) -> LangChainProvid
         api_key=api_key,
         model=model,
     )
-    _using_custom_key = True
+    # B8 Fix: only flag custom key when the provider is NOT groq (which uses the server key)
+    _using_custom_key = (provider != "groq")
     logger.info(
         "llm_client_switched",
         extra={"provider": provider, "model": model},

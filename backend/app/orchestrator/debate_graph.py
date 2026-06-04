@@ -57,6 +57,7 @@ from app.orchestrator.nodes import (
     make_convergence_node,
     make_critiques_node,
     make_finalize_node,
+    make_hitl_node,
     make_proposals_node,
     make_revisions_node,
 )
@@ -173,6 +174,9 @@ class DebateGraph:
         workflow.add_node("critiques",   make_critiques_node(self.agents, emit, self._on_state_change))   # type: ignore[arg-type]
         workflow.add_node("revisions",   make_revisions_node(self.agents, emit, self._on_state_change))   # type: ignore[arg-type]
         workflow.add_node("convergence", make_convergence_node(self.moderator, self.settings, emit, self._on_state_change))  # type: ignore[arg-type]
+        # B2 Fix: HITL approval is a separate node so moderator.synthesize() is never
+        # re-executed on resume — only interrupt()/approval handling re-runs.
+        workflow.add_node("hitl",        make_hitl_node(emit, self._on_state_change))  # type: ignore[arg-type]
         workflow.add_node("finalize",    make_finalize_node(self.moderator, emit, self._on_state_change, self._memory_store))  # type: ignore[arg-type]
 
         workflow.add_edge(START, "proposals")
@@ -186,12 +190,20 @@ class DebateGraph:
         workflow.add_edge("critiques", "revisions")
         workflow.add_edge("revisions", "convergence")
 
-        # Conditional edge: loop back, pause for approval, or finalize.
+        # Convergence routes: loop back | HITL approval pause | finalize directly
         workflow.add_conditional_edges(
             "convergence",
             lambda state: (
-                "proposals" if state["should_continue"] else "finalize"
+                "proposals" if state["should_continue"]
+                else ("hitl" if state.get("hitl_mode") else "finalize")
             ),
+            {"proposals": "proposals", "hitl": "hitl", "finalize": "finalize"},
+        )
+
+        # After HITL approval: either add a round (loop) or finalize
+        workflow.add_conditional_edges(
+            "hitl",
+            lambda state: "proposals" if state["should_continue"] else "finalize",
             {"proposals": "proposals", "finalize": "finalize"},
         )
 
@@ -272,6 +284,7 @@ class DebateGraph:
             "consensus_threshold": consensus_threshold,
             "hitl_mode": hitl_mode and self.settings.HITL_ENABLED,
             "awaiting_approval": False,
+            "hitl_interrupt_payload": None,
         }
 
         # Phase 2: scope graph execution to this debate's thread_id so

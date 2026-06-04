@@ -96,6 +96,11 @@ class BaseAgent(ABC):
         # Maximum tool invocations per run() / revise() call
         self.max_tool_calls_per_round: int = 3
 
+        # B7 Fix: per-agent LLM sampling temperature and retry budget, populated
+        # by AgentRegistry.get() from AgentConfig so they have real effect.
+        self.temperature: float = 0.3
+        self.max_retries: int = 2
+
     async def run(self, state: DebateState) -> AgentResponse:
         user_prompt = self._build_proposal_prompt(state)
         # P3.1: inject knowledge-base context into the proposal prompt
@@ -305,6 +310,8 @@ class BaseAgent(ABC):
                 schema,
                 system_prompt=effective_system,
                 user_prompt=user_prompt,
+                temperature=self.temperature,
+                max_retries=self.max_retries,
             )
         except Exception as exc:
             elapsed_ms = round((time.monotonic() - started) * 1000)

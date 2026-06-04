@@ -243,9 +243,20 @@ export interface FinalDecisionEvent extends FinalDecision {
   type: "final_decision";
 }
 
+// B10 Fix: backend sends error/error_type/detail, not message
 export interface ErrorEvent {
   type: "error";
-  message: string;
+  error?: string;
+  error_type?: string;
+  detail?: string;
+}
+
+// B6 Fix: backend emits agent_timeout when an agent call times out
+export interface AgentTimeoutEvent {
+  type: "agent_timeout";
+  round_number: number;
+  phase: DebatePhase;
+  agent_name: string;
 }
 
 // P4.1 – HITL approval_required SSE event
@@ -278,6 +289,7 @@ export type DebateSSEEvent =
   | FinalDecisionEvent
   | ApprovalRequiredEvent
   | ToolCalledEvent
+  | AgentTimeoutEvent  // B6
   | ErrorEvent;
 
 /* ------------------------------------------------------------------ */
@@ -346,6 +358,15 @@ export interface AgentMeta {
   icon: string; // emoji
   role: string;
 }
+
+// B4 Fix: metadata for domain-pack agents (FinancialEthics, Security, Compliance, PatientSafety)
+// These are displayed in the status strip and agent cards when a domain pack is active.
+export const DOMAIN_AGENT_META: Record<string, Omit<AgentMeta, "name"> & { name: string }> = {
+  FinancialEthics: { name: "FinancialEthics", color: "#F59E0B", lightColor: "#FEF3C7", icon: "💰", role: "Financial ethics & ESG" },
+  Security:        { name: "Security",        color: "#6366F1", lightColor: "#EEF2FF", icon: "🔒", role: "Cybersecurity & ops risk" },
+  Compliance:      { name: "Compliance",      color: "#0891B2", lightColor: "#CFFAFE", icon: "📋", role: "Regulatory compliance" },
+  PatientSafety:   { name: "PatientSafety",   color: "#EC4899", lightColor: "#FCE7F3", icon: "🏥", role: "Patient safety & clinical risk" },
+};
 
 export const AGENT_META: Record<AgentName, AgentMeta> = {
   Analyst: {
