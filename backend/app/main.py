@@ -130,8 +130,18 @@ async def lifespan(app: FastAPI):
     from app.services.llm_client import get_llm_client
     from app.api.dependencies import set_knowledge_base, set_memory_store
 
-    kb = KnowledgeBase(persist_dir=settings.KNOWLEDGE_BASE_DIR)
+    kb = KnowledgeBase(
+        persist_dir=settings.KNOWLEDGE_BASE_DIR,
+        embedding_model=settings.KB_EMBEDDING_MODEL,
+        chunk_size=settings.KB_CHUNK_SIZE,
+        chunk_overlap=settings.KB_CHUNK_OVERLAP,
+        similarity_threshold=settings.KB_SIMILARITY_THRESHOLD,
+        top_k=settings.KB_TOP_K,
+    )
     set_knowledge_base(kb)
+    # R8: warm model in background thread to avoid blocking the event loop on first request
+    if kb.is_available:
+        await kb.warm()
     logger.info("knowledge_base_initialized", extra={"available": kb.is_available})
 
     ms = AgentMemoryStore(

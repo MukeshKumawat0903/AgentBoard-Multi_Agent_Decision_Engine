@@ -107,7 +107,8 @@ async def get_history(
                 deb.current_round,
                 deb.max_rounds,
                 deb.agreement_score,
-                deb.termination_reason
+                deb.termination_reason,
+                deb.state_json
     """
 
     if q:
@@ -132,18 +133,31 @@ async def get_history(
     )
     rows = await cur.fetchall()
 
-    items: list[dict[str, Any]] = [
-        {
-            "thread_id":          r[0],
-            "user_query":         r[1],
-            "created_at":         r[2],
-            "status":             r[3] or "converged",
-            "total_rounds":       r[5] or 4,
-            "agreement_score":    float(r[6]) if r[6] is not None else 0.0,
-            "termination_reason": r[7] or "consensus_reached",
-        }
-        for r in rows
-    ]
+    def _parse_flags(state_json_str: str | None) -> tuple[bool, bool]:
+        """Extract use_knowledge_base and enable_agent_memory from state JSON."""
+        if not state_json_str:
+            return False, False
+        try:
+            import json as _json
+            s = _json.loads(state_json_str)
+            return bool(s.get("use_knowledge_base")), bool(s.get("enable_agent_memory"))
+        except Exception:  # noqa: BLE001
+            return False, False
+
+    items: list[dict[str, Any]] = []
+    for r in rows:
+        use_kb, use_mem = _parse_flags(r[8])
+        items.append({
+            "thread_id":            r[0],
+            "user_query":           r[1],
+            "created_at":           r[2],
+            "status":               r[3] or "converged",
+            "total_rounds":         r[5] or 4,
+            "agreement_score":      float(r[6]) if r[6] is not None else 0.0,
+            "termination_reason":   r[7] or "consensus_reached",
+            "use_knowledge_base":   use_kb,
+            "enable_agent_memory":  use_mem,
+        })
     return items, total
 
 

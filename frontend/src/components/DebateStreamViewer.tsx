@@ -343,9 +343,36 @@ export default function DebateStreamViewer({ threadId }: Props) {
             {/* Agent outputs */}
             {round.agent_outputs.length > 0 && (
               <div className="p-4 grid grid-cols-1 sm:grid-cols-2 gap-3">
-                {round.agent_outputs.map((output) => (
-                  <AgentCard key={output.agent_name} response={output} />
-                ))}
+                {round.agent_outputs.map((output) => {
+                  const agentTools = round.toolCalls?.filter(
+                    (tc) => tc.agent_name === output.agent_name,
+                  ) ?? [];
+                  return (
+                    <div key={output.agent_name} className="space-y-1.5">
+                      <AgentCard response={output} />
+                      {/* NB3/FI1: tool activity inline under each agent card */}
+                      {agentTools.map((tc, ti) => (
+                        <div
+                          key={ti}
+                          className="text-xs bg-amber-50 dark:bg-amber-900/20 border border-amber-200 dark:border-amber-800 rounded-lg px-3 py-2 flex items-start gap-2"
+                        >
+                          <span className="shrink-0">🔧</span>
+                          <span>
+                            <span className="font-medium text-amber-700 dark:text-amber-400">
+                              {tc.tool_name}
+                            </span>
+                            {tc.output_snippet && (
+                              <span className="text-gray-500 dark:text-gray-400 ml-1">
+                                → {tc.output_snippet.slice(0, 120)}
+                                {tc.output_snippet.length > 120 ? "…" : ""}
+                              </span>
+                            )}
+                          </span>
+                        </div>
+                      ))}
+                    </div>
+                  );
+                })}
               </div>
             )}
 

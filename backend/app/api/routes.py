@@ -503,11 +503,12 @@ async def stream_debate_events(
                 event_type = payload.get("type", "message")
                 yield _sse_line(event_type, payload)
 
-            if thread_id not in background_tasks and debate_store[thread_id].status == "error":
+            _stored = debate_store.get(thread_id)  # NB1: safe .get() — store is empty after restart
+            if thread_id not in background_tasks and _stored is not None and _stored.status == "error":
                 recovery_payload = {
                     "type": "error",
                     "error": "debate_recovery_required",
-                    "detail": debate_store[thread_id].termination_reason or "recovery_required_after_restart",
+                    "detail": _stored.termination_reason or "recovery_required_after_restart",
                 }
                 yield f"event: error\ndata: {json.dumps(recovery_payload)}\n\n"
                 return
@@ -904,6 +905,14 @@ async def export_decision(
     decision = FinalDecision.model_validate_json(decision_json)
 
     fmt = format.lower()
+
+    # NB6: validate before processing — unknown formats return 400, not silent markdown
+    if fmt not in ("markdown", "pdf", "json"):
+        raise HTTPException(
+            status_code=400,
+            detail=f"Unsupported format '{fmt}'. Supported: 'markdown', 'pdf', 'json'.",
+        )
+
     if fmt == "pdf":
         try:
             pdf_bytes = render_pdf(decision)
@@ -914,6 +923,16 @@ async def export_decision(
             media_type="application/pdf",
             headers={
                 "Content-Disposition": f'attachment; filename="decision-{thread_id}.pdf"'
+            },
+        )
+
+    # FI4: JSON export — machine-readable full decision object
+    if fmt == "json":
+        return StreamingResponse(
+            iter([decision.model_dump_json(indent=2).encode("utf-8")]),
+            media_type="application/json",
+            headers={
+                "Content-Disposition": f'attachment; filename="decision-{thread_id}.json"'
             },
         )
 
@@ -1150,10 +1169,13 @@ async def upload_knowledge_document(
             detail=f"Unsupported file type '{suffix}'. Allowed: {sorted(allowed_exts)}",
         )
 
-    # Size limit: 10 MB
+    # Size limit from settings
     contents = await file.read()
-    if len(contents) > 10 * 1024 * 1024:
-        raise HTTPException(status_code=413, detail="File too large (max 10 MB).")
+    if len(contents) > settings.KB_MAX_FILE_MB * 1024 * 1024:
+        raise HTTPException(
+            status_code=413,
+            detail=f"File too large (max {settings.KB_MAX_FILE_MB} MB).",
+        )
 
     # Write to a temp file, then ingest
     with tempfile.NamedTemporaryFile(suffix=suffix, delete=False) as tmp:
@@ -1161,9 +1183,17 @@ async def upload_knowledge_document(
         tmp_path = tmp.name
 
     try:
-        chunks = await asyncio.to_thread(kb.ingest, tmp_path, {"source": file.filename or "upload"})
+        # R1: kb.ingest is a coroutine — await it directly (not via asyncio.to_thread)
+        chunks = await kb.ingest(tmp_path, {"source": file.filename or "upload"})
     finally:
         os.unlink(tmp_path)
+
+    # R9: warn when no text could be extracted (e.g. scanned/image-only PDF)
+    if chunks == 0:
+        raise HTTPException(
+            status_code=422,
+            detail="No extractable text found in this file. Is it a scanned or image-only PDF?",
+        )
 
     app_metrics.increment_event("knowledge.uploaded")
     audit_event(
@@ -1188,7 +1218,7 @@ async def list_knowledge_documents():
     kb = get_knowledge_base()
     if not kb.is_available:
         return []
-    return kb.list_documents()
+    return await kb.list_documents()  # R1: was missing await
 
 
 @router.delete(
@@ -1203,7 +1233,7 @@ async def delete_knowledge_document(doc_name: str, request: Request):
     kb = get_knowledge_base()
     if not kb.is_available:
         raise HTTPException(status_code=501, detail="Knowledge base not available.")
-    deleted = kb.delete_document(doc_name)
+    deleted = await kb.delete_document(doc_name)  # R1: was missing await
     app_metrics.increment_event("knowledge.deleted")
     audit_event(
         "knowledge.delete",

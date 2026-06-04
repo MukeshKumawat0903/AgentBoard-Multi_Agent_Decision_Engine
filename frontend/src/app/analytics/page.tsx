@@ -173,11 +173,22 @@ function QualityPanel({ quality }: { quality: AnalyticsQuality | null }) {
 
   if (quality.evaluated_count === 0)
     return (
-      <p className="text-sm text-gray-400 py-4">
-        No evaluations yet. Run{" "}
-        <span className="font-mono">POST /decision/&#123;id&#125;/evaluate</span> on completed
-        debates to populate quality scores.
-      </p>
+      <div className="flex flex-col items-center gap-4 py-10 text-center">
+        <span className="text-4xl">✦</span>
+        <div>
+          <p className="font-semibold text-gray-700 dark:text-gray-300">No evaluations yet</p>
+          <p className="text-sm text-gray-400 dark:text-gray-500 mt-1">
+            Evaluate a completed debate to see quality scores by mode, domain, and template.
+          </p>
+        </div>
+        {/* FI5: direct link to history so user can take action immediately */}
+        <a
+          href="/history"
+          className="px-4 py-2 rounded-lg bg-purple-600 text-white text-sm font-medium hover:bg-purple-700 transition focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-purple-500"
+        >
+          Go to History → Evaluate a Decision
+        </a>
+      </div>
     );
 
   const modeData = Object.entries(quality.scores_by_mode).map(([k, v]) => ({

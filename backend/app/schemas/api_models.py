@@ -234,6 +234,9 @@ class HistoryItem(BaseModel):
     total_rounds: int
     agreement_score: float
     termination_reason: str
+    # FI3: feature flags extracted from state_json so history cards can show badges
+    use_knowledge_base: bool = False
+    enable_agent_memory: bool = False
 
 
 class HistoryListResponse(BaseModel):

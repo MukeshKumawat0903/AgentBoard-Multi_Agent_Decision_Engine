@@ -100,9 +100,15 @@ def set_knowledge_base(kb) -> None:
 def get_knowledge_base():
     """Return the KnowledgeBase singleton, or a no-op stub if not initialised."""
     if _knowledge_base is None:
-        # Return a lazy stub so routes don't crash when KB is not configured
         from app.services.retriever import KnowledgeBase
-        return KnowledgeBase(persist_dir=settings.KNOWLEDGE_BASE_DIR)
+        return KnowledgeBase(
+            persist_dir=settings.KNOWLEDGE_BASE_DIR,
+            embedding_model=settings.KB_EMBEDDING_MODEL,
+            chunk_size=settings.KB_CHUNK_SIZE,
+            chunk_overlap=settings.KB_CHUNK_OVERLAP,
+            similarity_threshold=settings.KB_SIMILARITY_THRESHOLD,
+            top_k=settings.KB_TOP_K,
+        )
     return _knowledge_base
 
 

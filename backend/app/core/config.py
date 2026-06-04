@@ -67,8 +67,13 @@ class Settings(BaseSettings):
     SEMANTIC_CONSENSUS_WEIGHT: float = 0.5
 
     # --- Phase 3: Knowledge Base RAG ---
-    # Directory for persistent ChromaDB vector store.
     KNOWLEDGE_BASE_DIR: str = "knowledge_base"
+    KB_CHUNK_SIZE: int = 1000
+    KB_CHUNK_OVERLAP: int = 200
+    KB_SIMILARITY_THRESHOLD: float = 0.30
+    KB_TOP_K: int = 5
+    KB_EMBEDDING_MODEL: str = "all-MiniLM-L6-v2"
+    KB_MAX_FILE_MB: int = 10
 
     # --- Phase 4: Human-in-the-Loop ---
     # Set False to disable HITL even when supervised mode is requested.

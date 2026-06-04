@@ -108,7 +108,7 @@ class BaseAgent(ABC):
             user_prompt = await self._enrich_with_kb(user_prompt, state.user_query)
         # P3.2: run tools and append their output
         if self.allowed_tools:
-            user_prompt = await self._run_tools(user_prompt)
+            user_prompt = await self._run_tools(user_prompt, state.user_query)
         # P3.3: inject agent memory into system prompt for this call
         system_prompt = await self._build_system_prompt(state)
         raw = await self._call_structured(
@@ -200,11 +200,15 @@ class BaseAgent(ABC):
     # ------------------------------------------------------------------
 
     async def _enrich_with_kb(self, user_prompt: str, query: str) -> str:
-        """Retrieve relevant chunks from KB and append to user_prompt."""
+        """Retrieve relevant hits from KB and append to user_prompt with source attribution (R6)."""
         try:
-            chunks = await self.knowledge_base.retrieve(query)  # type: ignore[union-attr]
-            if chunks:
-                context = "\n\n".join(f"[Context {i + 1}]\n{c}" for i, c in enumerate(chunks))
+            hits = await self.knowledge_base.retrieve(query)  # type: ignore[union-attr]
+            if hits:
+                parts = [
+                    f"[Source: {h['source']} · {h['score']}]\n{h['text']}"
+                    for h in hits
+                ]
+                context = "\n\n".join(parts)
                 return f"{user_prompt}\n\n---\nRelevant context from knowledge base:\n{context}"
         except Exception as exc:  # noqa: BLE001
             self.logger.warning(
@@ -217,7 +221,7 @@ class BaseAgent(ABC):
     # P3.2 Tool execution
     # ------------------------------------------------------------------
 
-    async def _run_tools(self, user_prompt: str) -> str:
+    async def _run_tools(self, user_prompt: str, query: str = "") -> str:
         """Run allowed tools (capped at max_tool_calls_per_round) and append outputs."""
         import asyncio
         from app.agents.tools import TOOL_REGISTRY
@@ -235,8 +239,8 @@ class BaseAgent(ABC):
             if tool is None:
                 continue
             try:
-                # get_current_date doesn't need the query; others take a prompt snippet
-                tool_input = "" if tool_name == "get_current_date" else user_prompt[:200]
+                # NB7: use the actual debate query, not a truncated prompt preamble
+                tool_input = "" if tool_name == "get_current_date" else (query or user_prompt[:200])
                 output = await asyncio.get_event_loop().run_in_executor(
                     None, tool.run, tool_input
                 )
@@ -275,7 +279,7 @@ class BaseAgent(ABC):
         try:
             lessons = await self.memory_store.get_recent_memory(self.name, limit=5)
             if lessons:
-                memory_block = "Lessons from your past debates:\n" + "\n".join(f"- {l}" for l in lessons)
+                memory_block = "Lessons from your past debates:\n" + "\n".join(f"- {lesson}" for lesson in lessons)
                 return f"{memory_block}\n\n{self.system_prompt}"
         except Exception as exc:  # noqa: BLE001
             self.logger.warning(

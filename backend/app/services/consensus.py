@@ -291,10 +291,6 @@ class SemanticConsensusEngine(ConsensusEngine):
     # ------------------------------------------------------------------
 
     def _load_model(self) -> "_ST":
-        if self._model is None:
-            logger.info(
-                "Loading sentence-transformer model",
-                extra={"model": self._model_name},
-            )
-            self._model = _ST(self._model_name)
-        return self._model
+        # R5: reuse the module-level shared embedder to avoid loading weights twice
+        from app.services.retriever import get_shared_embedder  # noqa: PLC0415
+        return get_shared_embedder(self._model_name)  # type: ignore[return-value]

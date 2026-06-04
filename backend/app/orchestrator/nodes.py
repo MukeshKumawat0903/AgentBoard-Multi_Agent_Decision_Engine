@@ -672,12 +672,13 @@ def make_finalize_node(
                                 output.position,
                             )
                         )
-                        task.add_done_callback(
-                            lambda t: t.exception() and logger.warning(
-                                "agent_memory_save_failed",
-                                extra={"error": str(t.exception())},
-                            )
-                        )
+                        def _on_memory_done(t: "asyncio.Task[None]") -> None:
+                            if not t.cancelled() and t.exception():
+                                logger.warning(
+                                    "agent_memory_save_failed",
+                                    extra={"error": str(t.exception())},
+                                )
+                        task.add_done_callback(_on_memory_done)
                         saved_names.add(output.agent_name)
                 break  # only save from the last round
 

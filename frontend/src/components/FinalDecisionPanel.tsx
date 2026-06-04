@@ -34,7 +34,7 @@ export default function FinalDecisionPanel({ decision }: FinalDecisionPanelProps
   const [showMinority, setShowMinority] = useLocalBool("fdp:showMinority", false);
   const [showDisagreements, setShowDisagreements] = useLocalBool("fdp:showDisagreements", false);
   const [showDissenting, setShowDissenting] = useLocalBool("fdp:showDissenting", false);
-  const [exportLoading, setExportLoading] = useState<null | "markdown" | "pdf">(null);
+  const [exportLoading, setExportLoading] = useState<null | "markdown" | "pdf" | "json">(null);
   const [evalResult, setEvalResult] = useState<EvaluationResult | null>(null);
   const [evalLoading, setEvalLoading] = useState(false);
   const [evalError, setEvalError] = useState<string | null>(null);
@@ -311,15 +311,17 @@ export default function FinalDecisionPanel({ decision }: FinalDecisionPanelProps
               {showTrace ? "▲ Hide" : "▼ Full Trace"}
             </button>
           )}
+          {/* NB8: disable once a result is already loaded — re-fetching is redundant */}
           <button
             onClick={handleEvaluate}
-            disabled={evalLoading}
-            className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg bg-purple-600 text-white text-xs font-medium hover:bg-purple-700 disabled:opacity-50 transition"
+            disabled={evalLoading || evalResult !== null}
+            title={evalResult !== null ? "Evaluation already loaded (backend cached)" : undefined}
+            className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg bg-purple-600 text-white text-xs font-medium hover:bg-purple-700 disabled:opacity-40 transition"
           >
             {evalLoading ? (
               <span className="w-3 h-3 border-2 border-white border-t-transparent rounded-full animate-spin" />
-            ) : "✦"}
-            Evaluate Quality
+            ) : evalResult !== null ? "✓" : "✦"}
+            {evalResult !== null ? "Evaluated" : "Evaluate Quality"}
           </button>
         </div>
       </div>

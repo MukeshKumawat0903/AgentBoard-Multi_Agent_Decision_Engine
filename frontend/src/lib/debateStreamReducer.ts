@@ -12,6 +12,7 @@ import type {
   DebateSSEEvent,
   FinalDecision,
   SynthesisEvent,
+  ToolCalledEvent,
 } from "./types";
 
 export interface StreamState {
@@ -169,6 +170,24 @@ export function debateStreamReducer(state: StreamState, action: StreamAction): S
       // eslint-disable-next-line @typescript-eslint/no-unused-vars
       const { type, ...decision } = event as FinalDecision & { type: string };
       return { ...state, status: "done", finalDecision: decision as FinalDecision };
+    }
+
+    case "tool_called": {
+      // NB3/FI1: accumulate tool calls on the current round so the UI can display them
+      const e = event as ToolCalledEvent;
+      const record = {
+        agent_name: e.agent_name,
+        tool_name: e.tool_name,
+        input: e.input,
+        output_snippet: e.output_snippet,
+      };
+      return {
+        ...state,
+        rounds: ensureRound(state.rounds, state.currentRound).map((r) => {
+          if (r.round_number !== state.currentRound) return r;
+          return { ...r, toolCalls: [...(r.toolCalls ?? []), record] };
+        }),
+      };
     }
 
     case "agent_timeout": {

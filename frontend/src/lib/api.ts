@@ -82,8 +82,11 @@ async function apiFetch<T>(
 ): Promise<T | null> {
   const url = `${API_BASE}${path}`;
   try {
+    // NB10: don't force Content-Type when body is FormData — browser sets multipart boundary
+    const defaultHeaders: Record<string, string> =
+      init?.body instanceof FormData ? {} : { "Content-Type": "application/json" };
     const res = await fetch(url, {
-      headers: { "Content-Type": "application/json" },
+      headers: defaultHeaders,
       ...init,
     });
 
@@ -481,13 +484,13 @@ export async function getAnalyticsQuality(): Promise<AnalyticsQuality> {
 
 export async function exportDecision(
   threadId: string,
-  format: "markdown" | "pdf",
+  format: "markdown" | "pdf" | "json",  // FI4: added json
 ): Promise<Blob> {
   const url = `${API_BASE}/decision/${encodeURIComponent(threadId)}/export?format=${format}`;
   const res = await fetch(url);
-  const json = res.headers.get("content-type")?.includes("application/json")
+  const jsonBody = res.headers.get("content-type")?.includes("application/json")
     ? await res.json().catch(() => null)
     : null;
-  if (!res.ok) throw new ApiError(res.status, json);
+  if (!res.ok) throw new ApiError(res.status, jsonBody);
   return res.blob();
 }

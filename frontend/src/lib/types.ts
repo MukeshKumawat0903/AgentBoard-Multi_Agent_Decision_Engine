@@ -38,11 +38,19 @@ export interface CritiqueResponse {
 
 export type DebatePhase = "proposal" | "critique" | "revision" | "convergence";
 
+export interface ToolCallRecord {
+  agent_name: string;
+  tool_name: string;
+  input: string;
+  output_snippet: string;
+}
+
 export interface DebateRound {
   round_number: number;
   phase: DebatePhase;
   agent_outputs: AgentResponse[];
   critiques: CritiqueResponse[];
+  toolCalls?: ToolCallRecord[];  // accumulated during streaming (NB3)
 }
 
 export type DebateStatus =
@@ -168,6 +176,8 @@ export interface HistoryItem {
   total_rounds: number;
   agreement_score: number;
   termination_reason: string;
+  use_knowledge_base?: boolean;    // FI3: feature badge
+  enable_agent_memory?: boolean;   // FI3: feature badge
 }
 
 export interface HistoryListResponse {
@@ -322,6 +332,7 @@ export interface DomainPack {
 export interface SimulationResult {
   query: string;
   runs: number;
+  runs_completed: number;  // NB4: actual successes (≤ runs)
   decisions: FinalDecision[];
   consistency_score: number;
   confidence_variance: number;

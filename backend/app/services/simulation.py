@@ -45,7 +45,8 @@ class SimulationResult(BaseModel):
     """Aggregate result of N independent debate runs for the same query."""
 
     query: str
-    runs: int
+    runs: int = Field(description="Number of runs requested.")
+    runs_completed: int = Field(description="Number of runs that completed successfully (≤ runs).")
     decisions: list[dict] = Field(description="Serialised FinalDecision objects for each run.")
     consistency_score: float = Field(
         ge=0.0, le=1.0,
@@ -151,6 +152,7 @@ async def run_simulation(
         return SimulationResult(
             query=query,
             runs=runs,
+            runs_completed=0,
             decisions=[],
             consistency_score=0.0,
             confidence_variance=0.0,
@@ -178,6 +180,7 @@ async def run_simulation(
     return SimulationResult(
         query=query,
         runs=runs,
+        runs_completed=len(decisions),
         decisions=[d.model_dump() for d in decisions],
         consistency_score=round(consistency, 3),
         confidence_variance=round(confidence_variance, 3),

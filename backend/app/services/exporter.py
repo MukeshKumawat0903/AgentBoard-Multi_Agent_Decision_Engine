@@ -18,8 +18,8 @@ def render_markdown(decision: FinalDecision) -> str:
     ts = decision.created_at.strftime("%Y-%m-%d %H:%M UTC") \
         if decision.created_at else "Unknown"
 
-    lines.append(f"# AgentBoard Decision Report")
-    lines.append(f"")
+    lines.append("# AgentBoard Decision Report")
+    lines.append("")
     lines.append(f"**Thread ID:** `{decision.thread_id}`  ")
     lines.append(f"**Date:** {ts}  ")
     lines.append(f"**Rounds:** {decision.total_rounds}  ")
