@@ -14,7 +14,6 @@ from app.schemas.agent_response import AgentResponse, CritiqueResponse
 from app.schemas.state import DebateState
 from app.services.llm_client import GroqClient
 
-
 SYSTEM_PROMPT = """\
 You are the Ethics & Constraints Agent in a multi-agent decision engine.
 

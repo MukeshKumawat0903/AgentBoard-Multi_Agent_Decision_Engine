@@ -9,7 +9,7 @@ zero changes.
 
 from __future__ import annotations
 
-from typing import Optional, TypedDict
+from typing import TypedDict
 
 from app.schemas.final_decision import FinalDecision
 from app.schemas.state import DebateState
@@ -52,9 +52,9 @@ class DebateGraphState(TypedDict):
 
     debate_state: DebateState
     should_continue: bool
-    final_decision: Optional[FinalDecision]
+    final_decision: FinalDecision | None
     skip_critique_phase: bool
-    consensus_threshold: Optional[float]
+    consensus_threshold: float | None
     hitl_mode: bool
     awaiting_approval: bool
-    hitl_interrupt_payload: Optional[dict]
+    hitl_interrupt_payload: dict | None

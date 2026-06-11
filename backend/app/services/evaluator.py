@@ -17,7 +17,7 @@ Usage::
 from __future__ import annotations
 
 import logging
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from typing import TYPE_CHECKING
 
 from pydantic import BaseModel, Field
@@ -132,5 +132,5 @@ async def evaluate_decision(
         risk_awareness=round(scores.risk_awareness, 3),
         overall=overall,
         reasoning=scores.reasoning,
-        evaluated_at=datetime.now(timezone.utc).isoformat(),
+        evaluated_at=datetime.now(UTC).isoformat(),
     )

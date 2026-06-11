@@ -42,6 +42,16 @@ function critiqueEvent(critic: string, target: string, round = 1) {
   };
 }
 
+function toolCalledEvent(agent: string, tool = "web_search", input = "query") {
+  return {
+    type: "tool_called" as const,
+    agent_name: agent,
+    tool_name: tool,
+    input,
+    output_snippet: "result snippet",
+  };
+}
+
 // ── stream_error / clear_approval ─────────────────────────────────────────
 
 describe("meta actions", () => {
@@ -214,6 +224,45 @@ describe("critique_completed (B1 dedup)", () => {
   });
 });
 
+// ── tool_called — BUG-14 dedup ──────────────────────────────────────────────
+
+describe("tool_called dedup (BUG-14)", () => {
+  it("adds tool call on first delivery", () => {
+    const state = stateWith({
+      currentRound: 1,
+      rounds: [{ round_number: 1, phase: "proposal", agent_outputs: [], critiques: [], toolCalls: [] }],
+    });
+    const next = debateStreamReducer(state, { event: toolCalledEvent("Analyst") });
+    expect(next.rounds[0].toolCalls).toHaveLength(1);
+    expect(next.rounds[0].toolCalls?.[0].agent_name).toBe("Analyst");
+  });
+
+  it("ignores duplicate tool_called (same agent+tool+input, e.g. replayed on reconnect)", () => {
+    const existing = {
+      agent_name: "Analyst",
+      tool_name: "web_search",
+      input: "query",
+      output_snippet: "result snippet",
+    };
+    const state = stateWith({
+      currentRound: 1,
+      rounds: [{ round_number: 1, phase: "proposal", agent_outputs: [], critiques: [], toolCalls: [existing] }],
+    });
+    const next = debateStreamReducer(state, { event: toolCalledEvent("Analyst") });
+    expect(next.rounds[0].toolCalls).toHaveLength(1);
+  });
+
+  it("allows two different tool calls (different tool or input)", () => {
+    const state = stateWith({
+      currentRound: 1,
+      rounds: [{ round_number: 1, phase: "proposal", agent_outputs: [], critiques: [], toolCalls: [] }],
+    });
+    const s1 = debateStreamReducer(state, { event: toolCalledEvent("Analyst", "web_search", "query 1") });
+    const s2 = debateStreamReducer(s1, { event: toolCalledEvent("Analyst", "web_search", "query 2") });
+    expect(s2.rounds[0].toolCalls).toHaveLength(2);
+  });
+});
+
 // ── synthesis ─────────────────────────────────────────────────────────────
 
 describe("synthesis", () => {
@@ -260,15 +309,15 @@ describe("final_decision", () => {
   });
 });
 
-// ── agent_timeout — B6 ────────────────────────────────────────────────────
+// ── agent_timeout — B6 / BUG-16 ────────────────────────────────────────────
 
-describe("agent_timeout (B6)", () => {
-  it("marks timed-out agent as done so its spinner resolves", () => {
+describe("agent_timeout (B6 / BUG-16)", () => {
+  it("marks timed-out agent as timeout (distinct from done) so its spinner resolves", () => {
     const state = stateWith({ agentStatus: { Analyst: "working", Risk: "working" } });
     const next = debateStreamReducer(state, {
       event: { type: "agent_timeout", round_number: 1, phase: "proposal", agent_name: "Analyst" },
     });
-    expect(next.agentStatus["Analyst"]).toBe("done");
+    expect(next.agentStatus["Analyst"]).toBe("timeout");
     expect(next.agentStatus["Risk"]).toBe("working");
   });
 });

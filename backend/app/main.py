@@ -22,7 +22,6 @@ from contextlib import asynccontextmanager
 from typing import cast
 
 import aiosqlite
-
 from fastapi import FastAPI, Request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
@@ -32,27 +31,32 @@ from slowapi.middleware import SlowAPIMiddleware  # type: ignore[import-untyped]
 from starlette.middleware.base import BaseHTTPMiddleware
 from starlette.types import ExceptionHandler
 
+from app.agents.analyst_agent import SYSTEM_PROMPT as ANALYST_PROMPT
+from app.agents.analyst_agent import AnalystAgent
+from app.agents.domain_agents import (
+    ComplianceAgent,
+    FinancialEthicsAgent,
+    PatientSafetyAgent,
+    SecurityAgent,
+)
+from app.agents.ethics_agent import SYSTEM_PROMPT as ETHICS_PROMPT
+from app.agents.ethics_agent import EthicsAgent
+from app.agents.moderator_agent import SYNTHESIS_SYSTEM_PROMPT as MODERATOR_PROMPT
+from app.agents.moderator_agent import ModeratorAgent
+from app.agents.registry import AgentConfig, registry
+from app.agents.risk_agent import SYSTEM_PROMPT as RISK_PROMPT
+from app.agents.risk_agent import RiskAgent
+from app.agents.strategy_agent import SYSTEM_PROMPT as STRATEGY_PROMPT
+from app.agents.strategy_agent import StrategyAgent
+from app.api.analytics import router as analytics_router
+from app.api.routes import router
 from app.core.config import settings
 from app.core.logging_config import setup_logging
 from app.core.metrics import app_metrics
 from app.core.rate_limiter import limiter
 from app.core.request_context import reset_request_id, set_request_id
-from app.api.routes import router
-from app.api.analytics import router as analytics_router
-from app.db.database import run_migrations
 from app.db.crud import cleanup_old_debates
-from app.agents.registry import registry, AgentConfig
-from app.agents.analyst_agent import AnalystAgent, SYSTEM_PROMPT as ANALYST_PROMPT
-from app.agents.risk_agent import RiskAgent, SYSTEM_PROMPT as RISK_PROMPT
-from app.agents.strategy_agent import StrategyAgent, SYSTEM_PROMPT as STRATEGY_PROMPT
-from app.agents.ethics_agent import EthicsAgent, SYSTEM_PROMPT as ETHICS_PROMPT
-from app.agents.moderator_agent import ModeratorAgent, SYNTHESIS_SYSTEM_PROMPT as MODERATOR_PROMPT
-from app.agents.domain_agents import (
-    FinancialEthicsAgent,
-    SecurityAgent,
-    ComplianceAgent,
-    PatientSafetyAgent,
-)
+from app.db.database import run_migrations
 from app.utils.exceptions import LLMConnectionError, LLMRateLimitError, LLMResponseError
 
 logger = logging.getLogger("agentboard")
@@ -125,10 +129,10 @@ async def lifespan(app: FastAPI):
         await cleanup_old_debates(db, settings.DEBATE_TTL_DAYS)
 
     # P3: Initialise knowledge base and agent memory singletons
-    from app.services.retriever import KnowledgeBase
+    from app.api.dependencies import set_knowledge_base, set_memory_store
     from app.services.agent_memory import AgentMemoryStore
     from app.services.llm_client import get_llm_client
-    from app.api.dependencies import set_knowledge_base, set_memory_store
+    from app.services.retriever import KnowledgeBase
 
     kb = KnowledgeBase(
         persist_dir=settings.KNOWLEDGE_BASE_DIR,

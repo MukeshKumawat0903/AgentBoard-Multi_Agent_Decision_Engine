@@ -8,12 +8,15 @@ via the main FastAPI application router.
 import asyncio
 import json
 import logging
+from contextlib import contextmanager
 
 import aiosqlite
 from fastapi import APIRouter, Depends, File, HTTPException, Query, Request, UploadFile
 from fastapi.responses import StreamingResponse
 
+from app.agents.registry import registry
 from app.api.dependencies import (
+    get_active_runs,
     get_background_tasks,
     get_db,
     get_debate_store,
@@ -22,17 +25,31 @@ from app.api.dependencies import (
     get_event_replays,
     get_groq_client,
     get_settings,
+    get_thread_lock,
+    release_thread_lock,
 )
+from app.core.audit import audit_event
 from app.core.config import Settings
 from app.core.config import settings as app_settings
-from app.db.crud import get_decision_json, get_history, save_decision, upsert_debate
-from app.db.crud import get_debate_events, get_debate_state_json, save_debate_event
-from app.db.crud import get_evaluation_json, save_evaluation
+from app.core.metrics import app_metrics
+from app.core.rate_limiter import limiter
+from app.data.templates import TEMPLATES
+from app.db.crud import (
+    get_debate_events,
+    get_debate_state_json,
+    get_decision_json,
+    get_evaluation_json,
+    get_history,
+    save_debate_event,
+    save_decision,
+    save_evaluation,
+    upsert_debate,
+)
 from app.orchestrator.debate_graph import DebateGraph
-from app.schemas.state import DebateState
 from app.schemas.api_models import (
+    PROVIDER_MODELS,
+    ApproveRequest,
     AsyncDebateStartResponse,
-    DebateMode,
     DebateStartRequest,
     DebateStatusResponse,
     ErrorResponse,
@@ -40,17 +57,12 @@ from app.schemas.api_models import (
     HistoryListResponse,
     LLMSettingsResponse,
     LLMSettingsUpdate,
-    PROVIDER_MODELS,
+    SimulateRequest,
     resolve_debate_config,
 )
 from app.schemas.final_decision import FinalDecision
-from app.core.audit import audit_event
-from app.core.metrics import app_metrics
-from app.core.rate_limiter import limiter
+from app.schemas.state import DebateState
 from app.services.llm_client import LangChainProvider, get_active_provider_info, reset_llm_client
-from app.agents.registry import registry
-from app.data.templates import TEMPLATES, TEMPLATES_BY_ID
-from app.api.dependencies import get_thread_lock
 
 router = APIRouter()
 logger = logging.getLogger("agentboard.api")
@@ -79,13 +91,44 @@ async def _persist_debate_state(state: DebateState, database_url: str) -> None:
         logger.warning("db_state_persist_failed", extra={"error": str(exc)})
 
 
-async def _persist_event(thread_id: str, payload: dict, database_url: str) -> None:
-    """Persist a replayable event payload for SSE recovery across restarts."""
+async def _event_writer_loop(
+    persist_queue: asyncio.Queue,
+    queue_list: list,
+    replay_buffer: list,
+    thread_id: str,
+    database_url: str,
+) -> None:
+    """Persist queued SSE payloads in emission order, then broadcast them.
+
+    A single connection and a single in-order queue per debate guarantees the
+    persisted event_id sequence matches emission order (so reconnect replay
+    is never out of order) and that every live frame carries the same
+    ``_event_id`` a later replay would assign it (so a client's
+    Last-Event-ID stays in sync while live events are still streaming, not
+    just after a replay).
+    """
+    async with aiosqlite.connect(database_url) as db:
+        while True:
+            payload = await persist_queue.get()
+            if payload is None:  # sentinel - flush complete, stop
+                break
+            try:
+                event_id = await save_debate_event(db, thread_id, payload)
+                payload["_event_id"] = event_id
+            except Exception as exc:  # noqa: BLE001
+                logger.warning("db_event_persist_failed", extra={"error": str(exc)})
+            replay_buffer.append(payload)
+            for q in list(queue_list):  # snapshot to avoid mutation races
+                q.put_nowait(payload)
+
+
+async def _stop_event_writer(persist_queue: asyncio.Queue, writer_task: asyncio.Task) -> None:
+    """Signal the writer to flush any queued events, then wait for it to exit."""
+    persist_queue.put_nowait(None)
     try:
-        async with aiosqlite.connect(database_url) as db:
-            await save_debate_event(db, thread_id, payload)
+        await writer_task
     except Exception as exc:  # noqa: BLE001
-        logger.warning("db_event_persist_failed", extra={"error": str(exc)})
+        logger.warning("event_writer_failed", extra={"error": str(exc)})
 
 
 def _resolve_active_agents(body: DebateStartRequest) -> tuple[list[str] | None, str | None]:
@@ -122,18 +165,51 @@ def _resolve_active_agents(body: DebateStartRequest) -> tuple[list[str] | None, 
 async def _load_recovered_state(
     db: aiosqlite.Connection,
     thread_id: str,
+    active_runs: set[str],
 ) -> DebateState | None:
-    """Load a DebateState snapshot and convert orphaned in-progress runs to error."""
+    """Load a DebateState snapshot and convert orphaned in-progress runs to error.
+
+    A thread present in ``active_runs`` is a synchronous /debate/start or
+    /debate/{id}/resume call still executing in this process — its
+    "in_progress" status is genuine, not orphaned, so leave it untouched.
+    """
     state_json = await get_debate_state_json(db, thread_id)
     if not state_json:
         return None
     state = DebateState.model_validate_json(state_json)
-    if state.status == "in_progress":
+    if state.status == "in_progress" and thread_id not in active_runs:
         state.status = "error"
         state.termination_reason = state.termination_reason or "recovery_required_after_restart"
         state.touch()
         await upsert_debate(db, state)
     return state
+
+
+@contextmanager
+def _track_active_run(active_runs: set[str], thread_id: str):
+    """Mark ``thread_id`` as actively running in-request for the duration of the block.
+
+    Used by synchronous /debate/start and /debate/{id}/resume so concurrent
+    status polls don't mistake their "in_progress" state for an orphaned run.
+    """
+    active_runs.add(thread_id)
+    try:
+        yield
+    finally:
+        active_runs.discard(thread_id)
+
+
+def _cleanup_terminal_thread_state(thread_id: str, all_queues: dict, all_replays: dict) -> None:
+    """Drop a finished debate's in-memory SSE replay buffer, queue list, and lock.
+
+    Called once a debate reaches a terminal state (completed/cancelled/error).
+    From here on, ``debate_events``/``decisions`` in SQLite fully cover
+    reconnect replay (see BUG-14), so retaining these per-thread entries for
+    the life of the process would otherwise grow without bound across debates.
+    """
+    all_replays.pop(thread_id, None)
+    all_queues.pop(thread_id, None)
+    release_thread_lock(thread_id)
 
 
 async def _run_debate_background(
@@ -142,7 +218,10 @@ async def _run_debate_background(
     debate_store: dict,
     decision_store: dict,
     all_queues: dict,
+    all_replays: dict,
     database_url: str,
+    persist_queue: asyncio.Queue,
+    writer_task: asyncio.Task,
     consensus_threshold: float | None = None,
     skip_critique_phase: bool = False,
     hitl_mode: bool = False,
@@ -165,6 +244,7 @@ async def _run_debate_background(
             should_close_streams = False
             app_metrics.increment_event("debate.awaiting_approval")
             await _persist_debate_state(final_state, database_url)
+            await _stop_event_writer(persist_queue, writer_task)
             logger.info("background_debate_paused_for_approval", extra={"thread_id": thread_id})
             return
 
@@ -172,11 +252,38 @@ async def _run_debate_background(
             decision_store[thread_id] = decision
         app_metrics.increment_event("debate.completed_async")
         await _persist_debate(final_state, decision, database_url)
+        # Drain the writer first so every emitted event (e.g. debate_completed)
+        # reaches subscribers, in order, before the final_decision frame.
+        await _stop_event_writer(persist_queue, writer_task)
         final_payload = json.loads(decision.model_dump_json())
         final_payload["type"] = "final_decision"
         queue_list = all_queues.get(thread_id, [])
         for q in list(queue_list):
             q.put_nowait(final_payload)
+    except asyncio.CancelledError:
+        # User cancelled the debate via POST /debate/{id}/cancel.
+        # CancelledError is BaseException, so it bypasses the `except Exception`
+        # below — handle it explicitly, then re-raise so the task ends cancelled.
+        logger.info("background_debate_cancelled", extra={"thread_id": thread_id})
+        app_metrics.increment_event("debate.cancelled")
+        debate_state.status = "cancelled"
+        debate_state.termination_reason = "user_cancelled"
+        debate_state.touch()
+        debate_store[thread_id] = debate_state
+        try:
+            await _persist_debate_state(debate_state, database_url)
+        except Exception:  # noqa: BLE001
+            pass
+        cancelled_payload = {
+            "type": "cancelled",
+            "thread_id": thread_id,
+            "detail": "Debate cancelled by user.",
+        }
+        # Route through the writer so it's persisted (for reconnect replay),
+        # gets an _event_id, and is broadcast in order with everything else.
+        persist_queue.put_nowait(cancelled_payload)
+        await _stop_event_writer(persist_queue, writer_task)
+        raise
     except Exception as exc:  # noqa: BLE001
         error_type = type(exc).__name__
         logger.error(
@@ -193,19 +300,23 @@ async def _run_debate_background(
                 await upsert_debate(db, debate_state)
         except Exception:  # noqa: BLE001
             pass
-        # Notify SSE subscribers that the debate failed
+        # Notify SSE subscribers that the debate failed. Routed through the
+        # writer so a reconnecting client can replay the error from the DB.
         error_payload = {
             "type": "error",
             "error": "debate_execution_failed",
             "error_type": error_type,
             "detail": str(exc),
         }
-        for q in list(all_queues.get(thread_id, [])):
-            q.put_nowait(error_payload)
+        persist_queue.put_nowait(error_payload)
+        await _stop_event_writer(persist_queue, writer_task)
     finally:
+        if not writer_task.done():
+            writer_task.cancel()
         if should_close_streams:
             for q in list(all_queues.get(thread_id, [])):
                 q.put_nowait(None)
+            _cleanup_terminal_thread_state(thread_id, all_queues, all_replays)
 
 
 # ---------------------------------------------------------------------------
@@ -226,6 +337,7 @@ async def start_debate(
     settings: Settings = Depends(get_settings),
     debate_store: dict[str, DebateState] = Depends(get_debate_store),
     decision_store: dict[str, FinalDecision] = Depends(get_decision_store),
+    active_runs: set[str] = Depends(get_active_runs),
 ) -> FinalDecision:
     """
     Run a complete multi-agent debate synchronously and return the
@@ -246,8 +358,6 @@ async def start_debate(
         max_rounds=body.max_rounds,
         consensus_threshold=body.consensus_threshold,
         skip_critique_phase=body.skip_critique_phase,
-        default_max_rounds=settings.MAX_DEBATE_ROUNDS,
-        default_threshold=settings.CONSENSUS_THRESHOLD,
     )
     from app.api.dependencies import get_knowledge_base, get_memory_store
     kb = get_knowledge_base() if body.use_knowledge_base else None
@@ -270,17 +380,18 @@ async def start_debate(
         selected_agents=selected_agents,
     )
     logger.info("api_debate_start")
-    state, decision = await graph.run(
-        body.query,
-        initial_state=debate_state,
-        consensus_threshold=resolved_threshold,
-        skip_critique_phase=resolved_skip,
-    )
-    debate_store[state.thread_id] = state
-    decision_store[state.thread_id] = decision
-    app_metrics.increment_event("debate.started_sync")
-    app_metrics.increment_event("debate.completed_sync")
-    await _persist_debate(state, decision, settings.DATABASE_URL)
+    with _track_active_run(active_runs, debate_state.thread_id):
+        state, decision = await graph.run(
+            body.query,
+            initial_state=debate_state,
+            consensus_threshold=resolved_threshold,
+            skip_critique_phase=resolved_skip,
+        )
+        debate_store[state.thread_id] = state
+        decision_store[state.thread_id] = decision
+        app_metrics.increment_event("debate.started_sync")
+        app_metrics.increment_event("debate.completed_sync")
+        await _persist_debate(state, decision, settings.DATABASE_URL)
     logger.info(
         "api_debate_complete",
         extra={"thread_id": state.thread_id, "termination_reason": state.termination_reason},
@@ -327,8 +438,6 @@ async def start_debate_async(
         max_rounds=body.max_rounds,
         consensus_threshold=body.consensus_threshold,
         skip_critique_phase=body.skip_critique_phase,
-        default_max_rounds=settings.MAX_DEBATE_ROUNDS,
-        default_threshold=settings.CONSENSUS_THRESHOLD,
     )
     debate_state = DebateState(
         user_query=body.query,
@@ -341,6 +450,7 @@ async def start_debate_async(
     thread_id = debate_state.thread_id
     queue_list: list = []
     replay_buffer: list = []
+    persist_queue: asyncio.Queue = asyncio.Queue()
     all_queues[thread_id] = queue_list
     all_replays[thread_id] = replay_buffer
     debate_store[thread_id] = debate_state
@@ -350,13 +460,17 @@ async def start_debate_async(
     kb = get_knowledge_base() if body.use_knowledge_base else None
     ms = get_memory_store() if body.enable_agent_memory else None
 
+    writer_task = asyncio.create_task(
+        _event_writer_loop(persist_queue, queue_list, replay_buffer, thread_id, settings.DATABASE_URL)
+    )
+
     graph = DebateGraph(
         llm_client=llm_client,
         settings=settings,
         queue_list=queue_list,
         replay_buffer=replay_buffer,
+        persist_queue=persist_queue,
         on_state_change=lambda state: _persist_debate_state(state, settings.DATABASE_URL),
-        on_event=lambda payload, tid=thread_id: _persist_event(tid, payload, settings.DATABASE_URL),
         knowledge_base=kb,
         memory_store=ms,
         selected_agents=selected_agents,
@@ -378,7 +492,9 @@ async def start_debate_async(
     task = asyncio.create_task(
         _run_debate_background(
             graph, debate_state, debate_store, decision_store,
-            all_queues, settings.DATABASE_URL,
+            all_queues, all_replays, settings.DATABASE_URL,
+            persist_queue=persist_queue,
+            writer_task=writer_task,
             consensus_threshold=resolved_threshold,
             skip_critique_phase=resolved_skip,
             hitl_mode=bool(body.supervised),
@@ -409,6 +525,7 @@ async def stream_debate_events(
     debate_store: dict[str, DebateState] = Depends(get_debate_store),
     decision_store: dict[str, FinalDecision] = Depends(get_decision_store),
     background_tasks: dict[str, asyncio.Task] = Depends(get_background_tasks),
+    active_runs: set[str] = Depends(get_active_runs),
     all_queues: dict = Depends(get_event_queues),
     all_replays: dict = Depends(get_event_replays),
     db: aiosqlite.Connection = Depends(get_db),
@@ -469,7 +586,7 @@ async def stream_debate_events(
 
     recovered_state = debate_store.get(thread_id)
     if recovered_state is None:
-        recovered_state = await _load_recovered_state(db, thread_id)
+        recovered_state = await _load_recovered_state(db, thread_id, active_runs)
         if recovered_state is not None:
             debate_store[thread_id] = recovered_state
 
@@ -495,23 +612,47 @@ async def stream_debate_events(
         # Fall back to in-memory buffer for in-flight debates
         replay_snapshot = list(all_replays.get(thread_id, []))
 
+    # Because the personal queue is registered before this snapshot is read,
+    # an event persisted in that window can land in both replay_snapshot and
+    # personal_queue. skip_up_to records the highest _event_id already
+    # delivered via replay so the live loop below can drop that duplicate.
+    skip_up_to = max(
+        (p.get("_event_id", 0) for p in replay_snapshot),
+        default=(last_event_id or 0),
+    )
+
     async def event_generator():
         try:
             for payload in replay_snapshot:
                 if await request.is_disconnected():
                     return
                 event_type = payload.get("type", "message")
-                yield _sse_line(event_type, payload)
+                yield _sse_line(event_type, dict(payload))
 
+            # If the replay already delivered a terminal frame (cancelled/error/
+            # final_decision), the client has what it needs — don't re-emit one
+            # below and don't fall into the live-queue loop for nothing.
+            replayed_terminal = any(
+                p.get("type") in ("cancelled", "error", "final_decision") for p in replay_snapshot
+            )
             _stored = debate_store.get(thread_id)  # NB1: safe .get() — store is empty after restart
-            if thread_id not in background_tasks and _stored is not None and _stored.status == "error":
-                recovery_payload = {
-                    "type": "error",
-                    "error": "debate_recovery_required",
-                    "detail": _stored.termination_reason or "recovery_required_after_restart",
-                }
-                yield f"event: error\ndata: {json.dumps(recovery_payload)}\n\n"
-                return
+            if not replayed_terminal and thread_id not in background_tasks and _stored is not None:
+                if _stored.status == "error":
+                    recovery_payload = {
+                        "type": "error",
+                        "error": "debate_recovery_required",
+                        "detail": _stored.termination_reason or "recovery_required_after_restart",
+                    }
+                    yield f"event: error\ndata: {json.dumps(recovery_payload)}\n\n"
+                    return
+                if _stored.status == "cancelled":
+                    cancelled_payload = {
+                        "type": "cancelled",
+                        "thread_id": thread_id,
+                        "detail": "Debate cancelled by user.",
+                    }
+                    yield f"event: cancelled\ndata: {json.dumps(cancelled_payload)}\n\n"
+                    return
 
             while True:
                 if await request.is_disconnected():
@@ -520,9 +661,13 @@ async def stream_debate_events(
                     payload = await asyncio.wait_for(personal_queue.get(), timeout=20.0)
                     if payload is None:  # sentinel – debate finished
                         break
+                    event_id = payload.get("_event_id")
+                    if event_id is not None and event_id <= skip_up_to:
+                        # Already delivered via the replay above.
+                        continue
                     event_type = payload.get("type", "message")
                     yield _sse_line(event_type, dict(payload))
-                except asyncio.TimeoutError:
+                except TimeoutError:
                     yield ": keep-alive\n\n"
         finally:
             try:
@@ -552,12 +697,13 @@ async def get_debate_status(
     thread_id: str,
     debate_store: dict[str, DebateState] = Depends(get_debate_store),
     background_tasks: dict[str, asyncio.Task] = Depends(get_background_tasks),
+    active_runs: set[str] = Depends(get_active_runs),
     db: aiosqlite.Connection = Depends(get_db),
 ) -> DebateStatusResponse:
     """Return the live `DebateStatusResponse` for the given `thread_id`.  404 if unknown."""
     state = debate_store.get(thread_id)
     if state is None:
-        state = await _load_recovered_state(db, thread_id)
+        state = await _load_recovered_state(db, thread_id, active_runs)
         if state is not None:
             debate_store[thread_id] = state
     if state is None:
@@ -568,7 +714,11 @@ async def get_debate_status(
                 detail=f"No debate session found with thread_id '{thread_id}'.",
             ).model_dump(),
         )
-    if state.status == "in_progress" and thread_id not in background_tasks:
+    if (
+        state.status == "in_progress"
+        and thread_id not in background_tasks
+        and thread_id not in active_runs
+    ):
         state.status = "error"
         state.termination_reason = state.termination_reason or "recovery_required_after_restart"
         state.touch()
@@ -651,6 +801,7 @@ async def resume_debate(
     debate_store: dict[str, DebateState] = Depends(get_debate_store),
     decision_store: dict[str, FinalDecision] = Depends(get_decision_store),
     background_tasks: dict[str, asyncio.Task] = Depends(get_background_tasks),
+    active_runs: set[str] = Depends(get_active_runs),
     db: aiosqlite.Connection = Depends(get_db),
 ) -> FinalDecision:
     """
@@ -697,65 +848,128 @@ async def resume_debate(
             ).model_dump(),
         )
 
-    # Transition back to in_progress for the resume run
-    state.status = "in_progress"
-    state.touch()
-    debate_store[thread_id] = state
-    await _persist_debate_state(state, settings.DATABASE_URL)
-
-    graph = DebateGraph(
-        llm_client=llm_client,
-        settings=settings,
-        on_state_change=lambda s: _persist_debate_state(s, settings.DATABASE_URL),
-    )
-
-    try:
-        final_state, decision = await graph.resume(thread_id)
-    except ValueError as exc:
-        # No checkpoint exists in the SQLite checkpoint DB
-        state.status = "error"
-        state.termination_reason = "no_checkpoint_for_resume"
+    # Transition back to in_progress for the resume run. Track it as an active
+    # run so a concurrent status poll doesn't mistake this genuine in_progress
+    # state for an orphaned run and rewrite it to "error".
+    with _track_active_run(active_runs, thread_id):
+        state.status = "in_progress"
         state.touch()
         debate_store[thread_id] = state
         await _persist_debate_state(state, settings.DATABASE_URL)
-        raise HTTPException(
-            status_code=400,
-            detail=ErrorResponse(
-                error="no_checkpoint_available",
-                detail=str(exc),
-            ).model_dump(),
-        ) from exc
-    except Exception as exc:
-        error_type = type(exc).__name__
-        state.status = "error"
-        state.termination_reason = f"resume_failed:{error_type}"
-        state.touch()
-        debate_store[thread_id] = state
-        await _persist_debate_state(state, settings.DATABASE_URL)
-        raise HTTPException(
-            status_code=500,
-            detail=ErrorResponse(
-                error="resume_failed",
-                detail=f"Resume failed ({error_type}): {exc}",
-            ).model_dump(),
-        ) from exc
 
-    debate_store[thread_id] = final_state
-    decision_store[thread_id] = decision
-    app_metrics.increment_event("debate.resumed")
-    await _persist_debate(final_state, decision, settings.DATABASE_URL)
-    logger.info(
-        "api_debate_resume_complete",
-        extra={"thread_id": thread_id, "termination_reason": final_state.termination_reason},
-    )
+        graph = DebateGraph(
+            llm_client=llm_client,
+            settings=settings,
+            on_state_change=lambda s: _persist_debate_state(s, settings.DATABASE_URL),
+        )
+
+        try:
+            final_state, decision = await graph.resume(thread_id)
+        except ValueError as exc:
+            # No checkpoint exists in the SQLite checkpoint DB
+            state.status = "error"
+            state.termination_reason = "no_checkpoint_for_resume"
+            state.touch()
+            debate_store[thread_id] = state
+            await _persist_debate_state(state, settings.DATABASE_URL)
+            raise HTTPException(
+                status_code=400,
+                detail=ErrorResponse(
+                    error="no_checkpoint_available",
+                    detail=str(exc),
+                ).model_dump(),
+            ) from exc
+        except Exception as exc:
+            error_type = type(exc).__name__
+            state.status = "error"
+            state.termination_reason = f"resume_failed:{error_type}"
+            state.touch()
+            debate_store[thread_id] = state
+            await _persist_debate_state(state, settings.DATABASE_URL)
+            raise HTTPException(
+                status_code=500,
+                detail=ErrorResponse(
+                    error="resume_failed",
+                    detail=f"Resume failed ({error_type}): {exc}",
+                ).model_dump(),
+            ) from exc
+
+        debate_store[thread_id] = final_state
+        decision_store[thread_id] = decision
+        app_metrics.increment_event("debate.resumed")
+        await _persist_debate(final_state, decision, settings.DATABASE_URL)
+        logger.info(
+            "api_debate_resume_complete",
+            extra={"thread_id": thread_id, "termination_reason": final_state.termination_reason},
+        )
+        audit_event(
+            "debate.resume",
+            outcome="success",
+            request=request,
+            thread_id=thread_id,
+            termination_reason=final_state.termination_reason,
+        )
+        return decision
+
+
+# ---------------------------------------------------------------------------
+# POST /debate/{thread_id}/cancel  –  cancel an in-flight async debate
+# ---------------------------------------------------------------------------
+
+@router.post(
+    "/debate/{thread_id}/cancel",
+    tags=["debate"],
+    summary="Cancel an in-flight async debate so it stops making further LLM calls.",
+    responses={404: {"model": ErrorResponse}, 409: {"model": ErrorResponse}},
+)
+async def cancel_debate(
+    thread_id: str,
+    request: Request,
+    debate_store: dict[str, DebateState] = Depends(get_debate_store),
+    background_tasks: dict[str, asyncio.Task] = Depends(get_background_tasks),
+    active_runs: set[str] = Depends(get_active_runs),
+    db: aiosqlite.Connection = Depends(get_db),
+) -> dict:
+    """
+    Request cancellation of a running background debate.
+
+    Calls ``task.cancel()``; the background runner catches ``CancelledError``,
+    sets status ``cancelled``, persists, and emits a terminal ``cancelled`` SSE
+    event.  Cancellation takes effect at the next graph await boundary.
+
+    - **404** – no such debate session
+    - **409** – the debate exists but is not actively running (already finished/cancelled)
+    """
+    task = background_tasks.get(thread_id)
+    if task is None or task.done():
+        state = debate_store.get(thread_id)
+        if state is None:
+            state = await _load_recovered_state(db, thread_id, active_runs)
+        if state is None:
+            raise HTTPException(
+                status_code=404,
+                detail=ErrorResponse(
+                    error="debate_not_found",
+                    detail=f"No debate session found with thread_id '{thread_id}'.",
+                ).model_dump(),
+            )
+        raise HTTPException(
+            status_code=409,
+            detail=ErrorResponse(
+                error="debate_not_running",
+                detail=f"Debate '{thread_id}' is not actively running and cannot be cancelled.",
+            ).model_dump(),
+        )
+
+    task.cancel()
+    logger.info("api_debate_cancel_requested", extra={"thread_id": thread_id})
     audit_event(
-        "debate.resume",
-        outcome="success",
+        "debate.cancel",
+        outcome="requested",
         request=request,
         thread_id=thread_id,
-        termination_reason=final_state.termination_reason,
     )
-    return decision
+    return {"thread_id": thread_id, "status": "cancelling"}
 
 
 # ---------------------------------------------------------------------------
@@ -963,11 +1177,7 @@ async def export_decision(
 async def approve_debate(
     thread_id: str,
     request: Request,
-    action: str = Query(
-        default="approve",
-        description="One of 'approve', 'override', or 'add_round'.",
-    ),
-    feedback: str = Query(default="", description="Human feedback text (used with 'override')."),
+    body: ApproveRequest,
     llm_client: LangChainProvider = Depends(get_groq_client),
     settings: Settings = Depends(get_settings),
     debate_store: dict[str, DebateState] = Depends(get_debate_store),
@@ -982,19 +1192,27 @@ async def approve_debate(
     kb = get_knowledge_base()
     ms = get_memory_store()
 
+    queue_list = all_queues.get(thread_id, [])
+    replay_buffer = all_replays.get(thread_id, [])
+    persist_queue: asyncio.Queue = asyncio.Queue()
+    writer_task = asyncio.create_task(
+        _event_writer_loop(persist_queue, queue_list, replay_buffer, thread_id, settings.DATABASE_URL)
+    )
+
     graph = DebateGraph(
         llm_client=llm_client,
         settings=settings,
-        queue_list=all_queues.get(thread_id, []),
-        replay_buffer=all_replays.get(thread_id, []),
+        queue_list=queue_list,
+        replay_buffer=replay_buffer,
+        persist_queue=persist_queue,
         on_state_change=lambda s: _persist_debate_state(s, settings.DATABASE_URL),
-        on_event=lambda payload, tid=thread_id: _persist_event(tid, payload, settings.DATABASE_URL),
         knowledge_base=kb,
         memory_store=ms,
     )
     try:
-        final_state, decision = await graph.approve(thread_id, action=action, feedback=feedback)
+        final_state, decision = await graph.approve(thread_id, action=body.action, feedback=body.feedback)
     except ValueError as exc:
+        await _stop_event_writer(persist_queue, writer_task)
         raise HTTPException(
             status_code=400,
             detail=ErrorResponse(error="approve_failed", detail=str(exc)).model_dump(),
@@ -1004,12 +1222,13 @@ async def approve_debate(
     if decision is None and final_state.status == "awaiting_approval":
         app_metrics.increment_event("debate.awaiting_approval")
         await _persist_debate_state(final_state, settings.DATABASE_URL)
+        await _stop_event_writer(persist_queue, writer_task)
         audit_event(
             "debate.approve",
             outcome="pending",
             request=request,
             thread_id=thread_id,
-            action_requested=action,
+            action_requested=body.action,
         )
         return {
             "thread_id": thread_id,
@@ -1022,18 +1241,22 @@ async def approve_debate(
     app_metrics.increment_event("debate.approved")
     await _persist_debate(final_state, decision, settings.DATABASE_URL)
 
+    # Drain the writer first so every emitted event reaches subscribers, in
+    # order, before the final_decision frame and stream-close sentinel.
+    await _stop_event_writer(persist_queue, writer_task)
     final_payload = json.loads(decision.model_dump_json())
     final_payload["type"] = "final_decision"
-    for q in list(all_queues.get(thread_id, [])):
+    for q in list(queue_list):
         q.put_nowait(final_payload)
         q.put_nowait(None)
+    _cleanup_terminal_thread_state(thread_id, all_queues, all_replays)
 
     audit_event(
         "debate.approve",
         outcome="success",
         request=request,
         thread_id=thread_id,
-        action_requested=action,
+        action_requested=body.action,
     )
 
     return decision
@@ -1052,31 +1275,66 @@ async def approve_debate(
 @limiter.limit("2/hour")  # B9: simulation fans out to 2–5 full debates; tighter hourly cap
 async def simulate_debate(
     request: Request,
-    query: str = Query(..., min_length=10, description="The decision question to simulate."),
-    runs: int = Query(default=3, ge=2, le=5, description="Number of independent runs."),
-    max_rounds: int = Query(default=3, ge=2, le=6),
-    mode: DebateMode = Query(default="standard"),
+    body: SimulateRequest,
     llm_client: LangChainProvider = Depends(get_groq_client),
     settings: Settings = Depends(get_settings),
 ):
-    """Run N independent parallel debates for ``query`` and return a SimulationResult."""
+    """Run N independent parallel debates for the query and return a SimulationResult."""
     from app.services.simulation import run_simulation
 
+    # Resolve participants exactly as a single debate would: a domain pack
+    # overrides the explicit agents list.
+    selected_agents: list[str] | None = None
+    if body.domain_pack:
+        from app.data.domain_packs import DOMAIN_PACKS_BY_ID
+
+        pack = DOMAIN_PACKS_BY_ID.get(body.domain_pack)
+        if pack is None:
+            raise HTTPException(
+                status_code=422,
+                detail=ErrorResponse(
+                    error="unknown_domain_pack",
+                    detail=f"Unknown domain pack '{body.domain_pack}'.",
+                ).model_dump(),
+            )
+        selected_agents = list(pack.agents)
+    elif body.agents:
+        unknown = [a for a in body.agents if not registry.is_registered(a)]
+        if unknown:
+            raise HTTPException(
+                status_code=422,
+                detail=ErrorResponse(
+                    error="unknown_agents",
+                    detail=f"Requested agents are not registered: {unknown}",
+                ).model_dump(),
+            )
+        selected_agents = list(body.agents)
+
+    from app.api.dependencies import get_knowledge_base, get_memory_store
+
+    kb = get_knowledge_base() if body.use_knowledge_base else None
+    ms = get_memory_store() if body.enable_agent_memory else None
+
     result = await run_simulation(
-        query=query,
-        runs=runs,
-        max_rounds=max_rounds,
-        mode=mode,
+        query=body.query,
+        runs=body.runs,
+        max_rounds=body.max_rounds,
+        mode=body.mode,
         llm_client=llm_client,
         settings=settings,
+        selected_agents=selected_agents,
+        knowledge_base=kb,
+        memory_store=ms,
+        use_knowledge_base=body.use_knowledge_base,
+        enable_agent_memory=body.enable_agent_memory,
     )
     app_metrics.increment_event("debate.simulated")
     audit_event(
         "debate.simulate",
         outcome="success",
         request=request,
-        runs=runs,
-        mode=mode,
+        runs=body.runs,
+        mode=body.mode,
     )
     return result.model_dump()
 
@@ -1150,8 +1408,11 @@ async def upload_knowledge_document(
     settings: Settings = Depends(get_settings),
 ):
     """Ingest a document into the ChromaDB knowledge base."""
+    import os
+    import pathlib
+    import tempfile
+
     from app.api.dependencies import get_knowledge_base
-    import tempfile, os, pathlib
 
     kb = get_knowledge_base()
     if not kb.is_available:

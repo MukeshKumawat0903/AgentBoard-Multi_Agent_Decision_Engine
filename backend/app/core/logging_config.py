@@ -5,15 +5,14 @@ Provides JSON-formatted log output for production observability
 and human-readable output during development.
 """
 
-import logging
 import json
+import logging
 import sys
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from logging.handlers import TimedRotatingFileHandler
 from pathlib import Path
 
 from app.core.request_context import get_request_id
-
 
 _RESERVED_LOG_RECORD_ATTRS = set(logging.makeLogRecord({}).__dict__.keys()) | {"message"}
 _BASE_RECORD_FACTORY = logging.getLogRecordFactory()
@@ -43,7 +42,7 @@ class JSONFormatter(logging.Formatter):
 
     def format(self, record: logging.LogRecord) -> str:
         log_entry = {
-            "timestamp": datetime.now(timezone.utc).isoformat(),
+            "timestamp": datetime.now(UTC).isoformat(),
             "level": record.levelname,
             "logger": record.name,
             "message": record.getMessage(),

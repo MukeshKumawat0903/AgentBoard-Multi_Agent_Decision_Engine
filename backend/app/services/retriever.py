@@ -251,9 +251,7 @@ class KnowledgeBase:
         """Chunk, embed, and store a document.  Returns the number of chunks ingested."""
         async with self._lock:
             self._ensure_available()
-            result = await asyncio.get_event_loop().run_in_executor(
-                None, self._ingest_sync, file_path, metadata or {}
-            )
+            result = await asyncio.to_thread(self._ingest_sync, file_path, metadata or {})
             self._retrieve_cache.clear()  # invalidate cache on new content (R6)
             return result
 
@@ -311,9 +309,7 @@ class KnowledgeBase:
         cache_key = (query, effective_k)
         if cache_key in self._retrieve_cache:
             return self._retrieve_cache[cache_key]
-        result = await asyncio.get_event_loop().run_in_executor(
-            None, self._retrieve_sync, query, effective_k
-        )
+        result = await asyncio.to_thread(self._retrieve_sync, query, effective_k)
         self._retrieve_cache[cache_key] = result
         return result
 
@@ -361,7 +357,7 @@ class KnowledgeBase:
         """Return unique document names and their chunk counts."""
         if not self.is_available:
             return []
-        return await asyncio.get_event_loop().run_in_executor(None, self._list_sync)
+        return await asyncio.to_thread(self._list_sync)
 
     def _list_sync(self) -> list[dict[str, Any]]:
         result = self._collection.get(include=["metadatas"])
@@ -377,9 +373,7 @@ class KnowledgeBase:
         if not self.is_available:
             return 0
         async with self._lock:
-            result = await asyncio.get_event_loop().run_in_executor(
-                None, self._delete_sync, doc_name
-            )
+            result = await asyncio.to_thread(self._delete_sync, doc_name)
             self._retrieve_cache.clear()  # invalidate cache after deletion (R6)
             return result
 

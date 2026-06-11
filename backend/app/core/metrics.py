@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from collections import Counter
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from threading import Lock
 
 
@@ -17,7 +17,7 @@ class AppMetrics:
     def reset(self) -> None:
         """Reset all counters. Intended for tests and process startup."""
         with self._lock:
-            self._started_at = datetime.now(timezone.utc)
+            self._started_at = datetime.now(UTC)
             self._requests_total = 0
             self._request_duration_total_ms = 0.0
             self._responses_by_status: Counter[str] = Counter()
@@ -27,7 +27,7 @@ class AppMetrics:
     def record_request(self, method: str, path: str, status_code: int, duration_ms: float) -> None:
         """Record one handled HTTP request."""
         route_key = f"{method.upper()} {path}"
-        now = datetime.now(timezone.utc).isoformat()
+        now = datetime.now(UTC).isoformat()
         with self._lock:
             self._requests_total += 1
             self._request_duration_total_ms += duration_ms
@@ -59,7 +59,7 @@ class AppMetrics:
     def snapshot(self) -> dict:
         """Return a JSON-serializable metrics snapshot."""
         with self._lock:
-            uptime = (datetime.now(timezone.utc) - self._started_at).total_seconds()
+            uptime = (datetime.now(UTC) - self._started_at).total_seconds()
             avg_duration = (
                 round(self._request_duration_total_ms / self._requests_total, 2)
                 if self._requests_total

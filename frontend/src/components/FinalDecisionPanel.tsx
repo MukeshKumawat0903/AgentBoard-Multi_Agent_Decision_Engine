@@ -9,10 +9,25 @@ import type { FinalDecision, EvaluationResult } from "@/lib/types";
 import { evaluateDecision, exportDecision } from "@/lib/api";
 import ConfidenceMeter from "./ConfidenceMeter";
 import DebateTimeline from "./DebateTimeline";
+import Markdown from "./Markdown";
 import { useToast } from "./Toast";
 
 interface FinalDecisionPanelProps {
   decision: FinalDecision;
+}
+
+/** Build a clean Markdown summary for clipboard / sharing. */
+function buildMarkdownSummary(d: FinalDecision): string {
+  const lines: string[] = ["# Decision", "", d.decision, "", "## Rationale", "", d.rationale_summary, ""];
+  if (d.risk_flags.length) lines.push("## Risk Flags", "", ...d.risk_flags.map((f) => `- ${f}`), "");
+  if (d.alternatives.length) lines.push("## Alternatives Considered", "", ...d.alternatives.map((a) => `- ${a}`), "");
+  lines.push(
+    "---",
+    `Agreement ${Math.round(d.agreement_score * 100)}% · Confidence ${Math.round(
+      d.confidence_score * 100,
+    )}% · ${d.total_rounds} round${d.total_rounds > 1 ? "s" : ""} · ${d.termination_reason.replace(/_/g, " ")}`,
+  );
+  return lines.join("\n");
 }
 
 function useLocalBool(key: string, defaultValue = false): [boolean, (v: boolean) => void] {
@@ -81,24 +96,56 @@ export default function FinalDecisionPanel({ decision }: FinalDecisionPanelProps
     URL.revokeObjectURL(url);
   }
 
+  // Copy a Markdown summary of the decision to the clipboard.
+  async function handleCopyDecision() {
+    try {
+      await navigator.clipboard.writeText(buildMarkdownSummary(decision));
+      showToast("Decision copied to clipboard", "success");
+    } catch {
+      showToast("Could not copy to clipboard.", "error");
+    }
+  }
+
+  // Copy a permalink to this debate.
+  async function handleCopyLink() {
+    try {
+      await navigator.clipboard.writeText(window.location.href);
+      showToast("Link copied to clipboard", "success");
+    } catch {
+      showToast("Could not copy link.", "error");
+    }
+  }
+
   const hasMinorityReport = (decision.minority_report?.length ?? 0) > 0;
   const hasKeyDisagreements = (decision.key_disagreements?.length ?? 0) > 0;
   const hasContributions = Object.keys(decision.agent_contribution_scores ?? {}).length > 0;
 
   return (
     <div className="space-y-6 pb-20">
+      {/* Degraded-run warning: decision rested on fewer agents than expected */}
+      {decision.degraded && (
+        <div className="flex items-start gap-3 rounded-xl border border-amber-300 dark:border-amber-700 bg-amber-50 dark:bg-amber-900/20 p-4">
+          <span className="text-xl" aria-hidden="true">⚠️</span>
+          <p className="text-sm text-amber-800 dark:text-amber-300 leading-relaxed">
+            This decision was made with reduced input — the following agent
+            {(decision.missing_agents?.length ?? 0) > 1 ? "s" : ""} did not contribute to the
+            final round:{" "}
+            <span className="font-semibold">{(decision.missing_agents ?? []).join(", ")}</span>.
+            Treat it with extra caution.
+          </p>
+        </div>
+      )}
+
       {/* Decision */}
       <section className="bg-white dark:bg-gray-900 rounded-xl border dark:border-gray-800 shadow-sm p-6">
         <h2 className="text-2xl font-bold text-gray-800 dark:text-gray-100 mb-2">Decision</h2>
-        <p className="text-lg text-gray-700 dark:text-gray-300 leading-relaxed">
-          {decision.decision}
-        </p>
+        <Markdown className="text-lg text-gray-700 dark:text-gray-300">{decision.decision}</Markdown>
       </section>
 
       {/* Rationale */}
       <section className="bg-white dark:bg-gray-900 rounded-xl border dark:border-gray-800 shadow-sm p-6">
         <h3 className="font-semibold text-gray-700 dark:text-gray-300 mb-2">Rationale</h3>
-        <p className="text-gray-600 dark:text-gray-400">{decision.rationale_summary}</p>
+        <Markdown className="text-gray-600 dark:text-gray-400">{decision.rationale_summary}</Markdown>
       </section>
 
       {/* Scores */}
@@ -138,6 +185,17 @@ export default function FinalDecisionPanel({ decision }: FinalDecisionPanelProps
         <span className="px-3 py-1 rounded-full bg-gray-100 dark:bg-gray-700 text-gray-700 dark:text-gray-300 font-medium capitalize">
           {decision.termination_reason.replace(/_/g, " ")}
         </span>
+        {decision.token_usage && decision.token_usage.total_tokens > 0 && (
+          <span
+            className="px-3 py-1 rounded-full bg-indigo-100 dark:bg-indigo-900/40 text-indigo-700 dark:text-indigo-300 font-medium tabular-nums"
+            title={`${decision.token_usage.input_tokens.toLocaleString()} in · ${decision.token_usage.output_tokens.toLocaleString()} out`}
+          >
+            🔢 {decision.token_usage.total_tokens.toLocaleString()} tokens
+            {typeof decision.estimated_cost_usd === "number"
+              ? ` · ~$${decision.estimated_cost_usd.toFixed(4)}`
+              : ""}
+          </span>
+        )}
       </div>
 
       {/* Risk Flags */}
@@ -237,7 +295,7 @@ export default function FinalDecisionPanel({ decision }: FinalDecisionPanelProps
                       {Math.round(entry.confidence_score * 100)}% confidence
                     </span>
                   </div>
-                  <p className="text-sm text-gray-700 dark:text-gray-300 mb-1">{entry.final_position}</p>
+                  <Markdown className="text-sm text-gray-700 dark:text-gray-300 mb-1">{entry.final_position}</Markdown>
                   <p className="text-xs text-amber-700 dark:text-amber-400 italic">{entry.dissent_reason}</p>
                 </div>
               ))}
@@ -297,6 +355,19 @@ export default function FinalDecisionPanel({ decision }: FinalDecisionPanelProps
             PDF
           </button>
           <span className="text-gray-200 dark:text-gray-700 select-none">|</span>
+          {/* Copy decision + permalink */}
+          <button
+            onClick={handleCopyDecision}
+            className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg border border-gray-300 dark:border-gray-600 text-xs font-medium text-gray-700 dark:text-gray-300 hover:bg-gray-50 dark:hover:bg-gray-800 transition"
+          >
+            ⧉ Copy
+          </button>
+          <button
+            onClick={handleCopyLink}
+            className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg border border-gray-300 dark:border-gray-600 text-xs font-medium text-gray-700 dark:text-gray-300 hover:bg-gray-50 dark:hover:bg-gray-800 transition"
+          >
+            🔗 Link
+          </button>
           <button
             onClick={handleDownloadJSON}
             className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg border border-gray-300 dark:border-gray-600 text-xs font-medium text-gray-700 dark:text-gray-300 hover:bg-gray-50 dark:hover:bg-gray-800 transition"

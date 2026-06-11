@@ -19,7 +19,7 @@ Usage::
 from __future__ import annotations
 
 import logging
-from typing import TYPE_CHECKING, Any, Type, cast
+from typing import TYPE_CHECKING, Any, cast
 
 from pydantic import BaseModel, Field
 
@@ -74,7 +74,7 @@ class AgentRegistry:
 
     def __init__(self) -> None:
         self._configs: dict[str, AgentConfig] = {}
-        self._classes: dict[str, Type[BaseAgent]] = {}
+        self._classes: dict[str, type[BaseAgent]] = {}
 
     # ------------------------------------------------------------------
     # Registration
@@ -82,7 +82,7 @@ class AgentRegistry:
 
     def register(
         self,
-        agent_class: Type[BaseAgent],
+        agent_class: type[BaseAgent],
         config: AgentConfig,
     ) -> None:
         """Register an agent class together with its config.
@@ -146,8 +146,8 @@ class AgentRegistry:
             return default_client
 
         # Import lazily to avoid circular imports at module load time
-        from app.services.llm_client import LangChainProvider as LC
         from app.core.config import settings
+        from app.services.llm_client import LangChainProvider as LC
 
         provider = config.model_provider or default_client.provider
         model = config.model_name or default_client.model

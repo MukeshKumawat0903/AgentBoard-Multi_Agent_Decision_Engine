@@ -20,13 +20,14 @@ from typing import TYPE_CHECKING, Literal, TypeVar
 
 from pydantic import BaseModel, Field
 
+from app.core.config import settings
 from app.schemas.agent_response import AgentResponse, CritiqueResponse
 from app.schemas.state import DebateState
 from app.services.llm_client import LangChainProvider
 
 if TYPE_CHECKING:
-    from app.services.retriever import KnowledgeBase
     from app.services.agent_memory import AgentMemoryStore
+    from app.services.retriever import KnowledgeBase
 
 TModel = TypeVar("TModel", bound=BaseModel)
 
@@ -84,17 +85,23 @@ class BaseAgent(ABC):
         self.logger = logging.getLogger(f"agentboard.agents.{name.lower()}")
 
         # --- P3.1 Knowledge Base RAG (set by DebateGraph after construction) ---
-        self.knowledge_base: "KnowledgeBase | None" = None
+        self.knowledge_base: KnowledgeBase | None = None
 
         # --- P3.3 Agent Memory (set by DebateGraph after construction) ---
-        self.memory_store: "AgentMemoryStore | None" = None
+        self.memory_store: AgentMemoryStore | None = None
 
         # --- P3.2 Allowed tools (set by registry from AgentConfig.allowed_tools) ---
         self.allowed_tools: list[str] = []
         # Emit callback injected by DebateGraph so tool events propagate as SSE
         self.emit_callback: Callable[[str, dict], None] | None = None
         # Maximum tool invocations per run() / revise() call
-        self.max_tool_calls_per_round: int = 3
+        self.max_tool_calls_per_round: int = settings.MAX_TOOL_CALLS_PER_ROUND
+        # Cache of tool outputs keyed by (tool_name, input) so an agent does not
+        # re-run the same search across its proposal and revision calls.
+        self._tool_cache: dict[tuple[str, str], str] = {}
+        # Tool calls made during the most recent run()/revise(), so the node can
+        # record them on the round for the persisted trace.
+        self._last_tool_calls: list[dict] = []
 
         # B7 Fix: per-agent LLM sampling temperature and retry budget, populated
         # by AgentRegistry.get() from AgentConfig so they have real effect.
@@ -158,6 +165,9 @@ class BaseAgent(ABC):
         # P3.1: inject KB context into revisions as well
         if self.knowledge_base is not None and state.use_knowledge_base:
             user_prompt = await self._enrich_with_kb(user_prompt, state.user_query)
+        # P3.2: re-run tools so revisions can incorporate fresh tool output
+        if self.allowed_tools:
+            user_prompt = await self._run_tools(user_prompt, state.user_query)
         system_prompt = await self._build_system_prompt(state)
         raw = await self._call_structured(
             AgentLLMOutput,
@@ -224,10 +234,12 @@ class BaseAgent(ABC):
     async def _run_tools(self, user_prompt: str, query: str = "") -> str:
         """Run allowed tools (capped at max_tool_calls_per_round) and append outputs."""
         import asyncio
+
         from app.agents.tools import TOOL_REGISTRY
 
         tool_outputs: list[str] = []
         calls_made = 0
+        self._last_tool_calls = []
         for tool_name in self.allowed_tools:
             if calls_made >= self.max_tool_calls_per_round:
                 self.logger.info(
@@ -241,24 +253,33 @@ class BaseAgent(ABC):
             try:
                 # NB7: use the actual debate query, not a truncated prompt preamble
                 tool_input = "" if tool_name == "get_current_date" else (query or user_prompt[:200])
-                output = await asyncio.get_event_loop().run_in_executor(
-                    None, tool.run, tool_input
-                )
-                output_str = str(output)
+                # Skip a web search when the input is too short to be meaningful.
+                if tool_name == "web_search" and len(tool_input.strip()) < 5:
+                    continue
+                cache_key = (tool_name, tool_input)
+                if cache_key in self._tool_cache:
+                    output_str = self._tool_cache[cache_key]
+                else:
+                    output = await asyncio.to_thread(tool.run, tool_input)
+                    output_str = str(output)
+                    self._tool_cache[cache_key] = output_str
                 calls_made += 1
                 tool_outputs.append(f"[{tool_name}]: {output_str}")
                 self.logger.info(
                     "tool_called",
                     extra={"agent": self.name, "tool": tool_name, "output_snippet": output_str[:100]},
                 )
+                record = {
+                    "agent_name": self.name,
+                    "tool_name": tool_name,
+                    "input": tool_input,
+                    "output_snippet": output_str[:200],
+                }
+                # Keep a copy on the agent so the node can record it on the round.
+                self._last_tool_calls.append(record)
                 # Emit SSE event so the frontend can surface tool activity
                 if self.emit_callback is not None:
-                    self.emit_callback("tool_called", {
-                        "agent_name": self.name,
-                        "tool_name": tool_name,
-                        "input": tool_input,
-                        "output_snippet": output_str[:200],
-                    })
+                    self.emit_callback("tool_called", record)
             except Exception as exc:  # noqa: BLE001
                 self.logger.warning(
                     "tool_call_failed",

@@ -7,3 +7,5 @@ pytest-cov>=5.0.0
 pytest-xdist>=3.0.0
 # Phase 6.5 — type gate
 mypy>=1.8.0
+# lint + format
+ruff>=0.6.0

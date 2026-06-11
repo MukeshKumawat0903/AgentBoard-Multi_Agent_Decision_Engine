@@ -178,6 +178,16 @@ export interface StreamHandlers {
   onStatusChange?: (status: "connected" | "reconnecting" | "disconnected") => void;
 }
 
+/**
+ * Cancel an in-flight async debate so the backend stops making LLM calls.
+ * Returns null if the request was aborted. Throws ApiError on 404/409.
+ */
+export async function cancelDebate(
+  threadId: string,
+): Promise<{ thread_id: string; status: string } | null> {
+  return apiFetch(`/debate/${encodeURIComponent(threadId)}/cancel`, { method: "POST" });
+}
+
 const SSE_EVENTS = [
   "debate_started",
   "round_started",
@@ -190,6 +200,7 @@ const SSE_EVENTS = [
   "approval_required",
   "tool_called",
   "agent_timeout",  // B6: backend emits this when an agent call times out
+  "cancelled",      // terminal event when a debate is cancelled
   "error",
 ] as const;
 
@@ -257,7 +268,11 @@ export function connectToStream(
         try {
           const data = JSON.parse(e.data) as DebateSSEEvent;
           handlers.onEvent(data);
-          if (eventType === "final_decision") {
+          // "cancelled"/"error" are terminal like "final_decision" — close so
+          // the reconnect loop is not triggered by the backend closing the
+          // stream (an unhandled "error" event would otherwise reconnect and
+          // re-replay the entire history forever).
+          if (eventType === "final_decision" || eventType === "cancelled" || eventType === "error") {
             if (heartbeatTimer !== null) clearTimeout(heartbeatTimer);
             handlers.onStatusChange?.("disconnected");
             handlers.onDone?.();
@@ -410,8 +425,12 @@ export async function approveDebate(
   action: "approve" | "override" | "add_round",
   feedback = "",
 ): Promise<FinalDecision | ApprovalStatusResponse> {
-  const params = new URLSearchParams({ action, feedback });
-  return requireResult(apiFetch<FinalDecision | ApprovalStatusResponse>(`/debate/${threadId}/approve?${params}`, { method: "POST" }));
+  return requireResult(
+    apiFetch<FinalDecision | ApprovalStatusResponse>(
+      `/debate/${encodeURIComponent(threadId)}/approve`,
+      { method: "POST", body: JSON.stringify({ action, feedback }) },
+    ),
+  );
 }
 
 /* ------------------------------------------------------------------ */
@@ -423,12 +442,17 @@ export async function runSimulation(params: {
   runs?: number;
   max_rounds?: number;
   mode?: string;
+  agents?: string[];
+  domain_pack?: string | null;
+  use_knowledge_base?: boolean;
+  enable_agent_memory?: boolean;
 }): Promise<SimulationResult> {
-  const qs = new URLSearchParams({ query: params.query });
-  if (params.runs) qs.set("runs", String(params.runs));
-  if (params.max_rounds) qs.set("max_rounds", String(params.max_rounds));
-  if (params.mode) qs.set("mode", params.mode);
-  return requireResult(apiFetch<SimulationResult>(`/debate/simulate?${qs}`, { method: "POST" }));
+  return requireResult(
+    apiFetch<SimulationResult>("/debate/simulate", {
+      method: "POST",
+      body: JSON.stringify(params),
+    }),
+  );
 }
 
 /* ------------------------------------------------------------------ */
@@ -443,16 +467,20 @@ export async function evaluateDecision(threadId: string): Promise<EvaluationResu
 /* Phase 5 — Analytics & Evaluation                                   */
 /* ------------------------------------------------------------------ */
 
-export async function getAnalyticsOverview(): Promise<AnalyticsOverview> {
-  return requireResult(apiFetch<AnalyticsOverview>("/analytics/overview"));
+function daysQuery(days?: number): string {
+  return days && days > 0 ? `?days=${days}` : "";
 }
 
-export async function getAnalyticsAgents(): Promise<AnalyticsAgents> {
-  return requireResult(apiFetch<AnalyticsAgents>("/analytics/agents"));
+export async function getAnalyticsOverview(days?: number): Promise<AnalyticsOverview> {
+  return requireResult(apiFetch<AnalyticsOverview>(`/analytics/overview${daysQuery(days)}`));
 }
 
-export async function getAnalyticsConvergence(): Promise<AnalyticsConvergence> {
-  return requireResult(apiFetch<AnalyticsConvergence>("/analytics/convergence"));
+export async function getAnalyticsAgents(days?: number): Promise<AnalyticsAgents> {
+  return requireResult(apiFetch<AnalyticsAgents>(`/analytics/agents${daysQuery(days)}`));
+}
+
+export async function getAnalyticsConvergence(days?: number): Promise<AnalyticsConvergence> {
+  return requireResult(apiFetch<AnalyticsConvergence>(`/analytics/convergence${daysQuery(days)}`));
 }
 
 /* ------------------------------------------------------------------ */
@@ -474,8 +502,8 @@ export async function setLLMSettings(
   );
 }
 
-export async function getAnalyticsQuality(): Promise<AnalyticsQuality> {
-  return requireResult(apiFetch<AnalyticsQuality>("/analytics/quality"));
+export async function getAnalyticsQuality(days?: number): Promise<AnalyticsQuality> {
+  return requireResult(apiFetch<AnalyticsQuality>(`/analytics/quality${daysQuery(days)}`));
 }
 
 /* ------------------------------------------------------------------ */

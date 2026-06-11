@@ -8,11 +8,9 @@ are inherited unchanged.
 
 from __future__ import annotations
 
-from app.agents.analyst_agent import AnalystAgent
 from app.agents.ethics_agent import EthicsAgent
 from app.agents.risk_agent import RiskAgent
 from app.services.llm_client import LangChainProvider
-
 
 # ---------------------------------------------------------------------------
 # Finance pack: FinancialEthics agent

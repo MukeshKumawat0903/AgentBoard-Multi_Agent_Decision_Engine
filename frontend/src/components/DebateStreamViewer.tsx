@@ -7,7 +7,7 @@
 
 import { useEffect, useReducer, useRef, useState, useCallback } from "react";
 import { useRouter } from "next/navigation";
-import { connectToStream } from "@/lib/api";
+import { connectToStream, cancelDebate } from "@/lib/api";
 import type { ApprovalRequiredEvent, DebatePhase, DebateRound, FinalDecision, SynthesisEvent } from "@/lib/types";
 // B4: import domain agent metadata so domain-pack agents render with proper icons/colours
 import { AGENT_META, DOMAIN_AGENT_META } from "@/lib/types";
@@ -26,6 +26,7 @@ const ALL_AGENT_META = { ...AGENT_META, ...DOMAIN_AGENT_META } as Record<
 import AgentCard from "./AgentCard";
 import CritiqueView from "./CritiqueView";
 import FinalDecisionPanel from "./FinalDecisionPanel";
+import Markdown from "./Markdown";
 import ConfidenceMeter from "./ConfidenceMeter";
 import ConfidenceDriftChart from "./ConfidenceDriftChart";
 import HITLPanel from "./HITLPanel";
@@ -77,8 +78,35 @@ export default function DebateStreamViewer({ threadId }: Props) {
   const [connStatus, setConnStatus] = useState<"connected" | "reconnecting" | "disconnected">("connected");
   const [maxReconnectsHit, setMaxReconnectsHit] = useState(false);
   const [focusedRoundIdx, setFocusedRoundIdx] = useState<number | null>(null);
+  const [cancelling, setCancelling] = useState(false);
+  const [elapsed, setElapsed] = useState(0);
+  const startTimeRef = useRef<number | null>(null);
   const bottomRef = useRef<HTMLDivElement>(null);
   const controllerRef = useRef<AbortController | null>(null);
+
+  // Live elapsed-time meter while the debate is streaming.
+  useEffect(() => {
+    if (state.status !== "streaming") return;
+    if (startTimeRef.current === null) startTimeRef.current = Date.now();
+    const id = setInterval(() => {
+      if (startTimeRef.current !== null) {
+        setElapsed(Math.floor((Date.now() - startTimeRef.current) / 1000));
+      }
+    }, 1000);
+    return () => clearInterval(id);
+  }, [state.status]);
+
+  const elapsedLabel = `${Math.floor(elapsed / 60)}:${String(elapsed % 60).padStart(2, "0")}`;
+
+  // Request server-side cancellation of the running debate.
+  const handleStop = useCallback(async () => {
+    setCancelling(true);
+    try {
+      await cancelDebate(threadId);
+    } catch {
+      // Ignore — the SSE stream will deliver the terminal state (cancelled/done).
+    }
+  }, [threadId]);
 
   function startStream() {
     if (controllerRef.current) controllerRef.current.abort();
@@ -157,6 +185,31 @@ export default function DebateStreamViewer({ threadId }: Props) {
     </span>
   );
 
+  /* ---- Cancelled ---- */
+  if (state.status === "cancelled") {
+    return (
+      <div className="max-w-xl mx-auto py-16 space-y-5 px-4">
+        <div className="bg-gray-50 dark:bg-gray-900/40 border border-gray-200 dark:border-gray-700 rounded-xl p-6 space-y-4">
+          <div className="flex items-start gap-3">
+            <span className="text-2xl" aria-hidden="true">🛑</span>
+            <div className="space-y-1">
+              <h2 className="text-base font-semibold text-gray-700 dark:text-gray-300">Debate cancelled</h2>
+              <p className="text-sm text-gray-500 dark:text-gray-400 leading-relaxed">
+                You stopped this debate before it finished. No final decision was produced.
+              </p>
+            </div>
+          </div>
+          <button
+            onClick={() => router.push("/")}
+            className="px-4 py-2 rounded-lg bg-blue-600 text-white text-sm font-medium hover:bg-blue-700 transition"
+          >
+            Start new debate
+          </button>
+        </div>
+      </div>
+    );
+  }
+
   /* ---- Error ---- */
   if (state.status === "error") {
     return (
@@ -211,7 +264,19 @@ export default function DebateStreamViewer({ threadId }: Props) {
             </p>
             <p className="text-gray-800 dark:text-gray-200 leading-relaxed">{state.query}</p>
           </div>
-          {state.status !== "done" && statusBadge}
+          {state.status !== "done" && (
+            <div className="flex flex-col items-end gap-2 shrink-0">
+              {statusBadge}
+              {/* Stop a running debate (server-side cancel) */}
+              <button
+                onClick={handleStop}
+                disabled={cancelling}
+                className="text-xs px-2.5 py-1 rounded-full border border-red-300 dark:border-red-700 text-red-600 dark:text-red-400 hover:bg-red-50 dark:hover:bg-red-900/20 transition disabled:opacity-50 disabled:cursor-not-allowed"
+              >
+                {cancelling ? "Stopping…" : "■ Stop debate"}
+              </button>
+            </div>
+          )}
         </div>
       )}
 
@@ -247,6 +312,7 @@ export default function DebateStreamViewer({ threadId }: Props) {
             <span className="flex items-center gap-1.5">
               <span className="w-1.5 h-1.5 bg-green-500 rounded-full animate-pulse" />
               Live
+              <span className="tabular-nums text-gray-400 dark:text-gray-500">· {elapsedLabel}</span>
             </span>
           </div>
           <div className="w-full h-1.5 bg-gray-200 dark:bg-gray-700 rounded-full overflow-hidden">
@@ -272,6 +338,8 @@ export default function DebateStreamViewer({ threadId }: Props) {
                   className={`inline-flex items-center gap-1.5 px-2.5 py-1 rounded-full text-xs font-medium border transition ${
                     st === "done"
                       ? "border-green-300 dark:border-green-700 bg-green-50 dark:bg-green-900/20 text-green-700 dark:text-green-400"
+                      : st === "timeout"
+                      ? "border-amber-300 dark:border-amber-700 bg-amber-50 dark:bg-amber-900/20 text-amber-700 dark:text-amber-400"
                       : st === "working"
                       ? "border-blue-300 dark:border-blue-700 bg-blue-50 dark:bg-blue-900/20 text-blue-700 dark:text-blue-400"
                       : "border-gray-200 dark:border-gray-700 bg-gray-50 dark:bg-gray-800 text-gray-500"
@@ -279,6 +347,8 @@ export default function DebateStreamViewer({ threadId }: Props) {
                 >
                   {st === "done" ? (
                     <span className="w-3 h-3 flex items-center justify-center text-xs">✓</span>
+                  ) : st === "timeout" ? (
+                    <span className="w-3 h-3 flex items-center justify-center text-xs">⏱</span>
                   ) : st === "working" ? (
                     <span className="w-3 h-3 border-2 border-current border-t-transparent rounded-full animate-spin block" />
                   ) : (
@@ -307,7 +377,18 @@ export default function DebateStreamViewer({ threadId }: Props) {
             key={round.round_number}
             ref={(el) => { if (el) roundRefs.current.set(round.round_number, el); }}
             onClick={() => setFocusedRoundIdx(rIdx)}
-            className={`bg-white dark:bg-gray-900 rounded-xl border shadow-sm overflow-hidden transition-all duration-200 cursor-pointer ${
+            // Keyboard + screen-reader accessibility for round selection
+            role="button"
+            tabIndex={0}
+            aria-pressed={isFocused}
+            aria-label={`Round ${round.round_number}, ${round.phase} phase${isFocused ? " (selected)" : ""}`}
+            onKeyDown={(e) => {
+              if (e.key === "Enter" || e.key === " ") {
+                e.preventDefault();
+                setFocusedRoundIdx(rIdx);
+              }
+            }}
+            className={`bg-white dark:bg-gray-900 rounded-xl border shadow-sm overflow-hidden transition-all duration-200 cursor-pointer focus:outline-none focus-visible:ring-2 focus-visible:ring-blue-500 ${
               isFocused
                 ? "border-blue-400 dark:border-blue-600 ring-2 ring-blue-200 dark:ring-blue-800"
                 : "dark:border-gray-800 hover:border-gray-300 dark:hover:border-gray-700"
@@ -402,9 +483,7 @@ export default function DebateStreamViewer({ threadId }: Props) {
                   <p className="font-semibold text-yellow-700 dark:text-yellow-400 mb-1">
                     🏛️ Moderator Synthesis
                   </p>
-                  <p className="text-gray-700 dark:text-gray-300 leading-relaxed">
-                    {synthesis.summary}
-                  </p>
+                  <Markdown className="text-gray-700 dark:text-gray-300">{synthesis.summary}</Markdown>
                   {synthesis.agreement_areas.length > 0 && (
                     <div className="mt-2 flex flex-wrap gap-1">
                       {synthesis.agreement_areas.map((a, i) => (

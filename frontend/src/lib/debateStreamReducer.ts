@@ -16,7 +16,7 @@ import type {
 } from "./types";
 
 export interface StreamState {
-  status: "connecting" | "streaming" | "done" | "error";
+  status: "connecting" | "streaming" | "done" | "error" | "cancelled";
   query: string;
   maxRounds: number;
   currentRound: number;
@@ -25,7 +25,8 @@ export interface StreamState {
   syntheses: Record<number, SynthesisEvent>;
   finalDecision: FinalDecision | null;
   error: string | null;
-  agentStatus: Record<string, "waiting" | "working" | "done">;
+  agents: string[];  // participating agents (from debate_started)
+  agentStatus: Record<string, "waiting" | "working" | "done" | "timeout">;
   approvalRequired: ApprovalRequiredEvent | null;
 }
 
@@ -39,9 +40,15 @@ export const initialStreamState: StreamState = {
   syntheses: {},
   finalDecision: null,
   error: null,
+  agents: [],
   agentStatus: {},
   approvalRequired: null,
 };
+
+/** Build an all-"working" status map for the known participants. */
+function seedWorking(agents: string[]): Record<string, "working"> {
+  return Object.fromEntries(agents.map((a) => [a, "working" as const]));
+}
 
 export type StreamAction =
   | { event: DebateSSEEvent }
@@ -67,30 +74,37 @@ export function debateStreamReducer(state: StreamState, action: StreamAction): S
   const { event } = action as { event: DebateSSEEvent };
 
   switch (event.type) {
-    case "debate_started":
+    case "debate_started": {
+      const agents = event.agents ?? [];
       return {
         ...state,
         status: "streaming",
         query: event.user_query,
         maxRounds: event.max_rounds,
+        agents,
+        // Seed every participant to "working" right away so the status strip
+        // is populated during round-1 proposals, before outputs arrive.
+        agentStatus: seedWorking(agents),
       };
+    }
 
     case "round_started":
       return {
         ...state,
         currentRound: event.round_number,
         rounds: ensureRound(state.rounds, event.round_number),
-        agentStatus: {},
+        // Reset to all-working using the known participant list.
+        agentStatus: seedWorking(state.agents),
       };
 
     case "phase_started": {
-      const seenAgents = Array.from(
-        new Set(state.rounds.flatMap((r) => r.agent_outputs.map((o) => o.agent_name)))
-      );
+      // Prefer the known participant list; fall back to agents already seen.
+      const participants =
+        state.agents.length > 0
+          ? state.agents
+          : Array.from(new Set(state.rounds.flatMap((r) => r.agent_outputs.map((o) => o.agent_name))));
       const newAgentStatus =
-        seenAgents.length > 0
-          ? Object.fromEntries(seenAgents.map((k) => [k, "working" as const]))
-          : state.agentStatus;
+        participants.length > 0 ? seedWorking(participants) : state.agentStatus;
       return {
         ...state,
         currentPhase: event.phase,
@@ -185,6 +199,16 @@ export function debateStreamReducer(state: StreamState, action: StreamAction): S
         ...state,
         rounds: ensureRound(state.rounds, state.currentRound).map((r) => {
           if (r.round_number !== state.currentRound) return r;
+          // Reconnects can re-deliver the same live tool_called event
+          // (e.g. while Last-Event-ID catches up); skip exact duplicates
+          // so the 🔧 chip list doesn't grow on every reconnect.
+          const isDuplicate = (r.toolCalls ?? []).some(
+            (existing) =>
+              existing.agent_name === record.agent_name &&
+              existing.tool_name === record.tool_name &&
+              existing.input === record.input
+          );
+          if (isDuplicate) return r;
           return { ...r, toolCalls: [...(r.toolCalls ?? []), record] };
         }),
       };
@@ -192,8 +216,12 @@ export function debateStreamReducer(state: StreamState, action: StreamAction): S
 
     case "agent_timeout": {
       const e = event as { type: string; agent_name: string };
-      return { ...state, agentStatus: { ...state.agentStatus, [e.agent_name]: "done" } };
+      return { ...state, agentStatus: { ...state.agentStatus, [e.agent_name]: "timeout" } };
     }
+
+    case "cancelled":
+      // User cancelled — terminal state, distinct from error.
+      return { ...state, status: "cancelled" };
 
     case "error": {
       const ev = event as { type: string; detail?: string; error?: string };

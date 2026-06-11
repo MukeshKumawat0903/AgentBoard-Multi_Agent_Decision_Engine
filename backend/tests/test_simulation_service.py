@@ -86,7 +86,7 @@ class TestSimulationService:
         decisions = [
             _make_decision(f"t{i}", same_text, 0.88, ["currency"]) for i in range(3)
         ]
-        states = [DebateState(user_query="Q?") for _ in decisions]
+        states = [DebateState(user_query="Should we expand?") for _ in decisions]
         for s in states:
             s.termination_reason = "consensus_reached"
 
@@ -122,7 +122,7 @@ class TestSimulationService:
             _make_decision("t2", "Proceed.", 0.75, ["currency", "market"]),
             _make_decision("t3", "Proceed.", 0.82, ["currency"]),
         ]
-        states = [DebateState(user_query="Q?") for _ in decisions]
+        states = [DebateState(user_query="Should we expand?") for _ in decisions]
         for s in states:
             s.termination_reason = "consensus_reached"
 
@@ -155,7 +155,7 @@ class TestSimulationService:
         from app.services.simulation import run_simulation, SimulationResult  # noqa: PLC0415
 
         decision = _make_decision("t1", "Proceed.", 0.85, [])
-        state = DebateState(user_query="Q?")
+        state = DebateState(user_query="Should we expand?")
         state.termination_reason = "consensus_reached"
 
         with patch("app.services.simulation.DebateGraph") as MockGraph:

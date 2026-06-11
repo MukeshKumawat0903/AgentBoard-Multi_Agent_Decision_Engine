@@ -6,7 +6,7 @@ Every agent produces an AgentResponse for proposals/revisions and a
 CritiqueResponse when evaluating another agent's position.
 """
 
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from typing import Literal
 
 from pydantic import BaseModel, ConfigDict, Field
@@ -40,7 +40,7 @@ class AgentResponse(BaseModel):
         description="Agent's self-assessed confidence (0 = none, 1 = certain).",
     )
     timestamp: datetime = Field(
-        default_factory=lambda: datetime.now(timezone.utc),
+        default_factory=lambda: datetime.now(UTC),
         description="UTC timestamp when the response was generated.",
     )
 
@@ -92,7 +92,7 @@ class CritiqueResponse(BaseModel):
         description="Critic's confidence in the validity of this critique.",
     )
     timestamp: datetime = Field(
-        default_factory=lambda: datetime.now(timezone.utc),
+        default_factory=lambda: datetime.now(UTC),
         description="UTC timestamp when the critique was generated.",
     )
 

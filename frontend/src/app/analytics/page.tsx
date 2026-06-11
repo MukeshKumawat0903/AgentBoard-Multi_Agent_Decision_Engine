@@ -304,8 +304,16 @@ function QualityPanel({ quality }: { quality: AnalyticsQuality | null }) {
 
 type Tab = "overview" | "agents" | "quality";
 
+const RANGE_OPTIONS: { label: string; days: number }[] = [
+  { label: "All time", days: 0 },
+  { label: "7 days", days: 7 },
+  { label: "30 days", days: 30 },
+  { label: "90 days", days: 90 },
+];
+
 export default function AnalyticsPage() {
   const [tab, setTab] = useState<Tab>("overview");
+  const [days, setDays] = useState(0);
 
   const [overview, setOverview] = useState<AnalyticsOverview | null>(null);
   const [agents, setAgents] = useState<AnalyticsAgents | null>(null);
@@ -320,10 +328,12 @@ export default function AnalyticsPage() {
   const [error, setError] = useState<string | null>(null);
 
   const loadOverviewAndConvergence = useCallback(async () => {
+    setLoadingOverview(true);
+    setLoadingConvergence(true);
     try {
       const [ov, cv] = await Promise.all([
-        getAnalyticsOverview(),
-        getAnalyticsConvergence(),
+        getAnalyticsOverview(days),
+        getAnalyticsConvergence(days),
       ]);
       setOverview(ov);
       setConvergence(cv);
@@ -333,23 +343,23 @@ export default function AnalyticsPage() {
       setLoadingOverview(false);
       setLoadingConvergence(false);
     }
-  }, []);
+  }, [days]);
 
   const loadAgents = useCallback(async () => {
+    setLoadingAgents(true);
     try {
-      setAgents(await getAnalyticsAgents());
+      setAgents(await getAnalyticsAgents(days));
     } catch {
       // non-fatal; agents panel will show empty
     } finally {
       setLoadingAgents(false);
     }
-  }, []);
+  }, [days]);
 
   const loadQuality = useCallback(async () => {
-    if (quality !== null) return;
     setLoadingQuality(true);
     try {
-      setQuality(await getAnalyticsQuality());
+      setQuality(await getAnalyticsQuality(days));
     } catch {
       setQuality({
         evaluated_count: 0,
@@ -363,7 +373,7 @@ export default function AnalyticsPage() {
     } finally {
       setLoadingQuality(false);
     }
-  }, [quality]);
+  }, [days]);
 
   useEffect(() => {
     loadOverviewAndConvergence();
@@ -443,13 +453,33 @@ export default function AnalyticsPage() {
   return (
     <div className="max-w-5xl mx-auto space-y-6 animate-fadeIn">
       {/* Header */}
-      <div>
-        <h1 className="text-2xl font-bold text-gray-800 dark:text-gray-100">
-          Analytics &amp; Evaluation
-        </h1>
-        <p className="text-gray-500 dark:text-gray-400 text-sm mt-1">
-          Data-driven insights into debate behaviour, agent performance, and decision quality.
-        </p>
+      <div className="flex flex-wrap items-start justify-between gap-3">
+        <div>
+          <h1 className="text-2xl font-bold text-gray-800 dark:text-gray-100">
+            Analytics &amp; Evaluation
+          </h1>
+          <p className="text-gray-500 dark:text-gray-400 text-sm mt-1">
+            Data-driven insights into debate behaviour, agent performance, and decision quality.
+          </p>
+        </div>
+        {/* Date-range selector */}
+        <div className="flex items-center gap-1 rounded-lg border border-gray-200 dark:border-gray-700 p-0.5">
+          {RANGE_OPTIONS.map((opt) => (
+            <button
+              key={opt.days}
+              type="button"
+              onClick={() => setDays(opt.days)}
+              aria-pressed={days === opt.days}
+              className={`px-2.5 py-1 text-xs font-medium rounded-md transition ${
+                days === opt.days
+                  ? "bg-blue-600 text-white"
+                  : "text-gray-500 dark:text-gray-400 hover:bg-gray-100 dark:hover:bg-gray-800"
+              }`}
+            >
+              {opt.label}
+            </button>
+          ))}
+        </div>
       </div>
 
       {/* Tab bar */}

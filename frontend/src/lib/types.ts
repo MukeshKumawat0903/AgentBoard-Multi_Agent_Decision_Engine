@@ -51,6 +51,7 @@ export interface DebateRound {
   agent_outputs: AgentResponse[];
   critiques: CritiqueResponse[];
   toolCalls?: ToolCallRecord[];  // accumulated during streaming (NB3)
+  tool_calls?: ToolCallRecord[];  // persisted on the round (from the saved trace)
 }
 
 export type DebateStatus =
@@ -59,6 +60,7 @@ export type DebateStatus =
   | "converged"
   | "max_rounds_reached"
   | "awaiting_approval"
+  | "cancelled"
   | "error";
 
 export interface DebateStatusResponse {
@@ -99,6 +101,17 @@ export interface FinalDecision {
   minority_report?: MinorityReportEntry[];
   key_disagreements?: string[];
   agent_contribution_scores?: Record<string, number>;
+  // Degraded-run indicators: agents absent from the final round
+  degraded?: boolean;
+  missing_agents?: string[];
+  // Token usage + estimated cost
+  token_usage?: {
+    input_tokens: number;
+    output_tokens: number;
+    total_tokens: number;
+    by_model?: Record<string, { input_tokens?: number; output_tokens?: number; total_tokens?: number }>;
+  };
+  estimated_cost_usd?: number | null;
 }
 
 /* ------------------------------------------------------------------ */
@@ -196,6 +209,7 @@ export interface DebateStartedEvent {
   thread_id: string;
   user_query: string;
   max_rounds: number;
+  agents?: string[];  // participating agent names for round-1 status seeding
 }
 
 export interface RoundStartedEvent {
@@ -288,6 +302,13 @@ export interface ToolCalledEvent {
   output_snippet: string;
 }
 
+// Terminal event emitted when a user cancels an in-flight debate
+export interface CancelledEvent {
+  type: "cancelled";
+  thread_id: string;
+  detail?: string;
+}
+
 export type DebateSSEEvent =
   | DebateStartedEvent
   | RoundStartedEvent
@@ -300,6 +321,7 @@ export type DebateSSEEvent =
   | ApprovalRequiredEvent
   | ToolCalledEvent
   | AgentTimeoutEvent  // B6
+  | CancelledEvent
   | ErrorEvent;
 
 /* ------------------------------------------------------------------ */

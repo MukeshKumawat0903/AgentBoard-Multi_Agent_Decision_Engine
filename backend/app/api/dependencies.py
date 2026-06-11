@@ -13,7 +13,6 @@ from app.schemas.final_decision import FinalDecision
 from app.schemas.state import DebateState
 from app.services.llm_client import LangChainProvider, get_llm_client
 
-
 # --- In-memory stores (V1) ---
 # Both keyed by thread_id (str).  Swap for Redis/DB in production.
 _debate_store: dict[str, DebateState] = {}
@@ -30,6 +29,11 @@ def get_thread_lock(thread_id: str) -> asyncio.Lock:
         _thread_locks[thread_id] = asyncio.Lock()
     return _thread_locks[thread_id]
 
+
+def release_thread_lock(thread_id: str) -> None:
+    """Drop a thread's lock once its debate reaches a terminal state."""
+    _thread_locks.pop(thread_id, None)
+
 # SSE streaming – per thread_id list of asyncio.Queue objects that receive
 # broadcast events from a running DebateController.
 _event_queues: dict[str, list] = {}
@@ -41,6 +45,12 @@ _event_replays: dict[str, list] = {}
 # Background task registry for async debates. Presence means the thread
 # is actively executing in this process.
 _background_tasks: dict[str, asyncio.Task] = {}
+
+# Thread IDs currently executing in-request (synchronous /debate/start or
+# /debate/{id}/resume). Like _background_tasks, presence here means the
+# thread's "in_progress" status is genuine and must not be treated as an
+# orphaned/crashed run by the recovery heuristic.
+_active_runs: set[str] = set()
 
 
 def get_debate_store() -> dict[str, DebateState]:
@@ -66,6 +76,11 @@ def get_event_replays() -> dict[str, list]:
 def get_background_tasks() -> dict[str, asyncio.Task]:
     """FastAPI dependency – returns the active async debate task registry."""
     return _background_tasks
+
+
+def get_active_runs() -> set[str]:
+    """FastAPI dependency – returns the set of thread_ids running in-request."""
+    return _active_runs
 
 
 def get_settings() -> Settings:

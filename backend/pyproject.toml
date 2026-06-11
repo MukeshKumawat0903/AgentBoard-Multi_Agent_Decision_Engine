@@ -33,3 +33,31 @@ disallow_untyped_defs = false     # defer strict mode until stub coverage improv
 check_untyped_defs = true
 no_implicit_optional = true
 exclude = ["tests/", "alembic/"]
+
+# Ruff lint + format configuration. The codebase was already written as if ruff
+# runs (many `# noqa: BLE001` / `# noqa: PLC0415` suppressions) but had no config
+# or dependency; this makes the intended rule set explicit and locally enforceable.
+[tool.ruff]
+target-version = "py311"
+line-length = 100
+extend-exclude = ["alembic", "tests", "Notebooks"]
+
+[tool.ruff.lint]
+# Focused, low-churn rule set. BLE (blind-except) is kept because the codebase
+# already uses `# noqa: BLE001` deliberately — new blind excepts should be flagged.
+# PLC is intentionally NOT selected: lazy `import` inside functions (PLC0415) is a
+# deliberate pattern here for circular-import avoidance and import-cost deferral.
+select = ["E", "F", "W", "I", "B", "C4", "UP", "SIM", "BLE"]
+ignore = [
+    "E501",    # line length is handled by the formatter, not the linter
+    "B008",    # FastAPI uses `Depends(...)` as a default argument by design
+    "B905",    # zip(strict=...) — not worth retrofitting across existing call sites
+    "SIM105",  # `contextlib.suppress` is not always clearer than try/except/pass
+    "SIM108",  # ternary-over-if/else is a style preference, not a correctness issue
+    "UP035",   # deprecated-import rewrites need review; leave for a separate pass
+    "UP040",   # keep `TypeAlias`-style aliases readable for now
+]
+
+[tool.ruff.format]
+quote-style = "double"
+indent-style = "space"

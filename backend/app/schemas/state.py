@@ -5,7 +5,7 @@ DebateState is the **single source of truth** for an entire debate session.
 All agents, the orchestrator, and the API layer read and write this object.
 """
 
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from typing import Literal
 from uuid import uuid4
 
@@ -20,6 +20,7 @@ DebateStatus = Literal[
     "converged",
     "max_rounds_reached",
     "awaiting_approval",
+    "cancelled",  # user cancelled an in-flight async debate
     "error",
 ]
 
@@ -50,6 +51,10 @@ class DebateRound(BaseModel):
     critiques: list[CritiqueResponse] = Field(
         default_factory=list,
         description="All cross-examination critiques produced this round.",
+    )
+    tool_calls: list[dict] = Field(
+        default_factory=list,
+        description="Tool invocations made by agents this round (for the persisted trace).",
     )
 
     model_config = ConfigDict(
@@ -140,11 +145,11 @@ class DebateState(BaseModel):
         description="Optional human feedback injected during a HITL override.",
     )
     created_at: datetime = Field(
-        default_factory=lambda: datetime.now(timezone.utc),
+        default_factory=lambda: datetime.now(UTC),
         description="UTC timestamp when the debate was created.",
     )
     updated_at: datetime = Field(
-        default_factory=lambda: datetime.now(timezone.utc),
+        default_factory=lambda: datetime.now(UTC),
         description="UTC timestamp of the last state update.",
     )
 
@@ -173,7 +178,7 @@ class DebateState(BaseModel):
 
     def touch(self) -> None:
         """Update the updated_at timestamp to now (call after every mutation)."""
-        self.updated_at = datetime.now(timezone.utc)
+        self.updated_at = datetime.now(UTC)
 
     model_config = ConfigDict(
         json_schema_extra={

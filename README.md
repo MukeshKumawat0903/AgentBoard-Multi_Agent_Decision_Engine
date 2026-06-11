@@ -301,7 +301,7 @@ All backend settings are configured via `backend/.env`:
 | `OPENAI_MODEL` | No | `gpt-4o` | Model for OpenAI provider |
 | `ANTHROPIC_API_KEY` | No | — | Required if `LLM_PROVIDER=anthropic` |
 | `ANTHROPIC_MODEL` | No | `claude-sonnet-4-20250514` | Model for Anthropic provider |
-| `MAX_DEBATE_ROUNDS` | No | `2` | Max rounds per debate |
+| `MAX_DEBATE_ROUNDS` | No | `4` | Max rounds per debate |
 | `CONSENSUS_THRESHOLD` | No | `0.75` | Agreement score to stop early (0.0–1.0) |
 | `LOG_LEVEL` | No | `INFO` | Logging level |
 | `CORS_ORIGINS` | No | `["http://localhost:3000"]` | Allowed frontend origins |
