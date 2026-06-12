@@ -14,6 +14,7 @@
 
 import { useState, useEffect, useRef, type FormEvent, type ChangeEvent } from "react";
 import type { AgentOption } from "./AgentRoster";
+import Toggle from "./Toggle";
 
 type DebateMode = "quick" | "standard" | "thorough";
 
@@ -178,13 +179,7 @@ export default function DebateInput({
           Intelligence options
         </p>
         <label className="flex items-center gap-3 cursor-pointer select-none">
-          <input
-            type="checkbox"
-            checked={useKnowledgeBase}
-            onChange={(e) => setUseKnowledgeBase(e.target.checked)}
-            disabled={isLoading}
-            className="rounded border-gray-300 text-blue-600 focus:ring-blue-500"
-          />
+          <Toggle checked={useKnowledgeBase} onChange={setUseKnowledgeBase} disabled={isLoading} />
           <span className="text-sm text-gray-700 dark:text-gray-300">
             <span className="font-medium">Knowledge Base</span>
             <span className="text-gray-500 dark:text-gray-400 ml-1">– inject relevant documents into agent prompts</span>
@@ -192,26 +187,14 @@ export default function DebateInput({
           </span>
         </label>
         <label className="flex items-center gap-3 cursor-pointer select-none">
-          <input
-            type="checkbox"
-            checked={enableAgentMemory}
-            onChange={(e) => setEnableAgentMemory(e.target.checked)}
-            disabled={isLoading}
-            className="rounded border-gray-300 text-blue-600 focus:ring-blue-500"
-          />
+          <Toggle checked={enableAgentMemory} onChange={setEnableAgentMemory} disabled={isLoading} />
           <span className="text-sm text-gray-700 dark:text-gray-300">
             <span className="font-medium">Agent Memory</span>
             <span className="text-gray-500 dark:text-gray-400 ml-1">— use lessons learned from prior debates</span>
           </span>
         </label>
         <label className="flex items-center gap-3 cursor-pointer select-none">
-          <input
-            type="checkbox"
-            checked={supervised}
-            onChange={(e) => setSupervised(e.target.checked)}
-            disabled={isLoading}
-            className="rounded border-gray-300 text-purple-600 focus:ring-purple-500"
-          />
+          <Toggle checked={supervised} onChange={setSupervised} disabled={isLoading} />
           <span className="text-sm text-gray-700 dark:text-gray-300">
             <span className="font-medium">Supervised mode</span>
             <span className="text-gray-500 dark:text-gray-400 ml-1">— pause for human review before finalising</span>
