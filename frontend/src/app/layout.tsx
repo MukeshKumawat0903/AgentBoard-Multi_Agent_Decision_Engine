@@ -33,7 +33,7 @@ export default function RootLayout({
           <NavBar />
 
           {/* Main content */}
-          <main id="main-content" className="max-w-5xl mx-auto px-4 py-8">{children}</main>
+          <main id="main-content" className="max-w-7xl mx-auto px-4 py-8">{children}</main>
 
           {/* Footer */}
           <footer className="border-t border-gray-200 dark:border-gray-800 mt-12">

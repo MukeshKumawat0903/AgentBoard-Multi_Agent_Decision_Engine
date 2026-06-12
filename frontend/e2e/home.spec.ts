@@ -11,10 +11,9 @@ test.describe("Home page", () => {
     await mockDebateStartAsync(page, THREAD_A);
   });
 
-  test("shows hero title and description", async ({ page }) => {
+  test("shows the page title", async ({ page }) => {
     await page.goto("/");
-    await expect(page.getByText("Multi-Agent Decision Engine")).toBeVisible();
-    await expect(page.getByText(/specialised AI agents/i)).toBeVisible();
+    await expect(page.getByRole("heading", { name: "Multi-Agent Decision Engine" })).toBeVisible();
   });
 
   test("debate input textarea is present and accepts text", async ({ page }) => {
@@ -65,17 +64,19 @@ test.describe("Home page", () => {
 
   test("domain pack selector appears and responds to clicks", async ({ page }) => {
     await page.goto("/");
-    await expect(page.getByText("Finance & Investment")).toBeVisible();
-    await page.getByText("Finance & Investment").click();
+    const financePack = page.getByRole("button", { name: /Finance & Investment/ });
+    await expect(financePack).toBeVisible();
+    await financePack.click();
     // Clicking shows the domain pack description
     await expect(page.getByText(/Financial analysis pack/i)).toBeVisible();
   });
 
   test("domain pack can be deselected by clicking again", async ({ page }) => {
     await page.goto("/");
-    await page.getByText("Finance & Investment").click();
+    const financePack = page.getByRole("button", { name: /Finance & Investment/ });
+    await financePack.click();
     await expect(page.getByText(/Financial analysis pack/i)).toBeVisible();
-    await page.getByText("Finance & Investment").click();
+    await financePack.click();
     await expect(page.getByText(/Financial analysis pack/i)).not.toBeVisible();
   });
 
@@ -88,14 +89,21 @@ test.describe("Home page", () => {
 
   test("recent debates section shows when history is available", async ({ page }) => {
     await page.goto("/");
-    await expect(page.getByText("Recent Debates")).toBeVisible();
+    await expect(page.getByText("Recent debates")).toBeVisible();
     await expect(page.getByText("Should we expand?")).toBeVisible();
   });
 
-  test("feature cards are visible at the bottom", async ({ page }) => {
+  test("agent roster lists the participating agents", async ({ page }) => {
     await page.goto("/");
-    await expect(page.getByText("5 Expert Agents")).toBeVisible();
-    await expect(page.getByText("Structured Debate")).toBeVisible();
-    await expect(page.getByText("Converged Decisions")).toBeVisible();
+    await expect(page.getByText("5 core agents")).toBeVisible();
+    await expect(page.getByRole("button", { name: /Analyst/ })).toBeVisible();
+    await expect(page.getByRole("button", { name: /Moderator/ })).toBeVisible();
+  });
+
+  test("selecting a domain pack switches the roster to the pack's agents", async ({ page }) => {
+    await page.goto("/");
+    await page.getByRole("button", { name: /Finance & Investment/ }).click();
+    await expect(page.getByText(/domain expert/i)).toBeVisible();
+    await expect(page.getByText("FinancialEthics")).toBeVisible();
   });
 });
