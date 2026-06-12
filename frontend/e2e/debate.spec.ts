@@ -41,17 +41,20 @@ test.describe("Debate streaming flow (happy path)", () => {
 
   test("agent output cards render after agent_output events", async ({ page }) => {
     await page.goto(`/debate/${THREAD_A}`);
-    await expect(page.getByText("Analyst")).toBeVisible({ timeout: 15_000 });
-    await expect(page.getByText("Proceed with phased rollout.")).toBeVisible();
+    // On a completed debate the round detail lives inside the collapsed transcript.
+    await page.getByRole("button", { name: /Debate transcript/i }).click();
+    await expect(page.getByText("Proceed with phased rollout.")).toBeVisible({ timeout: 15_000 });
   });
 
   test("critique section renders after critique_completed events", async ({ page }) => {
     await page.goto(`/debate/${THREAD_A}`);
+    await page.getByRole("button", { name: /Debate transcript/i }).click();
     await expect(page.getByText(/Critiques/)).toBeVisible({ timeout: 15_000 });
   });
 
   test("moderator synthesis card appears after synthesis event", async ({ page }) => {
     await page.goto(`/debate/${THREAD_A}`);
+    await page.getByRole("button", { name: /Debate transcript/i }).click();
     await expect(page.getByText("Moderator Synthesis")).toBeVisible({ timeout: 15_000 });
     await expect(page.getByText("Broad consensus on phased approach.")).toBeVisible();
   });

@@ -8,7 +8,6 @@ import { useState, useEffect, useCallback } from "react";
 import type { FinalDecision, EvaluationResult } from "@/lib/types";
 import { evaluateDecision, exportDecision } from "@/lib/api";
 import ConfidenceMeter from "./ConfidenceMeter";
-import DebateTimeline from "./DebateTimeline";
 import Markdown from "./Markdown";
 import { useToast } from "./Toast";
 
@@ -45,7 +44,6 @@ function useLocalBool(key: string, defaultValue = false): [boolean, (v: boolean)
 
 export default function FinalDecisionPanel({ decision }: FinalDecisionPanelProps) {
   const { showToast } = useToast();
-  const [showTrace, setShowTrace] = useLocalBool("fdp:showTrace", false);
   const [showMinority, setShowMinority] = useLocalBool("fdp:showMinority", false);
   const [showDisagreements, setShowDisagreements] = useLocalBool("fdp:showDisagreements", false);
   const [showDissenting, setShowDissenting] = useLocalBool("fdp:showDissenting", false);
@@ -312,23 +310,7 @@ export default function FinalDecisionPanel({ decision }: FinalDecisionPanelProps
         >
           ⬇ JSON
         </button>
-        {decision.debate_trace.length > 0 && (
-          <button
-            onClick={() => setShowTrace(!showTrace)}
-            className="px-4 py-2 rounded-lg border border-gray-300 dark:border-gray-600 text-sm font-medium text-gray-700 dark:text-gray-300 hover:bg-gray-50 dark:hover:bg-gray-800 transition"
-          >
-            {showTrace ? "Hide" : "View"} Full Debate Trace
-          </button>
-        )}
       </div>
-
-      {/* Debate trace */}
-      {showTrace && decision.debate_trace.length > 0 && (
-        <section className="bg-gray-50 rounded-xl border p-6">
-          <h3 className="font-semibold text-gray-700 mb-4">Debate Trace</h3>
-          <DebateTimeline rounds={decision.debate_trace} />
-        </section>
-      )}
 
       {/* Sticky export action bar */}
       <div className="fixed bottom-0 left-0 right-0 z-20 bg-white/90 dark:bg-gray-900/95 backdrop-blur-md border-t border-gray-200 dark:border-gray-800 shadow-lg">
@@ -374,20 +356,12 @@ export default function FinalDecisionPanel({ decision }: FinalDecisionPanelProps
           >
             ⬇ JSON
           </button>
-          {decision.debate_trace.length > 0 && (
-            <button
-              onClick={() => setShowTrace(!showTrace)}
-              className="ml-auto px-3 py-1.5 rounded-lg border border-gray-300 dark:border-gray-600 text-xs font-medium text-gray-700 dark:text-gray-300 hover:bg-gray-50 dark:hover:bg-gray-800 transition"
-            >
-              {showTrace ? "▲ Hide" : "▼ Full Trace"}
-            </button>
-          )}
           {/* NB8: disable once a result is already loaded — re-fetching is redundant */}
           <button
             onClick={handleEvaluate}
             disabled={evalLoading || evalResult !== null}
             title={evalResult !== null ? "Evaluation already loaded (backend cached)" : undefined}
-            className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg bg-purple-600 text-white text-xs font-medium hover:bg-purple-700 disabled:opacity-40 transition"
+            className="ml-auto inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg bg-purple-600 text-white text-xs font-medium hover:bg-purple-700 disabled:opacity-40 transition"
           >
             {evalLoading ? (
               <span className="w-3 h-3 border-2 border-white border-t-transparent rounded-full animate-spin" />

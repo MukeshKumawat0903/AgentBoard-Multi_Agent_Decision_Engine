@@ -70,14 +70,16 @@ function ConfidenceDriftSection({ rounds }: { rounds: DebateRound[] }) {
 
 interface Props {
   threadId: string;
+  onQuery?: (query: string) => void;
 }
 
-export default function DebateStreamViewer({ threadId }: Props) {
+export default function DebateStreamViewer({ threadId, onQuery }: Props) {
   const router = useRouter();
   const [state, dispatch] = useReducer(debateStreamReducer, initialStreamState);
   const [connStatus, setConnStatus] = useState<"connected" | "reconnecting" | "disconnected">("connected");
   const [maxReconnectsHit, setMaxReconnectsHit] = useState(false);
   const [focusedRoundIdx, setFocusedRoundIdx] = useState<number | null>(null);
+  const [showTranscript, setShowTranscript] = useState(false);
   const [cancelling, setCancelling] = useState(false);
   const [elapsed, setElapsed] = useState(0);
   const startTimeRef = useRef<number | null>(null);
@@ -130,6 +132,11 @@ export default function DebateStreamViewer({ threadId }: Props) {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [threadId]);
 
+  // Surface the debate query to the parent (for the breadcrumb).
+  useEffect(() => {
+    if (state.query) onQuery?.(state.query);
+  }, [state.query, onQuery]);
+
   // Keyboard J/K navigation through rounds
   useEffect(() => {
     function handleKey(e: KeyboardEvent) {
@@ -163,6 +170,15 @@ export default function DebateStreamViewer({ threadId }: Props) {
       bottomRef.current?.scrollIntoView({ behavior: "smooth" });
     }
   }, [state.rounds, state.status, focusedRoundIdx]);
+
+  // When the debate finishes, jump to the top so the user lands on the decision.
+  const scrolledToDecisionRef = useRef(false);
+  useEffect(() => {
+    if (state.status === "done" && !scrolledToDecisionRef.current) {
+      scrolledToDecisionRef.current = true;
+      window.scrollTo({ top: 0, behavior: "smooth" });
+    }
+  }, [state.status]);
 
   /* ---- Connection status badge ---- */
   const statusBadge = (
@@ -252,6 +268,9 @@ export default function DebateStreamViewer({ threadId }: Props) {
       </div>
     );
   }
+
+  const isDone = state.status === "done" && !!state.finalDecision;
+  const totalCritiques = state.rounds.reduce((n, r) => n + r.critiques.length, 0);
 
   return (
     <div className="space-y-6">
@@ -362,8 +381,39 @@ export default function DebateStreamViewer({ threadId }: Props) {
         </div>
       )}
 
-      {/* Live rounds */}
-      {state.rounds.map((round, rIdx) => {
+      {/* Answer-first: decision + collapsible transcript once the debate is done */}
+      {isDone && state.finalDecision && (
+        <div className="space-y-4">
+          <div className="text-center text-sm font-semibold text-green-600 dark:text-green-400 flex items-center justify-center gap-2">
+            <span className="w-2 h-2 bg-green-500 rounded-full" />
+            {state.finalDecision.termination_reason === "max_rounds_reached"
+              ? "Debate complete — max rounds reached"
+              : state.finalDecision.termination_reason === "human_override"
+              ? "Debate complete — human override applied"
+              : "Debate complete — consensus reached"}
+          </div>
+          <FinalDecisionPanel decision={state.finalDecision} />
+          <ConfidenceDriftSection rounds={state.rounds} />
+        </div>
+      )}
+      {isDone && (
+        <button
+          type="button"
+          onClick={() => setShowTranscript((o) => !o)}
+          className="w-full flex items-center justify-between py-3 border-t border-gray-200 dark:border-gray-800 text-sm font-semibold text-gray-600 dark:text-gray-300 hover:text-gray-800 dark:hover:text-gray-100 transition-colors"
+        >
+          <span className="flex items-center gap-2">
+            <span>🗒️</span> Debate transcript
+            <span className="text-xs font-normal text-gray-400">
+              {state.rounds.length} round{state.rounds.length !== 1 ? "s" : ""} · {totalCritiques} critique{totalCritiques !== 1 ? "s" : ""}
+            </span>
+          </span>
+          <span className="text-gray-400">{showTranscript ? "▲" : "▼"}</span>
+        </button>
+      )}
+
+      {/* Live rounds — shown live while streaming, or via the transcript toggle when done */}
+      {(!isDone || showTranscript) && state.rounds.map((round, rIdx) => {
         const synthesis = state.syntheses[round.round_number];
         const isFocused = focusedRoundIdx !== null && state.rounds[focusedRoundIdx]?.round_number === round.round_number;
         const PHASE_BADGE: Record<string, string> = {
@@ -511,25 +561,10 @@ export default function DebateStreamViewer({ threadId }: Props) {
         </div>
       )}
 
-      {/* Final decision */}
-      {state.finalDecision && (
-        <div className="space-y-4">
-          <div className="text-center text-sm font-semibold text-green-600 dark:text-green-400 flex items-center justify-center gap-2">
-            <span className="w-2 h-2 bg-green-500 rounded-full" />
-            {/* B5 Fix: reflect the actual termination reason instead of hardcoding "consensus reached" */}
-            {state.finalDecision.termination_reason === "max_rounds_reached"
-              ? "Debate complete — max rounds reached"
-              : state.finalDecision.termination_reason === "human_override"
-              ? "Debate complete — human override applied"
-              : "Debate complete — consensus reached"}
-          </div>
-          <FinalDecisionPanel decision={state.finalDecision} />
-          <ConfidenceDriftSection rounds={state.rounds} />
-        </div>
-      )}
+      {/* Final decision is rendered above (answer-first) once the debate is done */}
 
       {/* Keyboard hint */}
-      {state.rounds.length > 1 && (
+      {(!isDone || showTranscript) && state.rounds.length > 1 && (
         <p className="text-center text-xs text-gray-400 dark:text-gray-500 mt-2">
           Press <kbd className="px-1 py-0.5 rounded border border-gray-300 dark:border-gray-600 font-mono text-xs">J</kbd> / <kbd className="px-1 py-0.5 rounded border border-gray-300 dark:border-gray-600 font-mono text-xs">K</kbd> to navigate between rounds
         </p>

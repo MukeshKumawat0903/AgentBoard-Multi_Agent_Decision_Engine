@@ -7,13 +7,14 @@
 
 "use client";
 
-import { useEffect } from "react";
+import { useState } from "react";
 import { useParams, useRouter } from "next/navigation";
 import DebateStreamViewer from "@/components/DebateStreamViewer";
 
 export default function DebatePage() {
   const params = useParams<{ threadId: string }>();
   const router = useRouter();
+  const [query, setQuery] = useState("");
 
   if (!params.threadId) {
     return null;
@@ -30,12 +31,15 @@ export default function DebatePage() {
           Home
         </button>
         <span>/</span>
-        <span className="text-gray-600 dark:text-gray-300 font-medium truncate max-w-xs">
-          {params.threadId}
+        <span
+          className="text-gray-600 dark:text-gray-300 font-medium truncate max-w-xs"
+          title={query || params.threadId}
+        >
+          {query || `Debate ${params.threadId.slice(0, 8)}`}
         </span>
       </div>
 
-      <DebateStreamViewer threadId={params.threadId} />
+      <DebateStreamViewer threadId={params.threadId} onQuery={setQuery} />
     </div>
   );
 }
