@@ -317,26 +317,42 @@ export default function HomePage() {
                   )}
                 </div>
                 {recentDebates.length > 0 ? (
-                  <div className="space-y-2">
-                    {recentDebates.map((item) => (
-                      <Link
-                        key={item.thread_id}
-                        href={`/debate/${item.thread_id}`}
-                        title={item.user_query}
-                        className="block px-3 py-2 rounded-lg border border-line
-                                   hover:border-accent-400 dark:hover:border-accent-600 transition group"
-                      >
-                        <span className="block text-sm text-gray-700 dark:text-gray-300 truncate group-hover:text-accent-600 dark:group-hover:text-accent-400 transition">
-                          {item.user_query}
-                        </span>
-                        <span className="mt-1 flex items-center justify-between text-xs text-gray-500 dark:text-gray-400">
-                          <span>{timeAgo(item.created_at)}</span>
-                          {Number.isFinite(item.agreement_score) && (
-                            <span>{Math.round(item.agreement_score * 100)}% agree</span>
+                  <div className="-mx-1.5 space-y-0.5">
+                    {recentDebates.map((item) => {
+                      const pct = Number.isFinite(item.agreement_score)
+                        ? Math.round(item.agreement_score * 100)
+                        : null;
+                      return (
+                        <Link
+                          key={item.thread_id}
+                          href={`/debate/${item.thread_id}`}
+                          title={item.user_query}
+                          className="flex items-center gap-2 px-1.5 py-1.5 rounded-md
+                                     hover:bg-surface transition group"
+                        >
+                          <span className="flex-1 min-w-0 truncate text-sm text-gray-700 dark:text-gray-300 group-hover:text-accent-600 dark:group-hover:text-accent-400 transition">
+                            {item.user_query}
+                          </span>
+                          <span className="shrink-0 text-[11px] text-gray-400 dark:text-gray-500 tabular-nums">
+                            {timeAgo(item.created_at)}
+                          </span>
+                          {pct !== null && (
+                            <span
+                              title={`${pct}% agreement`}
+                              className={`shrink-0 text-[11px] font-semibold tabular-nums ${
+                                pct >= 75
+                                  ? "text-green-600 dark:text-green-400"
+                                  : pct >= 50
+                                  ? "text-yellow-600 dark:text-yellow-400"
+                                  : "text-red-500 dark:text-red-400"
+                              }`}
+                            >
+                              {pct}%
+                            </span>
                           )}
-                        </span>
-                      </Link>
-                    ))}
+                        </Link>
+                      );
+                    })}
                   </div>
                 ) : (
                   <p className="text-sm text-gray-500 dark:text-gray-400 leading-relaxed">
