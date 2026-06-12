@@ -73,19 +73,41 @@ class LangChainProvider:
     # Provider factory
     # ------------------------------------------------------------------
 
+    # Models that reject sampling parameters: Anthropic removed temperature/
+    # top_p/top_k on Opus 4.7+ and the Fable/Mythos 5 family (400 if sent);
+    # OpenAI's gpt-5 reasoning family only supports the default temperature.
+    _NO_TEMPERATURE_PREFIXES = (
+        "claude-opus-4-7",
+        "claude-opus-4-8",
+        "claude-fable",
+        "claude-mythos",
+        "gpt-5",
+    )
+
+    @classmethod
+    def _sampling_kwargs(cls, model: str) -> dict:
+        """Return sampling kwargs, omitting temperature where the API rejects it."""
+        if model.startswith(cls._NO_TEMPERATURE_PREFIXES):
+            return {}
+        return {"temperature": 0.7}
+
     @staticmethod
     def _build_llm(provider: str, api_key: str, model: str):
         """Build the appropriate LangChain chat model for the given provider."""
         secret = SecretStr(api_key) if api_key else None
+        sampling = LangChainProvider._sampling_kwargs(model)
         if provider == "groq":
             from langchain_groq import ChatGroq  # type: ignore[import-untyped]
-            return ChatGroq(api_key=secret, model=model, temperature=0.7)
+            return ChatGroq(api_key=secret, model=model, **sampling)
         elif provider == "openai":
             from langchain_openai import ChatOpenAI  # type: ignore[import-untyped]
-            return ChatOpenAI(api_key=secret, model=model, temperature=0.7)
+            return ChatOpenAI(api_key=secret, model=model, **sampling)
         elif provider == "anthropic":
             from langchain_anthropic import ChatAnthropic  # type: ignore[import-untyped]
-            return ChatAnthropic(api_key=secret, model=model, temperature=0.7)  # type: ignore[call-arg]
+            return ChatAnthropic(api_key=secret, model=model, **sampling)  # type: ignore[call-arg]
+        elif provider == "gemini":
+            from langchain_google_genai import ChatGoogleGenerativeAI  # type: ignore[import-untyped]
+            return ChatGoogleGenerativeAI(google_api_key=secret, model=model, **sampling)
         else:
             raise ValueError(f"Unsupported LLM provider: {provider!r}")
 
@@ -290,6 +312,8 @@ def get_llm_client() -> LangChainProvider:
             api_key, model = settings.OPENAI_API_KEY, settings.OPENAI_MODEL
         elif provider == "anthropic":
             api_key, model = settings.ANTHROPIC_API_KEY, settings.ANTHROPIC_MODEL
+        elif provider == "gemini":
+            api_key, model = settings.GEMINI_API_KEY, settings.GEMINI_MODEL
         else:
             api_key, model = settings.GROQ_API_KEY, settings.GROQ_MODEL
 

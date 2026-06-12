@@ -482,7 +482,7 @@ export interface AnalyticsQuality {
 /* LLM provider settings                                               */
 /* ------------------------------------------------------------------ */
 
-export type LLMProvider = "groq" | "openai" | "anthropic";
+export type LLMProvider = "groq" | "openai" | "anthropic" | "gemini";
 
 export interface LLMSettingsResponse {
   provider: LLMProvider;
@@ -497,18 +497,28 @@ export interface LLMSettingsUpdate {
   api_key?: string;
 }
 
-/** Client-side canonical model lists — kept in sync with PROVIDER_MODELS in backend. */
+/** Client-side canonical model lists — kept in sync with PROVIDER_MODELS in backend.
+ *  Verified against each provider's model docs (June 2026); first entry is the default. */
 export const PROVIDER_MODELS: Record<LLMProvider, string[]> = {
   groq: [
     "llama-3.3-70b-versatile",
     "llama-3.1-8b-instant",
-    "mixtral-8x7b-32768",
-    "gemma2-9b-it",
+    "openai/gpt-oss-120b",
+    "openai/gpt-oss-20b",
+    "moonshotai/kimi-k2-instruct-0905",
+    "qwen/qwen3-32b",
   ],
-  openai: ["gpt-4o", "gpt-4o-mini", "gpt-4-turbo", "gpt-3.5-turbo"],
+  openai: ["gpt-5.5", "gpt-5.5-pro", "gpt-5.4-mini"],
   anthropic: [
-    "claude-sonnet-4-20250514",
-    "claude-3-5-haiku-20241022",
-    "claude-3-opus-20240229",
+    "claude-opus-4-8",
+    "claude-sonnet-4-6",
+    "claude-haiku-4-5",
+    "claude-fable-5",
+  ],
+  gemini: [
+    "gemini-3.5-flash",
+    "gemini-3.1-pro-preview",
+    "gemini-2.5-pro",
+    "gemini-2.5-flash",
   ],
 };

@@ -19,6 +19,7 @@ langgraph-checkpoint-sqlite>=3.0.0
 langchain-groq>=0.2.3
 langchain-openai>=0.2.0
 langchain-anthropic>=0.2.0
+langchain-google-genai>=2.0.0
 langchain-community>=0.3.0
 
 # Phase 4: Semantic consensus via embeddings

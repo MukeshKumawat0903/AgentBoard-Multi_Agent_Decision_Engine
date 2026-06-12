@@ -24,11 +24,13 @@ class Settings(BaseSettings):
 
     # --- Multi-Provider LLM Support (Phase 1) ---
     # Switch active provider via LLM_PROVIDER env var.
-    LLM_PROVIDER: Literal["groq", "openai", "anthropic"] = "groq"
+    LLM_PROVIDER: Literal["groq", "openai", "anthropic", "gemini"] = "groq"
     OPENAI_API_KEY: str = ""
-    OPENAI_MODEL: str = "gpt-4o"
+    OPENAI_MODEL: str = "gpt-5.5"
     ANTHROPIC_API_KEY: str = ""
-    ANTHROPIC_MODEL: str = "claude-sonnet-4-20250514"
+    ANTHROPIC_MODEL: str = "claude-opus-4-8"
+    GEMINI_API_KEY: str = ""
+    GEMINI_MODEL: str = "gemini-3.5-flash"
 
     # --- Debate Engine Configuration ---
     # Orchestrator-level fallbacks used only when DebateGraph is driven directly
