@@ -181,8 +181,8 @@ export function debateStreamReducer(state: StreamState, action: StreamAction): S
     }
 
     case "final_decision": {
-      // eslint-disable-next-line @typescript-eslint/no-unused-vars
-      const { type, ...decision } = event as FinalDecision & { type: string };
+      const decision = { ...(event as FinalDecision & { type?: string }) };
+      delete decision.type;
       return { ...state, status: "done", finalDecision: decision as FinalDecision };
     }
 

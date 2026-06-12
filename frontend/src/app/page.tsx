@@ -10,12 +10,16 @@
 "use client";
 
 import { useState, useRef, useEffect } from "react";
+import Link from "next/link";
 import { useRouter } from "next/navigation";
+import { ChevronDown, LayoutGrid } from "lucide-react";
 import DebateInput from "@/components/DebateInput";
-import type { DebateOptions } from "@/components/DebateInput";
+import type { DebateOptions, SampleQuestion } from "@/components/DebateInput";
 import AgentRoster, { type AgentOption } from "@/components/AgentRoster";
 import LoadingState from "@/components/LoadingState";
 import TemplateCard from "@/components/TemplateCard";
+import Badge from "@/components/ui/Badge";
+import Card from "@/components/ui/Card";
 import { startDebateAsync, getTemplates, getDomainPacks, getHistory, getAgents } from "@/lib/api";
 import { useToast } from "@/components/Toast";
 
@@ -27,6 +31,14 @@ const DEFAULT_AGENTS: AgentOption[] = [
   { name: "Strategy",  icon: "🎯", role: "Actionable strategy proposer" },
   { name: "Ethics",    icon: "⚖️", role: "Ethics and compliance guardian" },
   { name: "Moderator", icon: "🏛️", role: "Neutral synthesizer" },
+];
+
+/** Fallback starter questions when no templates are available. */
+const FALLBACK_SAMPLES: SampleQuestion[] = [
+  { label: "4-day work week?", query: "Should our startup adopt a 4-day work week without cutting salaries?" },
+  { label: "Monolith → microservices?", query: "Is it worth migrating our monolith to microservices this year, given a team of 12 engineers?" },
+  { label: "Expand to Europe?", query: "Should we expand into the European market next quarter or double down on our home market?" },
+  { label: "AI for support?", query: "Should we replace tier-1 customer support with an AI agent while keeping humans for escalations?" },
 ];
 
 /** Compact relative timestamp, e.g. "3h ago" — disambiguates similar debates. */
@@ -61,6 +73,9 @@ export default function HomePage() {
   const [templateSearch, setTemplateSearch] = useState("");
   const [activeCategory, setActiveCategory] = useState("All");
   const [recentDebates, setRecentDebates] = useState<HistoryItem[]>([]);
+  // Distinguishes "confirmed empty" from "fetch failed" — we only claim
+  // "no debates yet" when the backend actually said so.
+  const [recentLoaded, setRecentLoaded] = useState(false);
 
   // Participating-agent roster — lifted here so the left config form and the
   // right-rail AgentRoster share one source of truth.
@@ -72,7 +87,12 @@ export default function HomePage() {
   useEffect(() => {
     getTemplates().then(setTemplates).catch(() => {});
     getDomainPacks().then(setDomainPacks).catch(() => {});
-    getHistory({ page: 1, limit: 3 }).then((r) => setRecentDebates(r.items)).catch(() => {});
+    getHistory({ page: 1, limit: 3 })
+      .then((r) => {
+        setRecentDebates(r.items);
+        setRecentLoaded(true);
+      })
+      .catch(() => {});
     getAgents()
       .then((res) => {
         // Only the enabled core agents are individually selectable; domain
@@ -151,42 +171,66 @@ export default function HomePage() {
     setActiveCategory("All");
   }
 
+  // Starter chips: prefer real templates (title → query), fall back to built-ins.
+  const sampleQuestions: SampleQuestion[] =
+    templates.length >= 3
+      ? templates.slice(0, 4).map((t) => ({ label: t.title, query: t.query }))
+      : FALLBACK_SAMPLES;
+
   return (
-    <div className="max-w-7xl mx-auto">
-      {/* Compact header — title and the templates toggle share one row */}
-      <div className="flex flex-col gap-2 sm:flex-row sm:items-center sm:justify-between mb-4">
-        <h1 className="text-lg sm:text-xl font-bold bg-gradient-to-r from-blue-600 via-violet-500 to-blue-500 dark:from-blue-400 dark:via-violet-400 dark:to-blue-300 bg-clip-text text-transparent">
-          Multi-Agent Decision Engine
-        </h1>
+    <div>
+      {/* Compact header — templates toggle shares the row so the form stays above the fold */}
+      <header className="mb-4 flex flex-wrap items-end justify-between gap-x-4 gap-y-2">
+        <div>
+          <h1 className="text-xl sm:text-2xl font-bold tracking-tight text-gray-900 dark:text-gray-50">
+            Five AI agents.{" "}
+            <span className="bg-gradient-to-r from-accent-600 via-violet-500 to-accent-500 dark:from-accent-400 dark:via-violet-400 dark:to-accent-300 bg-clip-text text-transparent">
+              One decision.
+            </span>
+          </h1>
+          <p className="mt-0.5 text-sm text-gray-500 dark:text-gray-400">
+            Ask anything consequential — the panel debates, critiques and converges
+            on a recommendation you can defend.
+          </p>
+        </div>
         {!isLoading && templates.length > 0 && (
           <button
             type="button"
             onClick={() => setShowTemplates((v) => !v)}
-            className="shrink-0 inline-flex items-center gap-2 text-sm font-medium text-blue-600 dark:text-blue-400
-                       hover:text-blue-700 dark:hover:text-blue-300 transition"
+            aria-expanded={showTemplates}
+            className="inline-flex items-center gap-1.5 text-sm font-medium text-accent-600 dark:text-accent-400
+                       hover:text-accent-700 dark:hover:text-accent-300 transition
+                       focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent-500 rounded px-1 py-0.5"
           >
-            <span>{showTemplates ? "▲" : "▼"}</span>
-            {showTemplates ? "Hide templates" : "Browse templates"}
-            <span className="text-xs bg-blue-100 dark:bg-blue-900/40 text-blue-700 dark:text-blue-300 px-1.5 py-0.5 rounded-full">
-              {templates.length}
-            </span>
+            <LayoutGrid className="w-4 h-4" aria-hidden="true" />
+            Templates
+            <Badge tone="info">{templates.length}</Badge>
+            <ChevronDown
+              className={`w-4 h-4 transition-transform duration-200 ${showTemplates ? "rotate-180" : ""}`}
+              aria-hidden="true"
+            />
           </button>
         )}
-      </div>
+      </header>
 
-      {/* Template picker (expanded) */}
-      {!isLoading && templates.length > 0 && showTemplates && (
-        <div className="mb-5">
-            <div className="space-y-3">
+      {/* Template gallery — animated slide-down panel */}
+      {!isLoading && templates.length > 0 && (
+        <div
+          className={`grid transition-[grid-template-rows] duration-300 ease-out ${
+            showTemplates ? "grid-rows-[1fr]" : "grid-rows-[0fr]"
+          }`}
+        >
+          <div className="overflow-hidden min-h-0">
+            <div className="space-y-3 pb-4">
               {/* Search bar */}
               <input
                 type="search"
                 placeholder="Search templates…"
                 value={templateSearch}
                 onChange={(e) => setTemplateSearch(e.target.value)}
-                className="w-full text-sm px-3 py-1.5 rounded-lg border border-gray-200 dark:border-gray-700
-                           bg-white dark:bg-gray-900 text-gray-700 dark:text-gray-300 placeholder:text-gray-400
-                           focus:outline-none focus:ring-2 focus:ring-blue-500"
+                className="w-full text-sm px-3 py-1.5 rounded-lg border border-line
+                           bg-surface-raised text-gray-700 dark:text-gray-300 placeholder:text-gray-400
+                           focus:outline-none focus:ring-2 focus:ring-accent-500"
               />
               {/* Category tabs */}
               <div className="flex flex-wrap gap-1.5">
@@ -197,8 +241,8 @@ export default function HomePage() {
                     onClick={() => setActiveCategory(cat)}
                     className={`text-xs px-2.5 py-1 rounded-full border transition ${
                       activeCategory === cat
-                        ? "border-blue-500 bg-blue-50 dark:bg-blue-900/30 text-blue-700 dark:text-blue-300"
-                        : "border-gray-200 dark:border-gray-700 text-gray-500 dark:text-gray-400 hover:border-gray-400 dark:hover:border-gray-500"
+                        ? "border-accent-500 bg-accent-50 dark:bg-accent-900/30 text-accent-700 dark:text-accent-300"
+                        : "border-line text-gray-500 dark:text-gray-400 hover:border-line-strong"
                     }`}
                   >
                     {cat}
@@ -218,6 +262,7 @@ export default function HomePage() {
                 )}
               </div>
             </div>
+          </div>
         </div>
       )}
 
@@ -227,7 +272,7 @@ export default function HomePage() {
       ) : (
         <div className="grid grid-cols-1 lg:grid-cols-[minmax(0,1fr)_380px] gap-6 items-start">
           {/* LEFT — configuration */}
-          <div className="bg-white dark:bg-gray-900 rounded-xl border dark:border-gray-800 shadow-sm p-6">
+          <Card padded={false} className="p-5">
             <DebateInput
               key={prefillKey}
               onSubmit={handleSubmit}
@@ -238,87 +283,68 @@ export default function HomePage() {
               prefillQuery={prefillQuery}
               prefillMode={prefillMode}
               selectedDomainPack={selectedDomainPack}
+              samples={sampleQuestions}
             />
-          </div>
+          </Card>
 
           {/* RIGHT — context rail */}
           <aside className="lg:sticky lg:top-20 space-y-4">
-            {/* Domain pack selector — controls the agent roster below it */}
-            {domainPacks.length > 0 && (
-              <div className="rounded-xl border border-gray-200 dark:border-gray-800 bg-white dark:bg-gray-900 p-4">
-                <p className="text-xs font-semibold uppercase tracking-wide text-gray-500 dark:text-gray-400 mb-2">
-                  Domain pack <span className="font-normal normal-case">(optional)</span>
-                </p>
-                <div className="flex flex-wrap gap-2">
-                  {domainPacks.map((pack) => {
-                    const active = selectedDomainPack === pack.id;
-                    return (
-                      <button
-                        key={pack.id}
-                        type="button"
-                        onClick={() => setSelectedDomainPack(active ? null : pack.id)}
-                        className={`flex items-center gap-1.5 px-3 py-1.5 rounded-full border text-sm transition ${
-                          active
-                            ? "border-blue-500 bg-blue-50 dark:bg-blue-900/30 text-blue-700 dark:text-blue-300"
-                            : "border-gray-200 dark:border-gray-700 text-gray-600 dark:text-gray-400 hover:border-gray-400 dark:hover:border-gray-500"
-                        }`}
-                      >
-                        <span>{pack.icon}</span>
-                        <span>{pack.name}</span>
-                      </button>
-                    );
-                  })}
-                </div>
-                {selectedDomainPack && (() => {
-                  const pack = domainPacks.find((p) => p.id === selectedDomainPack);
-                  return pack ? (
-                    <p className="mt-2 text-sm text-blue-700 dark:text-blue-300 leading-relaxed">
-                      {pack.description}
-                    </p>
-                  ) : null;
-                })()}
-              </div>
-            )}
-
-            {/* Agent roster */}
+            {/* Agents (domain pack selector + roster in one card) */}
             <AgentRoster
               agents={agents}
               selectedAgents={selectedAgents}
               onToggle={toggleAgent}
               selectedDomainPack={selectedDomainPack}
               domainPacks={domainPacks}
+              onSelectDomainPack={setSelectedDomainPack}
             />
 
-            {/* Recent debates quick-access */}
-            <div className="rounded-xl border border-gray-200 dark:border-gray-800 bg-white dark:bg-gray-900 p-4">
-              <p className="text-xs font-semibold uppercase tracking-wide text-gray-500 dark:text-gray-400 mb-2">
-                Recent debates
-              </p>
-              {recentDebates.length > 0 ? (
-                <div className="space-y-2.5">
-                  {recentDebates.map((item) => (
-                    <a
-                      key={item.thread_id}
-                      href={`/debate/${item.thread_id}`}
-                      className="block px-3 py-2.5 rounded-lg border border-gray-200 dark:border-gray-800
-                                 hover:border-blue-400 dark:hover:border-blue-600 transition group"
+            {/* Recent debates quick-access — hidden entirely if the fetch failed */}
+            {(recentDebates.length > 0 || recentLoaded) && (
+              <Card padded={false} className="p-4">
+                <div className="flex items-center justify-between mb-2">
+                  <p className="text-xs font-semibold uppercase tracking-wide text-gray-500 dark:text-gray-400">
+                    Recent debates
+                  </p>
+                  {recentDebates.length > 0 && (
+                    <Link
+                      href="/history"
+                      className="text-xs font-medium text-accent-600 dark:text-accent-400
+                                 hover:text-accent-700 dark:hover:text-accent-300 transition"
                     >
-                      <span className="block text-sm text-gray-700 dark:text-gray-300 truncate group-hover:text-blue-600 dark:group-hover:text-blue-400 transition">
-                        {item.user_query}
-                      </span>
-                      <span className="mt-1.5 flex items-center justify-between text-xs text-gray-500 dark:text-gray-400">
-                        <span>{timeAgo(item.created_at)}</span>
-                        <span>{Math.round(item.agreement_score * 100)}% agree</span>
-                      </span>
-                    </a>
-                  ))}
+                      View all →
+                    </Link>
+                  )}
                 </div>
-              ) : (
-                <p className="text-sm text-gray-500 dark:text-gray-400 leading-relaxed">
-                  No debates yet. Start your first debate to build history.
-                </p>
-              )}
-            </div>
+                {recentDebates.length > 0 ? (
+                  <div className="space-y-2">
+                    {recentDebates.map((item) => (
+                      <Link
+                        key={item.thread_id}
+                        href={`/debate/${item.thread_id}`}
+                        title={item.user_query}
+                        className="block px-3 py-2 rounded-lg border border-line
+                                   hover:border-accent-400 dark:hover:border-accent-600 transition group"
+                      >
+                        <span className="block text-sm text-gray-700 dark:text-gray-300 truncate group-hover:text-accent-600 dark:group-hover:text-accent-400 transition">
+                          {item.user_query}
+                        </span>
+                        <span className="mt-1 flex items-center justify-between text-xs text-gray-500 dark:text-gray-400">
+                          <span>{timeAgo(item.created_at)}</span>
+                          {Number.isFinite(item.agreement_score) && (
+                            <span>{Math.round(item.agreement_score * 100)}% agree</span>
+                          )}
+                        </span>
+                      </Link>
+                    ))}
+                  </div>
+                ) : (
+                  <p className="text-sm text-gray-500 dark:text-gray-400 leading-relaxed">
+                    No debates yet. Start your first debate to build history.
+                  </p>
+                )}
+              </Card>
+            )}
           </aside>
         </div>
       )}

@@ -4,8 +4,8 @@
 
 "use client";
 
-import type { CritiqueResponse, AgentName } from "@/lib/types";
-import { AGENT_META } from "@/lib/types";
+import type { CritiqueResponse } from "@/lib/types";
+import AgentAvatar from "./ui/AgentAvatar";
 
 const SEVERITY_STYLES: Record<string, string> = {
   low: "bg-gray-100 dark:bg-gray-700 text-gray-600 dark:text-gray-300",
@@ -24,16 +24,15 @@ export default function CritiqueView({ critiques }: CritiqueViewProps) {
   return (
     <div className="space-y-2">
       {critiques.map((c, idx) => {
-        const criticMeta = AGENT_META[c.critic_agent as AgentName];
         return (
           <div
             key={idx}
-            className="rounded-lg border border-gray-200 dark:border-gray-700 bg-white dark:bg-gray-900 px-3 py-2 text-sm"
+            className="rounded-lg border border-line bg-surface-raised px-3 py-2 text-sm"
           >
             {/* Critic name + severity */}
             <div className="flex items-center justify-between mb-1">
-              <span className="font-medium" style={{ color: criticMeta?.color ?? "#6B7280" }}>
-                {criticMeta?.icon ?? "🤖"} {c.critic_agent}
+              <span className="inline-flex items-center gap-1.5 font-medium text-gray-700 dark:text-gray-300">
+                <AgentAvatar name={c.critic_agent} size="sm" /> {c.critic_agent}
               </span>
               <span
                 className={`text-[11px] px-2 py-0.5 rounded-full font-medium ${SEVERITY_STYLES[c.severity] ?? SEVERITY_STYLES.low}`}

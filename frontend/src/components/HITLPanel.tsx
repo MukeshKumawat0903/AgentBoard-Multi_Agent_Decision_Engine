@@ -45,7 +45,7 @@ export default function HITLPanel({ event, threadId, onDone }: HITLPanelProps) {
 
   return (
     <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/50 backdrop-blur-sm p-4">
-      <div className="w-full max-w-lg bg-white dark:bg-gray-900 rounded-2xl shadow-2xl border border-purple-200 dark:border-purple-700 overflow-hidden">
+      <div className="w-full max-w-lg bg-surface-raised rounded-2xl shadow-2xl border border-purple-200 dark:border-purple-700 overflow-hidden">
 
         {/* Header */}
         <div className="bg-purple-50 dark:bg-purple-900/30 border-b border-purple-200 dark:border-purple-700 px-6 py-4">
@@ -91,8 +91,8 @@ export default function HITLPanel({ event, threadId, onDone }: HITLPanelProps) {
                 onChange={(e) => setFeedback(e.target.value)}
                 rows={3}
                 placeholder="Describe your preferred direction or decision…"
-                className="w-full rounded-lg border border-gray-300 dark:border-gray-600 px-3 py-2 text-sm
-                           bg-white dark:bg-gray-800 text-gray-900 dark:text-gray-100
+                className="w-full rounded-lg border border-line-strong px-3 py-2 text-sm
+                           bg-surface-raised text-gray-900 dark:text-gray-100
                            placeholder:text-gray-400 focus:outline-none focus:ring-2 focus:ring-purple-500 resize-y"
               />
             </div>
@@ -119,8 +119,8 @@ export default function HITLPanel({ event, threadId, onDone }: HITLPanelProps) {
           <button
             onClick={() => handleAction("add_round")}
             disabled={loading}
-            className="flex-1 py-2.5 rounded-lg bg-blue-600 text-white text-sm font-semibold
-                       hover:bg-blue-700 disabled:opacity-50 transition"
+            className="flex-1 py-2.5 rounded-lg bg-accent-600 text-white text-sm font-semibold
+                       hover:bg-accent-700 disabled:opacity-50 transition"
           >
             + Add Round
           </button>

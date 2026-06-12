@@ -25,7 +25,7 @@ const components: Components = {
   h3: (props) => <h3 className="text-sm font-semibold mt-2 mb-1" {...props} />,
   a: (props) => (
     <a
-      className="text-blue-600 dark:text-blue-400 underline underline-offset-2"
+      className="text-accent-600 dark:text-accent-400 underline underline-offset-2"
       target="_blank"
       rel="noopener noreferrer"
       {...props}
@@ -39,15 +39,15 @@ const components: Components = {
   ),
   blockquote: (props) => (
     <blockquote
-      className="border-l-2 border-gray-300 dark:border-gray-600 pl-3 italic text-gray-500 dark:text-gray-400 mb-2"
+      className="border-l-2 border-line-strong pl-3 italic text-gray-500 dark:text-gray-400 mb-2"
       {...props}
     />
   ),
   table: (props) => <table className="w-full text-xs border-collapse mb-2" {...props} />,
   th: (props) => (
-    <th className="border border-gray-300 dark:border-gray-600 px-2 py-1 text-left font-semibold" {...props} />
+    <th className="border border-line-strong px-2 py-1 text-left font-semibold" {...props} />
   ),
-  td: (props) => <td className="border border-gray-300 dark:border-gray-600 px-2 py-1" {...props} />,
+  td: (props) => <td className="border border-line-strong px-2 py-1" {...props} />,
 };
 
 interface MarkdownProps {

@@ -36,8 +36,6 @@ export default function ConfidenceDriftChart({
   rounds,
   consensusThreshold = 0.75,
 }: ChartProps) {
-  if (rounds.length === 0) return null;
-
   // Collect all agent names across rounds — memoised to avoid re-building on every render
   const agentNames = useMemo(
     () =>
@@ -64,6 +62,8 @@ export default function ConfidenceDriftChart({
   // Find convergence round (last round if debate is done)
   const convergenceRound =
     rounds.length > 0 ? rounds[rounds.length - 1].round_number : null;
+
+  if (rounds.length === 0) return null;
 
   return (
     <div className="w-full">

@@ -236,8 +236,8 @@ export default function LLMSettingsPanel() {
             role="dialog"
             aria-modal="true"
             aria-labelledby="llm-settings-title"
-            className="w-full max-w-md bg-white dark:bg-gray-900 rounded-2xl shadow-2xl
-                       border border-gray-200 dark:border-gray-700 flex flex-col"
+            className="w-full max-w-md bg-surface-raised rounded-2xl shadow-2xl
+                       border border-line flex flex-col"
           >
             {/* Header */}
             <div className="flex items-center justify-between px-5 py-4 border-b border-gray-100 dark:border-gray-800">
@@ -289,8 +289,8 @@ export default function LLMSettingsPanel() {
                                   font-medium transition
                                   ${
                                     isActive
-                                      ? "border-blue-500 bg-blue-50 dark:bg-blue-900/30 text-blue-700 dark:text-blue-300"
-                                      : "border-gray-200 dark:border-gray-700 text-gray-600 dark:text-gray-400 hover:border-gray-400 dark:hover:border-gray-500"
+                                      ? "border-accent-500 bg-accent-50 dark:bg-accent-900/30 text-accent-700 dark:text-accent-300"
+                                      : "border-line text-gray-600 dark:text-gray-400 hover:border-gray-400 dark:hover:border-gray-500"
                                   }`}
                     >
                       <span className="font-semibold">{p.label}</span>
@@ -322,9 +322,9 @@ export default function LLMSettingsPanel() {
                 id="model-select"
                 value={model}
                 onChange={(e) => setModel(e.target.value)}
-                className="w-full px-3 py-2 rounded-lg border border-gray-200 dark:border-gray-700
-                           bg-white dark:bg-gray-800 text-sm text-gray-800 dark:text-gray-200
-                           focus:outline-none focus:ring-2 focus:ring-blue-500"
+                className="w-full px-3 py-2 rounded-lg border border-line
+                           bg-surface-raised text-sm text-gray-800 dark:text-gray-200
+                           focus:outline-none focus:ring-2 focus:ring-accent-500"
               >
                 {PROVIDER_MODELS[provider].map((m) => (
                   <option key={m} value={m}>
@@ -353,9 +353,9 @@ export default function LLMSettingsPanel() {
                     placeholder={providerMeta.keyPlaceholder}
                     autoComplete="off"
                     spellCheck={false}
-                    className="w-full px-3 py-2 pr-10 rounded-lg border border-gray-200 dark:border-gray-700
-                               bg-white dark:bg-gray-800 text-sm text-gray-800 dark:text-gray-200
-                               focus:outline-none focus:ring-2 focus:ring-blue-500
+                    className="w-full px-3 py-2 pr-10 rounded-lg border border-line
+                               bg-surface-raised text-sm text-gray-800 dark:text-gray-200
+                               focus:outline-none focus:ring-2 focus:ring-accent-500
                                placeholder:text-gray-400 font-mono"
                   />
                   <button
@@ -445,7 +445,7 @@ export default function LLMSettingsPanel() {
                 <button
                   type="button"
                   onClick={() => setOpen(false)}
-                  className="px-4 py-2 text-sm rounded-lg border border-gray-200 dark:border-gray-700
+                  className="px-4 py-2 text-sm rounded-lg border border-line
                              text-gray-600 dark:text-gray-400 hover:bg-gray-50 dark:hover:bg-gray-800 transition"
                 >
                   Cancel
@@ -458,7 +458,7 @@ export default function LLMSettingsPanel() {
                     (providerMeta.needsKey && !apiKey.trim())
                   }
                   className="px-4 py-2 text-sm rounded-lg font-medium
-                             bg-blue-600 hover:bg-blue-700 disabled:opacity-50
+                             bg-accent-600 hover:bg-accent-700 disabled:opacity-50
                              text-white transition"
                 >
                   {saving ? "Applying…" : "Apply"}

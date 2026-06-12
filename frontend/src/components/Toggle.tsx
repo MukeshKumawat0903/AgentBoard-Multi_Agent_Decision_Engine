@@ -32,7 +32,7 @@ export default function Toggle({ checked, onChange, disabled, id }: ToggleProps)
       <span
         aria-hidden="true"
         className="block h-5 w-9 rounded-full bg-gray-300 dark:bg-gray-600 transition-colors
-                   peer-checked:bg-blue-600
+                   peer-checked:bg-accent-600
                    peer-focus-visible:ring-2 peer-focus-visible:ring-blue-400 peer-focus-visible:ring-offset-1
                    peer-disabled:opacity-50 peer-disabled:cursor-not-allowed"
       />

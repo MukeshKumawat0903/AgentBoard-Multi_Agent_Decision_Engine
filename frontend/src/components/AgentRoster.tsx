@@ -13,6 +13,7 @@
 "use client";
 
 import { AGENT_META, DOMAIN_AGENT_META, type DomainPack } from "@/lib/types";
+import AgentAvatar from "./ui/AgentAvatar";
 
 export interface AgentOption {
   name: string;
@@ -26,6 +27,8 @@ interface AgentRosterProps {
   onToggle: (name: string) => void;
   selectedDomainPack: string | null;
   domainPacks: DomainPack[];
+  /** When provided, the domain-pack selector renders inside this card. */
+  onSelectDomainPack?: (id: string | null) => void;
 }
 
 function metaFor(name: string): { icon: string; role: string; isDomain: boolean } {
@@ -46,6 +49,7 @@ export default function AgentRoster({
   onToggle,
   selectedDomainPack,
   domainPacks,
+  onSelectDomainPack,
 }: AgentRosterProps) {
   const pack = selectedDomainPack
     ? domainPacks.find((p) => p.id === selectedDomainPack) ?? null
@@ -64,7 +68,41 @@ export default function AgentRoster({
       : `${coreCount} core agent${coreCount !== 1 ? "s" : ""}`;
 
   return (
-    <div className="rounded-xl border border-gray-200 dark:border-gray-800 bg-white dark:bg-gray-900 p-4">
+    <div className="rounded-2xl bg-surface-raised ring-1 ring-black/5 dark:ring-white/10 shadow-card p-4">
+      {/* Domain pack selector — the pack overrides the roster below */}
+      {onSelectDomainPack && domainPacks.length > 0 && (
+        <div className="mb-3 pb-3 border-b border-line">
+          <p className="text-xs font-semibold uppercase tracking-wide text-gray-500 dark:text-gray-400 mb-2">
+            Domain pack <span className="font-normal normal-case">(optional)</span>
+          </p>
+          <div className="flex flex-wrap gap-1.5">
+            {domainPacks.map((p) => {
+              const active = selectedDomainPack === p.id;
+              return (
+                <button
+                  key={p.id}
+                  type="button"
+                  onClick={() => onSelectDomainPack(active ? null : p.id)}
+                  className={`flex items-center gap-1 px-2.5 py-1 rounded-full border text-xs transition ${
+                    active
+                      ? "border-accent-500 bg-accent-50 dark:bg-accent-900/30 text-accent-700 dark:text-accent-300"
+                      : "border-line text-gray-600 dark:text-gray-400 hover:border-line-strong"
+                  }`}
+                >
+                  <span>{p.icon}</span>
+                  <span>{p.name}</span>
+                </button>
+              );
+            })}
+          </div>
+          {pack && (
+            <p className="mt-2 text-xs text-accent-700 dark:text-accent-300 leading-relaxed">
+              {pack.description}
+            </p>
+          )}
+        </div>
+      )}
+
       <div className="flex items-center justify-between">
         <p className="text-xs font-semibold uppercase tracking-wide text-gray-500 dark:text-gray-400">
           Agents
@@ -84,13 +122,13 @@ export default function AgentRoster({
                 <span
                   key={name}
                   title={m.role}
-                  className={`inline-flex items-center gap-1.5 px-3 py-1.5 rounded-full text-xs font-medium border ${
+                  className={`inline-flex items-center gap-1.5 pl-1 pr-3 py-1 rounded-full text-xs font-medium border ${
                     m.isDomain
                       ? "border-violet-400 dark:border-violet-500 bg-violet-50 dark:bg-violet-900/30 text-violet-700 dark:text-violet-300"
-                      : "border-blue-500 bg-blue-50 dark:bg-blue-900/30 text-blue-700 dark:text-blue-300"
+                      : "border-accent-500 bg-accent-50 dark:bg-accent-900/30 text-accent-700 dark:text-accent-300"
                   }`}
                 >
-                  <span>{m.icon}</span>
+                  <AgentAvatar name={name} size="sm" />
                   <span>{name}</span>
                 </span>
               );
@@ -102,7 +140,7 @@ export default function AgentRoster({
         </>
       ) : (
         <div className="mt-3 flex flex-wrap gap-2">
-          {agents.map(({ name, icon, role }) => {
+          {agents.map(({ name, role }) => {
             const isSelected = selectedAgents.has(name);
             const isRequired = name === "Moderator";
             return (
@@ -112,15 +150,15 @@ export default function AgentRoster({
                 onClick={() => onToggle(name)}
                 disabled={isRequired}
                 title={isRequired ? "Moderator is always required" : role}
-                className={`inline-flex items-center gap-1.5 px-3 py-1.5 rounded-full text-xs font-medium border transition
+                className={`inline-flex items-center gap-1.5 pl-1 pr-3 py-1 rounded-full text-xs font-medium border transition
                   ${
                     isSelected
-                      ? "border-blue-500 bg-blue-50 dark:bg-blue-900/30 text-blue-700 dark:text-blue-300"
-                      : "border-gray-300 dark:border-gray-600 bg-white dark:bg-gray-800 text-gray-500 dark:text-gray-400 opacity-60"
+                      ? "border-accent-500 bg-accent-50 dark:bg-accent-900/30 text-accent-700 dark:text-accent-300"
+                      : "border-line-strong bg-surface-raised text-gray-500 dark:text-gray-400 opacity-60"
                   }
-                  ${isRequired ? "cursor-default" : "hover:border-blue-400 cursor-pointer"}`}
+                  ${isRequired ? "cursor-default" : "hover:border-accent-400 cursor-pointer"}`}
               >
-                <span>{icon}</span>
+                <AgentAvatar name={name} size="sm" />
                 <span>{name}</span>
                 {isRequired && <span className="opacity-60 text-xs">*</span>}
               </button>

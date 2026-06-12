@@ -97,7 +97,7 @@ export default function CompareContent() {
   return (
     <div className="max-w-6xl mx-auto space-y-6">
       <div>
-        <h1 className="text-2xl font-bold text-gray-800 dark:text-gray-100">
+        <h1 className="text-2xl font-bold tracking-tight text-gray-800 dark:text-gray-100">
           Compare Debates
         </h1>
         <p className="text-gray-500 dark:text-gray-400 text-sm mt-1">
@@ -105,7 +105,7 @@ export default function CompareContent() {
         </p>
       </div>
 
-      <div className="bg-white dark:bg-gray-900 rounded-xl border dark:border-gray-800 p-5 space-y-4">
+      <div className="bg-surface-raised rounded-xl border dark:border-gray-800 p-5 space-y-4">
         <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
           <div className="space-y-1">
             <label className="text-xs font-semibold text-gray-500 uppercase tracking-wide">
@@ -116,7 +116,7 @@ export default function CompareContent() {
               value={inputA}
               onChange={(e) => setInputA(e.target.value)}
               placeholder="Enter thread ID…"
-              className="w-full px-3 py-2 rounded-lg border border-gray-300 dark:border-gray-700 bg-white dark:bg-gray-800 text-sm text-gray-800 dark:text-gray-200 focus:outline-none focus:ring-2 focus:ring-blue-500"
+              className="w-full px-3 py-2 rounded-lg border border-line-strong bg-surface-raised text-sm text-gray-800 dark:text-gray-200 focus:outline-none focus:ring-2 focus:ring-accent-500"
             />
           </div>
           <div className="space-y-1">
@@ -128,7 +128,7 @@ export default function CompareContent() {
               value={inputB}
               onChange={(e) => setInputB(e.target.value)}
               placeholder="Enter thread ID…"
-              className="w-full px-3 py-2 rounded-lg border border-gray-300 dark:border-gray-700 bg-white dark:bg-gray-800 text-sm text-gray-800 dark:text-gray-200 focus:outline-none focus:ring-2 focus:ring-blue-500"
+              className="w-full px-3 py-2 rounded-lg border border-line-strong bg-surface-raised text-sm text-gray-800 dark:text-gray-200 focus:outline-none focus:ring-2 focus:ring-accent-500"
             />
           </div>
         </div>
@@ -136,7 +136,7 @@ export default function CompareContent() {
         <button
           onClick={applyAndLoad}
           disabled={!inputA && !inputB}
-          className="px-5 py-2 rounded-lg bg-blue-600 text-white text-sm font-medium hover:bg-blue-700 disabled:opacity-40 transition"
+          className="px-5 py-2 rounded-lg bg-accent-600 text-white text-sm font-medium hover:bg-accent-700 disabled:opacity-40 transition"
         >
           Compare
         </button>
@@ -144,7 +144,7 @@ export default function CompareContent() {
         {(inputA || inputB) && (
           <button
             onClick={swapAB}
-            className="px-4 py-2 rounded-lg border border-gray-300 dark:border-gray-700 text-sm font-medium text-gray-600 dark:text-gray-400 hover:bg-gray-50 dark:hover:bg-gray-800 transition"
+            className="px-4 py-2 rounded-lg border border-line-strong text-sm font-medium text-gray-600 dark:text-gray-400 hover:bg-gray-50 dark:hover:bg-gray-800 transition"
             title="Swap Debate A and Debate B"
           >
             ⇄ Swap A / B
@@ -159,14 +159,14 @@ export default function CompareContent() {
                 <div key={item.thread_id} className="flex gap-1">
                   <button
                     onClick={() => pickRecent(item, "a")}
-                    className="px-2 py-1 rounded border border-gray-300 dark:border-gray-700 text-xs text-gray-600 dark:text-gray-400 hover:bg-gray-100 dark:hover:bg-gray-800 transition truncate max-w-[160px]"
+                    className="px-2 py-1 rounded border border-line-strong text-xs text-gray-600 dark:text-gray-400 hover:bg-gray-100 dark:hover:bg-gray-800 transition truncate max-w-[160px]"
                     title={item.user_query}
                   >
                     A: {item.user_query.slice(0, 24)}…
                   </button>
                   <button
                     onClick={() => pickRecent(item, "b")}
-                    className="px-2 py-1 rounded border border-gray-300 dark:border-gray-700 text-xs text-gray-600 dark:text-gray-400 hover:bg-gray-100 dark:hover:bg-gray-800 transition truncate max-w-[90px]"
+                    className="px-2 py-1 rounded border border-line-strong text-xs text-gray-600 dark:text-gray-400 hover:bg-gray-100 dark:hover:bg-gray-800 transition truncate max-w-[90px]"
                     title={item.user_query}
                   >
                     B
@@ -199,7 +199,7 @@ export default function CompareContent() {
 
           {/* Confidence delta summary + run again */}
           {debateA && debateB && (
-            <div className="bg-white dark:bg-gray-900 rounded-xl border dark:border-gray-800 p-5">
+            <div className="bg-surface-raised rounded-xl border dark:border-gray-800 p-5">
               <div className="flex items-center justify-between mb-3">
                 <h3 className="font-semibold text-gray-700 dark:text-gray-300 text-sm">
                   Delta Summary (A vs B)
@@ -279,7 +279,7 @@ function DebateColumn({
 
       {loading && (
         <div className="flex justify-center py-10">
-          <div className="w-6 h-6 border-4 border-blue-500 border-t-transparent rounded-full animate-spin" />
+          <div className="w-6 h-6 border-4 border-accent-500 border-t-transparent rounded-full animate-spin" />
         </div>
       )}
 
@@ -292,18 +292,18 @@ function DebateColumn({
       {debate && (
         <div className="space-y-4">
           {debate.query && (
-            <div className="bg-blue-50 dark:bg-blue-950/30 border border-blue-200 dark:border-blue-800 rounded-xl p-4">
-              <p className="text-xs text-blue-500 font-semibold mb-1">Query</p>
+            <div className="bg-accent-50 dark:bg-accent-950/30 border border-accent-200 dark:border-accent-800 rounded-xl p-4">
+              <p className="text-xs text-accent-500 font-semibold mb-1">Query</p>
               <p className="text-gray-800 dark:text-gray-200 text-sm">{debate.query}</p>
             </div>
           )}
 
-          <div className="bg-white dark:bg-gray-900 rounded-xl border dark:border-gray-800 p-4">
+          <div className="bg-surface-raised rounded-xl border dark:border-gray-800 p-4">
             <p className="text-xs text-gray-400 font-semibold mb-1">Decision</p>
             <p className="text-gray-800 dark:text-gray-200 leading-relaxed">{debate.decision}</p>
           </div>
 
-          <div className="bg-white dark:bg-gray-900 rounded-xl border dark:border-gray-800 p-4 grid grid-cols-2 gap-4">
+          <div className="bg-surface-raised rounded-xl border dark:border-gray-800 p-4 grid grid-cols-2 gap-4">
             <ConfidenceMeter score={debate.confidence_score} label="Confidence" />
             <ConfidenceMeter score={debate.agreement_score} label="Agreement" />
           </div>
@@ -341,7 +341,7 @@ function DebateColumn({
             />
           </div>
 
-          <div className="bg-white dark:bg-gray-900 rounded-xl border dark:border-gray-800 p-4">
+          <div className="bg-surface-raised rounded-xl border dark:border-gray-800 p-4">
             <p className="text-xs text-gray-400 font-semibold mb-1">Rationale</p>
             <p className="text-gray-600 dark:text-gray-400 text-sm leading-relaxed">
               {debate.rationale_summary}
@@ -349,7 +349,7 @@ function DebateColumn({
           </div>
 
           {debate.risk_flags.length > 0 && (
-            <div className="bg-white dark:bg-gray-900 rounded-xl border dark:border-gray-800 p-4">
+            <div className="bg-surface-raised rounded-xl border dark:border-gray-800 p-4">
               <p className="text-xs text-gray-400 font-semibold mb-2">
                 Risk Flags ({debate.risk_flags.length})
               </p>
@@ -376,7 +376,7 @@ function DebateColumn({
           )}
 
           {debate.alternatives.length > 0 && (
-            <div className="bg-white dark:bg-gray-900 rounded-xl border dark:border-gray-800 p-4">
+            <div className="bg-surface-raised rounded-xl border dark:border-gray-800 p-4">
               <p className="text-xs text-gray-400 font-semibold mb-2">Alternatives</p>
               <ul className="list-disc list-inside text-sm text-gray-600 dark:text-gray-400 space-y-1">
                 {debate.alternatives.map((alt, i) => (

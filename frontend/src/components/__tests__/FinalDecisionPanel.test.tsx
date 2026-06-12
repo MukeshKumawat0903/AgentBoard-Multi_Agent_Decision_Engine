@@ -14,11 +14,6 @@ vi.mock("@/components/Toast", () => ({
   useToast: () => ({ showToast: vi.fn() }),
 }));
 
-// Mock DebateTimeline (heavy sub-component with recharts)
-vi.mock("@/components/DebateTimeline", () => ({
-  default: () => <div data-testid="debate-timeline" />,
-}));
-
 function makeDecision(overrides: Partial<FinalDecision> = {}): FinalDecision {
   return {
     thread_id: "thread-001",

@@ -33,11 +33,11 @@ export default function RootLayout({
           <NavBar />
 
           {/* Main content */}
-          <main id="main-content" className="max-w-7xl mx-auto px-4 py-8">{children}</main>
+          <main id="main-content" className="max-w-6xl mx-auto px-4 py-6">{children}</main>
 
           {/* Footer */}
-          <footer className="border-t border-gray-200 dark:border-gray-800 mt-12">
-            <div className="max-w-5xl mx-auto px-4 py-6 text-center text-xs text-gray-400 dark:text-gray-600">
+          <footer className="border-t border-line mt-12">
+            <div className="max-w-6xl mx-auto px-4 py-6 text-center text-xs text-gray-400 dark:text-gray-600">
               AgentBoard &copy; {new Date().getFullYear()} &mdash; Powered by
               Groq, OpenAI &amp; Anthropic via LangChain
             </div>
