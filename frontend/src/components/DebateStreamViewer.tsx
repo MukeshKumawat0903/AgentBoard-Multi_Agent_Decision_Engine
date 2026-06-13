@@ -26,8 +26,8 @@ import {
   WifiOff,
   Wrench,
 } from "lucide-react";
-import { connectToStream, cancelDebate } from "@/lib/api";
-import type { DebateRound, FinalDecision } from "@/lib/types";
+import { connectToStream, cancelDebate, getHistoryItem } from "@/lib/api";
+import type { DebateRound, FinalDecision, FinalDecisionEvent } from "@/lib/types";
 import {
   debateStreamReducer,
   initialStreamState,
@@ -201,6 +201,9 @@ export default function DebateStreamViewer({ threadId, onQuery }: Props) {
       onError: () => {
         setMaxReconnectsHit(true);
         setConnStatus("disconnected");
+        // Surface the failure instead of stranding the user on the "Connecting…"
+        // spinner forever. The reducer ignores this once a decision has arrived.
+        dispatch({ type: "stream_error" });
       },
       onStatusChange: setConnStatus,
     });
@@ -213,6 +216,23 @@ export default function DebateStreamViewer({ threadId, onQuery }: Props) {
       controllerRef.current?.abort();
     };
     // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [threadId]);
+
+  // REST fallback for already-completed debates (e.g. opened from History): the
+  // persisted decision loads directly, so the page never depends on a live SSE
+  // stream to finish. 404 → the debate is still in progress; let the stream drive.
+  useEffect(() => {
+    let cancelled = false;
+    getHistoryItem(threadId)
+      .then((decision) => {
+        if (cancelled) return;
+        controllerRef.current?.abort(); // stop reconnecting; we have the result
+        dispatch({ event: { ...decision, type: "final_decision" } as FinalDecisionEvent });
+      })
+      .catch(() => {
+        // Not completed (404) or unreachable — the SSE path handles it.
+      });
+    return () => { cancelled = true; };
   }, [threadId]);
 
   // Surface the debate query to the parent (for the breadcrumb).
