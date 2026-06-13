@@ -257,7 +257,7 @@ async def get_debate_events(
 async def cleanup_old_debates(
     db: aiosqlite.Connection,
     ttl_days: int = 90,
-) -> None:
+) -> int:
     """Delete debates, decisions, and events older than ``ttl_days`` days.
 
     Runs once at application startup.  Safe to call on an empty database.
@@ -290,6 +290,8 @@ async def cleanup_old_debates(
             "events_deleted": events_deleted,
         },
     )
+
+    return debates_deleted
 
 
 # ---------------------------------------------------------------------------
