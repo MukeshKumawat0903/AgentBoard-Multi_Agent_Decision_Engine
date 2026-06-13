@@ -59,18 +59,24 @@ function timeAgo(iso: string): string {
 }
 
 /**
- * Retry a fetch several times with a short delay before giving up.
+ * Retry a fetch with exponential backoff before giving up.
  * Covers the cold-start window where the Next.js dev proxy can't yet
  * reach the FastAPI backend — a cold uvicorn process with heavy ML
- * imports (langchain/langgraph) can take several seconds to come up,
- * so we retry for up to ~10s rather than giving up after ~1.6s.
+ * imports (langchain/langgraph), or a free-tier hosted backend, can take
+ * the better part of a minute to come up. A fixed ~10s window gave up too
+ * early, leaving the right-rail boxes hidden until a manual refresh.
+ *
+ * Delays grow 1s → 2s → 4s → 8s → 10s (capped), so 11 attempts span ~75s
+ * while making far fewer calls than polling once a second. Once the backend
+ * answers, the rail populates on its own — no refresh needed.
  */
 function withRetry<T>(fn: () => Promise<T>, retries = 10, delayMs = 1000): Promise<T> {
   return fn().catch((err) => {
     if (retries <= 0) throw err;
     return new Promise<T>((resolve, reject) => {
       setTimeout(() => {
-        withRetry(fn, retries - 1, delayMs).then(resolve, reject);
+        const nextDelay = Math.min(delayMs * 2, 10_000);
+        withRetry(fn, retries - 1, nextDelay).then(resolve, reject);
       }, delayMs);
     });
   });
