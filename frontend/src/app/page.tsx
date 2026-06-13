@@ -58,6 +58,22 @@ function timeAgo(iso: string): string {
   return `${Math.floor(mo / 12)}y ago`;
 }
 
+/**
+ * Retry a fetch a couple of times with a short delay before giving up.
+ * Covers the cold-start window where the Next.js dev proxy can't yet
+ * reach the FastAPI backend.
+ */
+function withRetry<T>(fn: () => Promise<T>, retries = 2, delayMs = 800): Promise<T> {
+  return fn().catch((err) => {
+    if (retries <= 0) throw err;
+    return new Promise<T>((resolve, reject) => {
+      setTimeout(() => {
+        withRetry(fn, retries - 1, delayMs).then(resolve, reject);
+      }, delayMs);
+    });
+  });
+}
+
 export default function HomePage() {
   const router = useRouter();
   const { showToast } = useToast();
@@ -85,15 +101,18 @@ export default function HomePage() {
   );
 
   useEffect(() => {
-    getTemplates().then(setTemplates).catch(() => {});
-    getDomainPacks().then(setDomainPacks).catch(() => {});
-    getHistory({ page: 1, limit: 3 })
+    // On first dev-server load the backend proxy may briefly fail while both
+    // servers are still warming up — retry a couple of times before giving up,
+    // so the right-rail boxes don't disappear until a manual refresh.
+    withRetry(() => getTemplates()).then(setTemplates).catch(() => {});
+    withRetry(() => getDomainPacks()).then(setDomainPacks).catch(() => {});
+    withRetry(() => getHistory({ page: 1, limit: 3 }))
       .then((r) => {
         setRecentDebates(r.items);
         setRecentLoaded(true);
       })
       .catch(() => {});
-    getAgents()
+    withRetry(() => getAgents())
       .then((res) => {
         // Only the enabled core agents are individually selectable; domain
         // experts are activated via a domain pack, not picked one-by-one.
