@@ -83,6 +83,16 @@ export interface MinorityReportEntry {
   confidence_score: number;
 }
 
+export interface AgentStance {
+  agent: string;
+  stance: string;
+}
+
+export interface StructuredDisagreement {
+  topic: string;
+  positions: AgentStance[];
+}
+
 export interface FinalDecision {
   thread_id: string;
   query?: string;
@@ -100,6 +110,7 @@ export interface FinalDecision {
   // P1.5 richer output fields
   minority_report?: MinorityReportEntry[];
   key_disagreements?: string[];
+  structured_disagreements?: StructuredDisagreement[];
   agent_contribution_scores?: Record<string, number>;
   // Degraded-run indicators: agents absent from the final round
   degraded?: boolean;

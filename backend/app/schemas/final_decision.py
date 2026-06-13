@@ -21,6 +21,23 @@ class MinorityReportEntry(BaseModel):
     confidence_score: float = Field(ge=0.0, le=1.0, description="Agent's self-assessed confidence.")
 
 
+class AgentStance(BaseModel):
+    """One agent's stance on a contested topic."""
+
+    agent: str = Field(description="Name of the agent, e.g. 'Analyst', 'Ethics'.")
+    stance: str = Field(description="What this agent argues on the topic, in one sentence.")
+
+
+class StructuredDisagreement(BaseModel):
+    """A contested topic framed as the opposing agents' stances (agent-vs-agent)."""
+
+    topic: str = Field(description="The point of contention.")
+    positions: list[AgentStance] = Field(
+        default_factory=list,
+        description="The opposing agents and their stances on this topic (usually 2).",
+    )
+
+
 class FinalDecision(BaseModel):
     """
     The converged output of a completed multi-agent debate session.
@@ -89,6 +106,10 @@ class FinalDecision(BaseModel):
     key_disagreements: list[str] = Field(
         default_factory=list,
         description="Top thematic disagreements that persisted across rounds.",
+    )
+    structured_disagreements: list[StructuredDisagreement] = Field(
+        default_factory=list,
+        description="Key disagreements framed as opposing agents' stances (agent-vs-agent).",
     )
     agent_contribution_scores: dict[str, float] = Field(
         default_factory=dict,

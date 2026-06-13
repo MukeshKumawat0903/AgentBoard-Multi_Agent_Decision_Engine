@@ -11,7 +11,7 @@ from pydantic import BaseModel, ConfigDict, Field
 
 from app.agents.base_agent import BaseAgent
 from app.schemas.agent_response import AgentResponse, CritiqueResponse
-from app.schemas.final_decision import FinalDecision
+from app.schemas.final_decision import FinalDecision, StructuredDisagreement
 from app.schemas.state import DebateState
 from app.services.llm_client import GroqClient
 
@@ -68,6 +68,10 @@ class FinalDecisionLLMOutput(BaseModel):
     risk_flags: list[str] = Field(default_factory=list)
     alternatives: list[str] = Field(default_factory=list)
     dissenting_opinions: list[str] = Field(default_factory=list)
+    structured_disagreements: list[StructuredDisagreement] = Field(
+        default_factory=list,
+        description="Unresolved disagreements framed as the opposing agents' stances.",
+    )
 
 
 SYNTHESIS_SYSTEM_PROMPT = """\
@@ -96,6 +100,10 @@ Your role:
 - List identified risk flags
 - List alternatives that were considered but not chosen
 - Note dissenting opinions among agents
+- For each unresolved disagreement, populate structured_disagreements: name the
+  topic and the OPPOSING agents with their one-sentence stances (e.g. topic "Cost
+  vs. worker harm" with Analyst arguing the savings justify it and Ethics arguing
+  they do not). Frame these agent-vs-agent, not as one-sided critiques.
 """
 
 
@@ -170,6 +178,7 @@ class ModeratorAgent(BaseAgent):
             risk_flags=llm_out.risk_flags,
             alternatives=llm_out.alternatives,
             dissenting_opinions=llm_out.dissenting_opinions,
+            structured_disagreements=llm_out.structured_disagreements,
         )
         self.logger.info(
             "finalize_complete",

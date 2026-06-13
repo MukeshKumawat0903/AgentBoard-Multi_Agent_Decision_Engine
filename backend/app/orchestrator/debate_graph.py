@@ -262,6 +262,7 @@ class DebateGraph:
         query: str,
         max_rounds: int | None = None,
         *,
+        min_rounds: int | None = None,
         initial_state: DebateState | None = None,
         consensus_threshold: float | None = None,
         skip_critique_phase: bool = False,
@@ -296,6 +297,11 @@ class DebateGraph:
                     max_rounds
                     if max_rounds is not None
                     else self.settings.MAX_DEBATE_ROUNDS
+                ),
+                min_rounds=(
+                    min_rounds
+                    if min_rounds is not None
+                    else self.settings.MIN_DEBATE_ROUNDS
                 ),
             )
         if debate_state.selected_agents != self._selected_agents:

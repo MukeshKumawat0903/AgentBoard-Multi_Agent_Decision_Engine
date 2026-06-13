@@ -32,11 +32,20 @@ def _mock_settings(
 ) -> MagicMock:
     settings = MagicMock()
     settings.MAX_DEBATE_ROUNDS = max_rounds
+    settings.MIN_DEBATE_ROUNDS = 1
     settings.CONSENSUS_THRESHOLD = consensus_threshold
     settings.SEMANTIC_CONSENSUS_ENABLED = semantic_enabled
     settings.SEMANTIC_MODEL = "all-MiniLM-L6-v2"
     settings.SEMANTIC_CONSENSUS_WEIGHT = 0.5
     settings.CHECKPOINT_DATABASE_URL = ":memory:"
+    # Hybrid consensus gate knobs (real numbers so the gate uses real comparisons).
+    settings.CONSENSUS_POSITION_WEIGHT = 0.3
+    settings.MINORITY_REPORT_BAND = 0.20
+    settings.ALL_CONFIDENT_THRESHOLD = 0.9
+    settings.CONFIDENCE_CONVERGENCE_SPREAD = 0.15
+    settings.DRIFT_EARLY_STOP_THRESHOLD = 0.05
+    settings.MAX_DISSENTERS_FOR_CONSENSUS = 1
+    settings.MAX_OPEN_DISAGREEMENTS_FOR_CONSENSUS = 2
     return settings
 
 
@@ -347,6 +356,80 @@ class TestNodeFactories:
 
         assert result["debate_state"].agreement_score == pytest.approx(0.86)
         assert result["should_continue"] is False
+
+    @pytest.mark.anyio
+    async def test_convergence_node_does_not_converge_with_open_disagreements(self):
+        """Hybrid gate: many open high-severity disagreements block consensus even
+        when agents are confident and aligned in wording."""
+        emit = MagicMock()
+        persist_state = AsyncMock()
+        moderator = MagicMock()
+        moderator.synthesize = AsyncMock(return_value=_synthesis(agreement_score=0.9, should_continue=False))
+        settings = _mock_settings()
+
+        round_data = DebateRound(
+            round_number=1,
+            agent_outputs=[_agent_response("Analyst"), _agent_response("Risk")],
+            critiques=[
+                CritiqueResponse(
+                    critic_agent="Risk", target_agent="Analyst", round_number=1,
+                    critique_points=["gap one", "gap two", "gap three"],
+                    severity="high", confidence_score=0.8,
+                ),
+            ],
+        )
+        debate_state = DebateState(
+            user_query="Should we expand internationally in Q3?",
+            current_round=1,
+            rounds=[round_data],
+        )
+        graph_state: DebateGraphState = {
+            "debate_state": debate_state,
+            "should_continue": True,
+            "final_decision": None,
+        }
+
+        node = make_convergence_node(moderator, settings, emit, persist_state)
+        result = await node(graph_state)
+
+        # 3 open high-severity points > cap of 2 → keep debating.
+        assert result["should_continue"] is True
+        assert debate_state.termination_reason != "consensus_reached"
+
+    @pytest.mark.anyio
+    async def test_convergence_node_converges_when_clean(self):
+        """Hybrid gate: aligned, confident agents with no open disagreements converge."""
+        emit = MagicMock()
+        persist_state = AsyncMock()
+        moderator = MagicMock()
+        moderator.synthesize = AsyncMock(return_value=_synthesis(agreement_score=0.9, should_continue=False))
+        settings = _mock_settings()
+
+        # Identical wording → high position overlap so blended agreement clears the threshold.
+        shared = "We should proceed with a phased expansion in Q3."
+        aligned = [
+            AgentResponse(agent_name="Analyst", round_number=2, position=shared,
+                          reasoning="r", confidence_score=0.85),
+            AgentResponse(agent_name="Risk", round_number=2, position=shared,
+                          reasoning="r", confidence_score=0.85),
+        ]
+        round_data = DebateRound(round_number=2, agent_outputs=aligned)
+        debate_state = DebateState(
+            user_query="Should we expand internationally in Q3?",
+            current_round=2,
+            rounds=[DebateRound(round_number=1), round_data],
+        )
+        graph_state: DebateGraphState = {
+            "debate_state": debate_state,
+            "should_continue": True,
+            "final_decision": None,
+        }
+
+        node = make_convergence_node(moderator, settings, emit, persist_state)
+        result = await node(graph_state)
+
+        assert result["should_continue"] is False
+        assert debate_state.termination_reason == "consensus_reached"
 
     @pytest.mark.anyio
     async def test_finalize_node_returns_final_decision(self):

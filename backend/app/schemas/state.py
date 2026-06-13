@@ -99,6 +99,12 @@ class DebateState(BaseModel):
         le=8,
         description="Maximum number of debate rounds allowed.",
     )
+    min_rounds: int = Field(
+        default=1,
+        ge=1,
+        le=8,
+        description="Minimum rounds before consensus may be declared (caps at max_rounds).",
+    )
     rounds: list[DebateRound] = Field(
         default_factory=list,
         description="Full ordered history of all rounds.",

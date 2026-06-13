@@ -27,9 +27,9 @@ __all__ = [
 DebateMode = Literal["quick", "standard", "thorough"]
 
 _MODE_PRESETS: dict[str, dict] = {
-    "quick":    {"max_rounds": 2, "consensus_threshold": 0.60, "skip_critique_phase": True},
-    "standard": {"max_rounds": 4, "consensus_threshold": 0.75, "skip_critique_phase": False},
-    "thorough": {"max_rounds": 6, "consensus_threshold": 0.85, "skip_critique_phase": False},
+    "quick":    {"max_rounds": 2, "consensus_threshold": 0.60, "skip_critique_phase": True,  "min_rounds": 1},
+    "standard": {"max_rounds": 4, "consensus_threshold": 0.75, "skip_critique_phase": False, "min_rounds": 2},
+    "thorough": {"max_rounds": 6, "consensus_threshold": 0.85, "skip_critique_phase": False, "min_rounds": 3},
 }
 
 
@@ -38,10 +38,12 @@ def resolve_debate_config(
     max_rounds: int | None,
     consensus_threshold: float | None,
     skip_critique_phase: bool | None,
-) -> tuple[int, float, bool]:
+    min_rounds: int | None = None,
+) -> tuple[int, float, bool, int]:
     """
-    Return (max_rounds, consensus_threshold, skip_critique_phase) after merging
-    mode presets with any explicit overrides.  Explicit values always win.
+    Return (max_rounds, consensus_threshold, skip_critique_phase, min_rounds)
+    after merging mode presets with any explicit overrides.  Explicit values
+    always win.
 
     Mode presets (``_MODE_PRESETS``, defaulting to "standard" when ``mode`` is
     ``None``) are the single source of defaults for API-resolved debates.
@@ -49,12 +51,16 @@ def resolve_debate_config(
     orchestrator-level fallbacks used only when ``DebateGraph`` is driven
     directly without going through this resolution (see debate_graph.py /
     nodes.py).
+
+    ``min_rounds`` is clamped to ``max_rounds`` so it can never exceed the cap.
     """
     base = _MODE_PRESETS.get(mode or "standard", _MODE_PRESETS["standard"])
     resolved_rounds = max_rounds if max_rounds is not None else base["max_rounds"]
     resolved_threshold = consensus_threshold if consensus_threshold is not None else base["consensus_threshold"]
     resolved_skip = skip_critique_phase if skip_critique_phase is not None else base["skip_critique_phase"]
-    return resolved_rounds, resolved_threshold, resolved_skip
+    resolved_min = min_rounds if min_rounds is not None else base["min_rounds"]
+    resolved_min = min(resolved_min, resolved_rounds)
+    return resolved_rounds, resolved_threshold, resolved_skip, resolved_min
 
 
 class DebateStartRequest(BaseModel):
@@ -78,6 +84,12 @@ class DebateStartRequest(BaseModel):
         ge=2,
         le=8,
         description="Maximum number of debate rounds (2–8). Overrides mode preset.",
+    )
+    min_rounds: int | None = Field(
+        default=None,
+        ge=1,
+        le=8,
+        description="Minimum rounds before consensus may be declared. Overrides mode preset.",
     )
     consensus_threshold: float | None = Field(
         default=None,
@@ -113,15 +125,17 @@ class DebateStartRequest(BaseModel):
     @model_validator(mode="after")
     def apply_mode_defaults(self) -> "DebateStartRequest":
         """Materialize preset defaults so the request model matches API expectations."""
-        resolved_rounds, resolved_threshold, resolved_skip = resolve_debate_config(
+        resolved_rounds, resolved_threshold, resolved_skip, resolved_min = resolve_debate_config(
             mode=self.mode,
             max_rounds=self.max_rounds,
             consensus_threshold=self.consensus_threshold,
             skip_critique_phase=self.skip_critique_phase,
+            min_rounds=self.min_rounds,
         )
         self.max_rounds = resolved_rounds
         self.consensus_threshold = resolved_threshold
         self.skip_critique_phase = resolved_skip
+        self.min_rounds = resolved_min
         if self.mode is None:
             self.mode = "standard"
         return self

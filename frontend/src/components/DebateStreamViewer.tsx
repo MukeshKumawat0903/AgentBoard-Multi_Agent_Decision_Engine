@@ -160,7 +160,9 @@ export default function DebateStreamViewer({ threadId, onQuery }: Props) {
   const [connStatus, setConnStatus] = useState<"connected" | "reconnecting" | "disconnected">("connected");
   const [maxReconnectsHit, setMaxReconnectsHit] = useState(false);
   const [focusedRoundIdx, setFocusedRoundIdx] = useState<number | null>(null);
-  const [showTranscript, setShowTranscript] = useState(false);
+  // Open by default once the debate is done so the per-agent reasoning that
+  // produced the decision is visible without an extra click.
+  const [showTranscript, setShowTranscript] = useState(true);
   const [cancelling, setCancelling] = useState(false);
   const [elapsed, setElapsed] = useState(0);
   const startTimeRef = useRef<number | null>(null);

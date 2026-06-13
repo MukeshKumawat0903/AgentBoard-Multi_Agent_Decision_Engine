@@ -351,6 +351,7 @@ def test_final_decision_serialization_round_trip():
 def test_debate_start_request_valid():
     req = DebateStartRequest(query="Should we expand internationally in Q3?")
     assert req.max_rounds == 4
+    assert req.min_rounds == 2  # standard preset floor
     assert req.agents is None
 
 
@@ -362,6 +363,22 @@ def test_debate_start_request_custom():
     )
     assert req.max_rounds == 6
     assert req.agents == ["Analyst", "Risk"]
+
+
+def test_debate_start_request_min_rounds_by_mode():
+    quick = DebateStartRequest(query="Should we expand internationally in Q3?", mode="quick")
+    thorough = DebateStartRequest(query="Should we expand internationally in Q3?", mode="thorough")
+    assert quick.min_rounds == 1
+    assert thorough.min_rounds == 3
+
+
+def test_debate_start_request_min_rounds_clamped_to_max():
+    req = DebateStartRequest(
+        query="Should we expand internationally in Q3?",
+        max_rounds=2,
+        min_rounds=5,
+    )
+    assert req.min_rounds == 2  # clamped to max_rounds
 
 
 def test_debate_start_request_query_too_short():

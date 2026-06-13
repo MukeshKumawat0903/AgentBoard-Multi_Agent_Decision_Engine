@@ -33,7 +33,15 @@ from app.core.config import Settings
 from app.orchestrator.lg_state import DebateGraphState
 from app.schemas.final_decision import MinorityReportEntry
 from app.schemas.state import DebateRound, DebateState
-from app.services.consensus import ConsensusEngine, SemanticConsensusEngine, _word_overlap
+from app.services.consensus import (
+    ConsensusEngine,
+    ConsensusSignals,
+    SemanticConsensusEngine,
+    _word_overlap,
+    count_open_disagreements,
+    is_consensus_reached,
+    select_dissenting_agents,
+)
 
 # B11: threshold below which agents are considered "stuck" (drift-based early stop)
 _DRIFT_EARLY_STOP_THRESHOLD: float = 0.05
@@ -387,17 +395,27 @@ def make_convergence_node(
         synthesis = await moderator.synthesize(ds)
 
         confidence_engine = ConsensusEngine()
-        # Phase 4.3: V1 confidence score is the deterministic baseline.
-        # The semantic hybrid overrides it when the engine is available.
+        # Mean self-confidence — a secondary signal, no longer the agreement metric.
         confidence_agreement = confidence_engine.compute_agreement_score(round_data.agent_outputs)
+        # Canonical agreement blends mean confidence with confidence-weighted *position
+        # overlap*, so the number reflects how much the agents actually say the same
+        # thing — not just how individually sure they are. Word-overlap runs low, so
+        # it gets a modest weight; the multi-criteria gate below does the real work.
+        position_agreement = confidence_engine.compute_confidence_weighted_score(round_data.agent_outputs)
+        if len(round_data.agent_outputs) >= 2:
+            w = settings.CONSENSUS_POSITION_WEIGHT
+            agreement_score = (1.0 - w) * confidence_agreement + w * position_agreement
+        else:
+            agreement_score = confidence_agreement
         semantic_agreement: float | None = None
-        agreement_score = confidence_agreement
 
         if _semantic_engine is not None and len(round_data.agent_outputs) >= 2:
             try:
                 semantic_agreement = _semantic_engine.compute_semantic_similarity(
                     round_data.agent_outputs
                 )
+                # Semantic similarity is a true position-overlap signal — when the
+                # engine is available it overrides the word-overlap blend entirely.
                 agreement_score = _semantic_engine.compute_agreement_score(
                     round_data.agent_outputs,
                     semantic_weight=settings.SEMANTIC_CONSENSUS_WEIGHT,
@@ -436,41 +454,73 @@ def make_convergence_node(
             "semantic_agreement_score": semantic_agreement,
         })
 
-        # Mirror DebateController._should_terminate logic
-        should_continue = True
-
-        # Per-run threshold overrides the settings default
+        # Hybrid consensus gate: consensus is declared only when the agents genuinely
+        # overlap on position AND have debated a minimum number of rounds AND carry
+        # little dissent / unresolved high-severity disagreement AND have stopped
+        # moving (or are uniformly confident). Any single criterion failing keeps the
+        # debate going until the max-rounds cap. This replaces the old "agreement >=
+        # threshold" gate that stopped on mean confidence alone after one round.
         effective_threshold = state.get("consensus_threshold") or settings.CONSENSUS_THRESHOLD
+        effective_min_rounds = min(ds.min_rounds, ds.max_rounds)
 
-        if agreement_score >= effective_threshold:
+        # Confidence has "converged" when agents stopped moving between rounds, or
+        # they broadly agree on how settled things are (low confidence spread), or
+        # every agent is highly confident.
+        drift: float | None = None
+        if len(ds.rounds) >= 2:
+            drift = ConsensusEngine().detect_position_drift(
+                ds.rounds[-2].agent_outputs,
+                round_data.agent_outputs,
+            )
+        _confidences = list(ds.confidence_scores.values())
+        confidence_converged = bool(_confidences) and (
+            (drift is not None and drift < settings.DRIFT_EARLY_STOP_THRESHOLD)
+            or (max(_confidences) - min(_confidences) <= settings.CONFIDENCE_CONVERGENCE_SPREAD)
+            or all(s >= settings.ALL_CONFIDENT_THRESHOLD for s in _confidences)
+        )
+
+        dissenting = len(select_dissenting_agents(round_data.agent_outputs, settings.MINORITY_REPORT_BAND))
+        open_disagreements = count_open_disagreements(round_data.critiques)
+
+        signals = ConsensusSignals(
+            position_agreement=agreement_score,
+            rounds_completed=ds.current_round,
+            dissenting_agents=dissenting,
+            open_disagreements=open_disagreements,
+            confidence_converged=confidence_converged,
+        )
+        consensus = is_consensus_reached(
+            signals,
+            threshold=effective_threshold,
+            min_rounds=effective_min_rounds,
+            max_dissent=settings.MAX_DISSENTERS_FOR_CONSENSUS,
+            max_open_disagreements=settings.MAX_OPEN_DISAGREEMENTS_FOR_CONSENSUS,
+        )
+
+        if consensus:
             ds.termination_reason = "consensus_reached"
             should_continue = False
         elif ds.current_round >= ds.max_rounds:
             ds.termination_reason = "max_rounds_reached"
             should_continue = False
-        elif not synthesis.should_continue and ds.confidence_scores:
-            if all(s > settings.ALL_CONFIDENT_THRESHOLD for s in ds.confidence_scores.values()):
-                ds.termination_reason = "consensus_reached"
-                should_continue = False
+        else:
+            should_continue = True
 
-        # B11: Drift-based early termination — stop when agents have stopped moving,
-        # even if the agreement threshold hasn't been crossed yet.
-        if should_continue and len(ds.rounds) >= 2:
-            drift = ConsensusEngine().detect_position_drift(
-                ds.rounds[-2].agent_outputs,
-                round_data.agent_outputs,
-            )
-            if drift < settings.DRIFT_EARLY_STOP_THRESHOLD and ds.confidence_scores:
-                logger.info(
-                    "drift_early_termination",
-                    extra={
-                        "drift": round(drift, 4),
-                        "round": ds.current_round,
-                        "agreement_score": agreement_score,
-                    },
-                )
-                ds.termination_reason = "consensus_reached"
-                should_continue = False
+        logger.info(
+            "convergence_gate",
+            extra={
+                "round": ds.current_round,
+                "min_rounds": effective_min_rounds,
+                "agreement_score": round(agreement_score, 4),
+                "threshold": effective_threshold,
+                "dissenting_agents": dissenting,
+                "open_disagreements": open_disagreements,
+                "confidence_converged": confidence_converged,
+                "drift": round(drift, 4) if drift is not None else None,
+                "consensus": consensus,
+                "should_continue": should_continue,
+            },
+        )
 
         # B2 Fix: Build the HITL interrupt payload here (in convergence_node) and
         # store it in graph state.  The actual interrupt() call lives in the
@@ -630,12 +680,14 @@ def make_finalize_node(
         # B3 Fix: Minority report — use FINAL round only and the 0.20 threshold from spec.
         # Previous code used an all-rounds mean with a 0.10 band, which caused agents
         # who converged in later rounds to still be flagged as dissenters.
+        # select_dissenting_agents is the shared definition the convergence gate uses,
+        # so the report can never disagree with the gate about who dissented.
         minority: list[MinorityReportEntry] = []
         if ds.rounds:
             final_outputs = ds.rounds[-1].agent_outputs
             if final_outputs:
-                final_confidences = {o.agent_name: o.confidence_score for o in final_outputs}
-                mean_conf = sum(final_confidences.values()) / len(final_confidences)
+                final_confidences = [o.confidence_score for o in final_outputs]
+                mean_conf = sum(final_confidences) / len(final_confidences)
                 minority = [
                     MinorityReportEntry(
                         agent_name=output.agent_name,
@@ -647,8 +699,7 @@ def make_finalize_node(
                         ),
                         confidence_score=output.confidence_score,
                     )
-                    for output in final_outputs
-                    if output.confidence_score < mean_conf - minority_band
+                    for output in select_dissenting_agents(final_outputs, minority_band)
                 ]
 
         # Key disagreements are the highest-severity unresolved critique points from

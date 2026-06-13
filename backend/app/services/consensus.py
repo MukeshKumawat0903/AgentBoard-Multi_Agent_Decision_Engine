@@ -19,8 +19,9 @@ and gracefully degrades if ``sentence-transformers`` is not installed.
 from __future__ import annotations
 
 import logging
+from dataclasses import dataclass
 
-from app.schemas.agent_response import AgentResponse
+from app.schemas.agent_response import AgentResponse, CritiqueResponse
 
 logger = logging.getLogger("agentboard.services.consensus")
 
@@ -165,6 +166,93 @@ class ConsensusEngine:
             extra={"common_agents": len(common_agents), "drift": round(score, 4)},
         )
         return score
+
+
+# ---------------------------------------------------------------------------
+# Hybrid consensus gate — the signals and predicate that decide termination.
+#
+# The convergence gate no longer stops on mean confidence alone. It evaluates
+# five signals, all of which must hold before a debate is declared converged.
+# The dissent/disagreement helpers below are shared with finalize_node so the
+# live gate and the final report agree on who counts as a dissenter.
+# ---------------------------------------------------------------------------
+
+# Severities that count as an unresolved disagreement for the convergence gate.
+HIGH_SEVERITIES: frozenset[str] = frozenset({"critical", "high"})
+
+
+def select_dissenting_agents(
+    responses: list[AgentResponse], band: float
+) -> list[AgentResponse]:
+    """Agents whose confidence sits more than ``band`` below the group mean.
+
+    Single definition of "dissenter", reused by both the convergence gate and
+    the minority report in finalize_node so they never disagree.
+    """
+    if not responses:
+        return []
+    mean_conf = sum(r.confidence_score for r in responses) / len(responses)
+    return [r for r in responses if r.confidence_score < mean_conf - band]
+
+
+def count_dissenting_agents(responses: list[AgentResponse], band: float) -> int:
+    """Number of agents dissenting from the group, per ``select_dissenting_agents``."""
+    return len(select_dissenting_agents(responses, band))
+
+
+def count_open_disagreements(
+    critiques: list[CritiqueResponse],
+    severities: frozenset[str] = HIGH_SEVERITIES,
+) -> int:
+    """Number of distinct unresolved high-severity critique points.
+
+    Counts unique ``critique_points`` drawn from critiques whose severity is in
+    ``severities``. An agent can only be confident the debate is settled when
+    few high-severity objections remain open.
+    """
+    seen: set[str] = set()
+    for critique in critiques:
+        if critique.severity not in severities:
+            continue
+        for point in critique.critique_points:
+            if point:
+                seen.add(point)
+    return len(seen)
+
+
+@dataclass(frozen=True)
+class ConsensusSignals:
+    """The five signals the hybrid consensus gate evaluates."""
+
+    position_agreement: float       # confidence-weighted position overlap [0,1]
+    rounds_completed: int           # ds.current_round
+    dissenting_agents: int          # count_dissenting_agents(...)
+    open_disagreements: int         # count_open_disagreements(...)
+    confidence_converged: bool      # agents stopped moving or are uniformly confident
+
+
+def is_consensus_reached(
+    signals: ConsensusSignals,
+    *,
+    threshold: float,
+    min_rounds: int,
+    max_dissent: int,
+    max_open_disagreements: int,
+) -> bool:
+    """Hybrid consensus predicate — every criterion must hold.
+
+    Replaces the single mean-confidence gate: a debate only converges when the
+    agents genuinely overlap on position, have debated a minimum number of
+    rounds, carry at most a little dissent and unresolved high-severity
+    disagreement, and have either stopped moving or are uniformly confident.
+    """
+    return (
+        signals.position_agreement >= threshold
+        and signals.rounds_completed >= min_rounds
+        and signals.dissenting_agents <= max_dissent
+        and signals.open_disagreements <= max_open_disagreements
+        and signals.confidence_converged
+    )
 
 
 # ---------------------------------------------------------------------------

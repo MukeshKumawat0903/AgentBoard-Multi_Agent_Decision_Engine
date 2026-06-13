@@ -24,6 +24,7 @@ import {
   Route,
   Sparkles,
   Swords,
+  Users,
   X,
 } from "lucide-react";
 import type { FinalDecision, EvaluationResult } from "@/lib/types";
@@ -34,6 +35,7 @@ import Button from "./ui/Button";
 import Card from "./ui/Card";
 import CollapsibleSection from "./ui/CollapsibleSection";
 import RadialGauge from "./ui/RadialGauge";
+import AgentAvatar from "./ui/AgentAvatar";
 import { useToast } from "./Toast";
 
 interface FinalDecisionPanelProps {
@@ -154,15 +156,26 @@ export default function FinalDecisionPanel({ decision }: FinalDecisionPanelProps
   }
 
   const hasMinorityReport = (decision.minority_report?.length ?? 0) > 0;
-  const hasKeyDisagreements = (decision.key_disagreements?.length ?? 0) > 0;
+  const structuredDisagreements = decision.structured_disagreements ?? [];
+  const hasStructuredDisagreements = structuredDisagreements.length > 0;
+  const hasKeyDisagreements =
+    (decision.key_disagreements?.length ?? 0) > 0 || hasStructuredDisagreements;
+  const disagreementCount = hasStructuredDisagreements
+    ? structuredDisagreements.length
+    : decision.key_disagreements?.length ?? 0;
   const hasContributions = Object.keys(decision.agent_contribution_scores ?? {}).length > 0;
+  // Final-round agent stances, surfaced so the debate is verifiable at a glance.
+  const finalRound = decision.debate_trace?.[decision.debate_trace.length - 1];
+  const agentPositions = finalRound?.agent_outputs ?? [];
+  const hasAgentPositions = agentPositions.length > 0;
   const hasSecondarySections =
     decision.risk_flags.length > 0 ||
     decision.alternatives.length > 0 ||
     decision.dissenting_opinions.length > 0 ||
     hasKeyDisagreements ||
     hasMinorityReport ||
-    hasContributions;
+    hasContributions ||
+    hasAgentPositions;
 
   const exportButtons = (
     <>
@@ -261,6 +274,43 @@ export default function FinalDecisionPanel({ decision }: FinalDecisionPanelProps
       {/* Secondary sections — one accordion group */}
       {hasSecondarySections && (
         <Card padded={false} className="divide-y divide-line overflow-hidden">
+          {hasAgentPositions && (
+            <CollapsibleSection
+              defaultOpen
+              headerClassName={SECTION_HEADER}
+              bodyClassName={SECTION_BODY}
+              title={
+                <span className={`flex items-center gap-2 ${SECTION_TITLE}`}>
+                  <Users className="w-4 h-4 text-accent-500" aria-hidden="true" />
+                  Agent Positions
+                </span>
+              }
+              meta={<Badge tone="neutral">{agentPositions.length}</Badge>}
+            >
+              <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+                {agentPositions.map((output) => (
+                  <div
+                    key={output.agent_name}
+                    className="rounded-lg bg-surface ring-1 ring-black/5 dark:ring-white/10 p-3"
+                  >
+                    <div className="flex items-center justify-between gap-2 mb-1.5">
+                      <span className="flex items-center gap-1.5 text-sm font-semibold text-gray-700 dark:text-gray-300">
+                        <AgentAvatar name={output.agent_name} size="sm" />
+                        {output.agent_name}
+                      </span>
+                      <span className="text-xs text-gray-500 tabular-nums shrink-0">
+                        {Math.round(output.confidence_score * 100)}%
+                      </span>
+                    </div>
+                    <Markdown className="text-sm text-gray-600 dark:text-gray-400">
+                      {output.position}
+                    </Markdown>
+                  </div>
+                ))}
+              </div>
+            </CollapsibleSection>
+          )}
+
           {decision.risk_flags.length > 0 && (
             <CollapsibleSection
               defaultOpen
@@ -370,13 +420,39 @@ export default function FinalDecisionPanel({ decision }: FinalDecisionPanelProps
                   Key Disagreements
                 </span>
               }
-              meta={<Badge tone="neutral">{decision.key_disagreements!.length}</Badge>}
+              meta={<Badge tone="neutral">{disagreementCount}</Badge>}
             >
-              <ul className="list-disc list-inside text-sm text-gray-600 dark:text-gray-400 space-y-1">
-                {decision.key_disagreements!.map((d, i) => (
-                  <li key={i}>{d}</li>
-                ))}
-              </ul>
+              {hasStructuredDisagreements ? (
+                <div className="space-y-2.5">
+                  {structuredDisagreements.map((d, i) => (
+                    <div
+                      key={i}
+                      className="rounded-lg bg-surface ring-1 ring-black/5 dark:ring-white/10 p-3"
+                    >
+                      <p className="text-sm font-semibold text-gray-700 dark:text-gray-300 mb-1.5">
+                        {d.topic}
+                      </p>
+                      <div className="space-y-1">
+                        {d.positions.map((p, j) => (
+                          <p key={j} className="text-sm text-gray-600 dark:text-gray-400 flex gap-2">
+                            <span className="flex items-center gap-1 font-medium text-gray-700 dark:text-gray-300 shrink-0">
+                              <AgentAvatar name={p.agent} size="sm" />
+                              {p.agent}:
+                            </span>
+                            <span>{p.stance}</span>
+                          </p>
+                        ))}
+                      </div>
+                    </div>
+                  ))}
+                </div>
+              ) : (
+                <ul className="list-disc list-inside text-sm text-gray-600 dark:text-gray-400 space-y-1">
+                  {decision.key_disagreements!.map((d, i) => (
+                    <li key={i}>{d}</li>
+                  ))}
+                </ul>
+              )}
             </CollapsibleSection>
           )}
 
