@@ -59,11 +59,13 @@ function timeAgo(iso: string): string {
 }
 
 /**
- * Retry a fetch a couple of times with a short delay before giving up.
+ * Retry a fetch several times with a short delay before giving up.
  * Covers the cold-start window where the Next.js dev proxy can't yet
- * reach the FastAPI backend.
+ * reach the FastAPI backend — a cold uvicorn process with heavy ML
+ * imports (langchain/langgraph) can take several seconds to come up,
+ * so we retry for up to ~10s rather than giving up after ~1.6s.
  */
-function withRetry<T>(fn: () => Promise<T>, retries = 2, delayMs = 800): Promise<T> {
+function withRetry<T>(fn: () => Promise<T>, retries = 10, delayMs = 1000): Promise<T> {
   return fn().catch((err) => {
     if (retries <= 0) throw err;
     return new Promise<T>((resolve, reject) => {
