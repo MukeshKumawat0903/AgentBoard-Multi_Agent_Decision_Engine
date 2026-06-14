@@ -2,6 +2,7 @@ import type { Metadata } from "next";
 import { Inter } from "next/font/google";
 import "./globals.css";
 import NavBar from "@/components/NavBar";
+import SiteFooter from "@/components/SiteFooter";
 import { ToastProvider } from "@/components/Toast";
 
 const inter = Inter({ subsets: ["latin"] });
@@ -35,13 +36,8 @@ export default function RootLayout({
           {/* Main content */}
           <main id="main-content" className="max-w-6xl mx-auto px-4 py-6">{children}</main>
 
-          {/* Footer */}
-          <footer className="border-t border-line mt-12">
-            <div className="max-w-6xl mx-auto px-4 py-6 text-center text-xs text-gray-400 dark:text-gray-600">
-              AgentBoard &copy; {new Date().getFullYear()} &mdash; Powered by
-              Groq, OpenAI, Anthropic &amp; Gemini via LangChain
-            </div>
-          </footer>
+          {/* Footer (hidden on the home page) */}
+          <SiteFooter />
         </ToastProvider>
       </body>
     </html>

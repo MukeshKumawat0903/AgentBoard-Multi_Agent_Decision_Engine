@@ -157,7 +157,7 @@ export default function NavBar() {
       {/* Sticky header                                                     */}
       {/* ---------------------------------------------------------------- */}
       <header className="sticky top-0 z-50 bg-surface-raised/80 backdrop-blur border-b border-line">
-        <div className="max-w-6xl mx-auto px-4 h-14 flex items-center justify-between">
+        <div className="max-w-6xl mx-auto px-4 h-12 flex items-center justify-between">
           {/* Logo + health dot */}
           <Link
             href="/"

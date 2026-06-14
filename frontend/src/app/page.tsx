@@ -207,9 +207,9 @@ export default function HomePage() {
       : FALLBACK_SAMPLES;
 
   return (
-    <div>
+    <div className="lg:h-[calc(100dvh-6rem)] lg:flex lg:flex-col lg:overflow-hidden">
       {/* Compact header — templates toggle shares the row so the form stays above the fold */}
-      <header className="mb-4 flex flex-wrap items-end justify-between gap-x-4 gap-y-2">
+      <header className="mb-3 lg:mb-2 lg:flex-none flex flex-wrap items-end justify-between gap-x-4 gap-y-2">
         <div>
           <h1 className="text-xl sm:text-2xl font-bold tracking-tight text-gray-900 dark:text-gray-50">
             Five AI agents.{" "}
@@ -245,12 +245,12 @@ export default function HomePage() {
       {/* Template gallery — animated slide-down panel */}
       {!isLoading && templates.length > 0 && (
         <div
-          className={`grid transition-[grid-template-rows] duration-300 ease-out ${
+          className={`grid lg:flex-none transition-[grid-template-rows] duration-300 ease-out ${
             showTemplates ? "grid-rows-[1fr]" : "grid-rows-[0fr]"
           }`}
         >
           <div className="overflow-hidden min-h-0">
-            <div className="space-y-3 pb-4">
+            <div className="space-y-3 pb-4 lg:max-h-[40vh] lg:overflow-y-auto custom-scroll lg:pr-1">
               {/* Search bar */}
               <input
                 type="search"
@@ -299,9 +299,9 @@ export default function HomePage() {
       {isLoading ? (
         <LoadingState />
       ) : (
-        <div className="grid grid-cols-1 lg:grid-cols-[minmax(0,1fr)_380px] gap-6 items-start">
-          {/* LEFT — configuration */}
-          <Card padded={false} className="p-5">
+        <div className="grid grid-cols-1 lg:grid-cols-[minmax(0,1fr)_380px] gap-6 items-start lg:items-stretch lg:min-h-0">
+          {/* LEFT — configuration (stretches to match the right rail; submit docks at the bottom) */}
+          <Card padded={false} className="p-5 lg:min-h-0 lg:overflow-y-auto custom-scroll lg:flex lg:flex-col">
             <DebateInput
               key={prefillKey}
               onSubmit={handleSubmit}
@@ -317,7 +317,7 @@ export default function HomePage() {
           </Card>
 
           {/* RIGHT — context rail */}
-          <aside className="lg:sticky lg:top-20 space-y-4">
+          <aside className="lg:overflow-y-auto custom-scroll lg:min-h-0 lg:pr-1 space-y-4">
             {/* Agents (domain pack selector + roster in one card) */}
             <AgentRoster
               agents={agents}
