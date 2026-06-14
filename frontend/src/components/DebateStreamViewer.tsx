@@ -7,197 +7,35 @@
 
 import { useEffect, useReducer, useRef, useState, useCallback } from "react";
 import { useRouter } from "next/navigation";
-import { connectToStream } from "@/lib/api";
-import type {
-  AgentOutputEvent,
-  ApprovalRequiredEvent,
-  CritiqueCompletedEvent,
-  DebatePhase,
-  DebateRound,
-  DebateSSEEvent,
-  FinalDecision,
-  SynthesisEvent,
-} from "@/lib/types";
-import { AGENT_META } from "@/lib/types";
+import { connectToStream, cancelDebate } from "@/lib/api";
+import type { ApprovalRequiredEvent, DebatePhase, DebateRound, FinalDecision, SynthesisEvent } from "@/lib/types";
+// B4: import domain agent metadata so domain-pack agents render with proper icons/colours
+import { AGENT_META, DOMAIN_AGENT_META } from "@/lib/types";
+// Reducer extracted to a separate module for unit-testability (Phase 6.1)
+import {
+  debateStreamReducer,
+  initialStreamState,
+  type StreamState,
+  type StreamAction,
+} from "@/lib/debateStreamReducer";
+
+const ALL_AGENT_META = { ...AGENT_META, ...DOMAIN_AGENT_META } as Record<
+  string,
+  { icon: string; color?: string; lightColor?: string; role: string; name: string }
+>;
 import AgentCard from "./AgentCard";
 import CritiqueView from "./CritiqueView";
 import FinalDecisionPanel from "./FinalDecisionPanel";
+import Markdown from "./Markdown";
 import ConfidenceMeter from "./ConfidenceMeter";
 import ConfidenceDriftChart from "./ConfidenceDriftChart";
 import HITLPanel from "./HITLPanel";
 
 /* ------------------------------------------------------------------ */
-/* State shape                                                         */
+/* State and reducer — imported from debateStreamReducer (Phase 6.1)  */
 /* ------------------------------------------------------------------ */
-
-interface StreamState {
-  status: "connecting" | "streaming" | "done" | "error";
-  query: string;
-  maxRounds: number;
-  currentRound: number;
-  currentPhase: DebatePhase | "";
-  rounds: DebateRound[];
-  syntheses: Record<number, SynthesisEvent>;
-  finalDecision: FinalDecision | null;
-  error: string | null;
-  agentStatus: Record<string, "waiting" | "working" | "done">;
-  approvalRequired: ApprovalRequiredEvent | null;
-}
-
-const initial: StreamState = {
-  status: "connecting",
-  query: "",
-  maxRounds: 4,
-  currentRound: 0,
-  currentPhase: "",
-  rounds: [],
-  syntheses: {},
-  finalDecision: null,
-  error: null,
-  agentStatus: {},
-  approvalRequired: null,
-};
-
-/* ------------------------------------------------------------------ */
-/* Reducer                                                             */
-/* ------------------------------------------------------------------ */
-
-type Action = { event: DebateSSEEvent } | { type: "stream_error" } | { type: "clear_approval" };
-
-function ensureRound(rounds: DebateRound[], roundNumber: number): DebateRound[] {
-  if (rounds.some((r) => r.round_number === roundNumber)) return rounds;
-  return [
-    ...rounds,
-    { round_number: roundNumber, phase: "proposal", agent_outputs: [], critiques: [] },
-  ];
-}
-
-function reducer(state: StreamState, action: Action): StreamState {
-  if ("type" in action && action.type === "stream_error") {
-    return { ...state, status: "error", error: "Stream connection lost." };
-  }
-
-  if ("type" in action && action.type === "clear_approval") {
-    return { ...state, approvalRequired: null };
-  }
-
-  const { event } = action as { event: DebateSSEEvent };
-
-  switch (event.type) {
-    case "debate_started":
-      return {
-        ...state,
-        status: "streaming",
-        query: event.user_query,
-        maxRounds: event.max_rounds,
-      };
-
-    case "round_started":
-      return {
-        ...state,
-        currentRound: event.round_number,
-        rounds: ensureRound(state.rounds, event.round_number),
-        agentStatus: Object.fromEntries(Object.keys(AGENT_META).map((k) => [k, "waiting"])),
-      };
-
-    case "phase_started":
-      return {
-        ...state,
-        currentPhase: event.phase,
-        rounds: state.rounds.map((r) =>
-          r.round_number === event.round_number ? { ...r, phase: event.phase } : r
-        ),
-        // Mark all agents as working when a new phase starts
-        agentStatus: Object.fromEntries(Object.keys(AGENT_META).map((k) => [k, "working"])),
-      };
-
-    case "agent_output": {
-      const e = event as AgentOutputEvent;
-      const agentResp = {
-        agent_name: e.agent_name,
-        round_number: e.round_number,
-        position: e.position,
-        reasoning: e.reasoning,
-        assumptions: e.assumptions,
-        confidence_score: e.confidence_score,
-        timestamp: new Date().toISOString(),
-      };
-      return {
-        ...state,
-        rounds: ensureRound(state.rounds, e.round_number).map((r) => {
-          if (r.round_number !== e.round_number) return r;
-          const existing = r.agent_outputs.findIndex((o) => o.agent_name === e.agent_name);
-          const updated =
-            existing >= 0
-              ? r.agent_outputs.map((o, i) => (i === existing ? agentResp : o))
-              : [...r.agent_outputs, agentResp];
-          return { ...r, agent_outputs: updated };
-        }),
-        agentStatus: { ...state.agentStatus, [e.agent_name]: "done" },
-      };
-    }
-
-    case "critique_completed": {
-      const e = event as CritiqueCompletedEvent;
-      const critique = {
-        critic_agent: e.critic_agent,
-        target_agent: e.target_agent,
-        round_number: e.round_number,
-        critique_points: e.critique_points,
-        severity: e.severity,
-        suggested_revision: null,
-        confidence_score: e.confidence_score,
-      };
-      return {
-        ...state,
-        rounds: state.rounds.map((r) =>
-          r.round_number === e.round_number
-            ? { ...r, critiques: [...r.critiques, critique] }
-            : r
-        ),
-      };
-    }
-
-    case "synthesis": {
-      const e = event as SynthesisEvent;
-      return {
-        ...state,
-        syntheses: { ...state.syntheses, [e.round_number]: e },
-      };
-    }
-
-    case "debate_completed":
-      return { ...state, status: "streaming" };
-
-    case "approval_required": {
-      const e = event as ApprovalRequiredEvent;
-      return { ...state, approvalRequired: e };
-    }
-
-    case "final_decision": {
-      // eslint-disable-next-line @typescript-eslint/no-unused-vars
-      const { type, ...decision } = event as FinalDecision & { type: string };
-      return { ...state, status: "done", finalDecision: decision as FinalDecision };
-    }
-
-    case "error": {
-      const ev = event as { type: string; detail?: string; error?: string };
-      const raw = ev.detail || ev.error || "A debate error occurred.";
-      // Map known backend error codes to human-friendly messages
-      const errorMessages: Record<string, string> = {
-        LLMResponseError: "The AI model failed to produce a valid response. This often happens when Groq (LLM Provider) is overloaded or the prompt is too complex. Please try again.",
-        LLMConnectionError: "Could not connect to the AI provider. Check that the backend is running and your API key is configured.",
-        LLMRateLimitError: "Rate limit reached on the AI provider. Please wait a moment and try again.",
-        DebateError: "The debate engine encountered an unrecoverable error. Please try again.",
-      };
-      const friendly = Object.entries(errorMessages).find(([k]) => raw.includes(k))?.[1];
-      return { ...state, status: "error", error: friendly ?? raw };
-    }
-
-    default:
-      return state;
-  }
-}
+// StreamState, StreamAction, initialStreamState, debateStreamReducer
+// are all defined in @/lib/debateStreamReducer and imported above.
 
 /* ------------------------------------------------------------------ */
 /* Component                                                           */
@@ -232,16 +70,45 @@ function ConfidenceDriftSection({ rounds }: { rounds: DebateRound[] }) {
 
 interface Props {
   threadId: string;
+  onQuery?: (query: string) => void;
 }
 
-export default function DebateStreamViewer({ threadId }: Props) {
+export default function DebateStreamViewer({ threadId, onQuery }: Props) {
   const router = useRouter();
-  const [state, dispatch] = useReducer(reducer, initial);
+  const [state, dispatch] = useReducer(debateStreamReducer, initialStreamState);
   const [connStatus, setConnStatus] = useState<"connected" | "reconnecting" | "disconnected">("connected");
   const [maxReconnectsHit, setMaxReconnectsHit] = useState(false);
   const [focusedRoundIdx, setFocusedRoundIdx] = useState<number | null>(null);
+  const [showTranscript, setShowTranscript] = useState(false);
+  const [cancelling, setCancelling] = useState(false);
+  const [elapsed, setElapsed] = useState(0);
+  const startTimeRef = useRef<number | null>(null);
   const bottomRef = useRef<HTMLDivElement>(null);
   const controllerRef = useRef<AbortController | null>(null);
+
+  // Live elapsed-time meter while the debate is streaming.
+  useEffect(() => {
+    if (state.status !== "streaming") return;
+    if (startTimeRef.current === null) startTimeRef.current = Date.now();
+    const id = setInterval(() => {
+      if (startTimeRef.current !== null) {
+        setElapsed(Math.floor((Date.now() - startTimeRef.current) / 1000));
+      }
+    }, 1000);
+    return () => clearInterval(id);
+  }, [state.status]);
+
+  const elapsedLabel = `${Math.floor(elapsed / 60)}:${String(elapsed % 60).padStart(2, "0")}`;
+
+  // Request server-side cancellation of the running debate.
+  const handleStop = useCallback(async () => {
+    setCancelling(true);
+    try {
+      await cancelDebate(threadId);
+    } catch {
+      // Ignore — the SSE stream will deliver the terminal state (cancelled/done).
+    }
+  }, [threadId]);
 
   function startStream() {
     if (controllerRef.current) controllerRef.current.abort();
@@ -264,6 +131,11 @@ export default function DebateStreamViewer({ threadId }: Props) {
     };
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [threadId]);
+
+  // Surface the debate query to the parent (for the breadcrumb).
+  useEffect(() => {
+    if (state.query) onQuery?.(state.query);
+  }, [state.query, onQuery]);
 
   // Keyboard J/K navigation through rounds
   useEffect(() => {
@@ -299,6 +171,15 @@ export default function DebateStreamViewer({ threadId }: Props) {
     }
   }, [state.rounds, state.status, focusedRoundIdx]);
 
+  // When the debate finishes, jump to the top so the user lands on the decision.
+  const scrolledToDecisionRef = useRef(false);
+  useEffect(() => {
+    if (state.status === "done" && !scrolledToDecisionRef.current) {
+      scrolledToDecisionRef.current = true;
+      window.scrollTo({ top: 0, behavior: "smooth" });
+    }
+  }, [state.status]);
+
   /* ---- Connection status badge ---- */
   const statusBadge = (
     <span
@@ -319,6 +200,31 @@ export default function DebateStreamViewer({ threadId }: Props) {
       {connStatus === "connected" ? "● Connected" : connStatus === "reconnecting" ? "↺ Reconnecting…" : "✕ Disconnected"}
     </span>
   );
+
+  /* ---- Cancelled ---- */
+  if (state.status === "cancelled") {
+    return (
+      <div className="max-w-xl mx-auto py-16 space-y-5 px-4">
+        <div className="bg-gray-50 dark:bg-gray-900/40 border border-gray-200 dark:border-gray-700 rounded-xl p-6 space-y-4">
+          <div className="flex items-start gap-3">
+            <span className="text-2xl" aria-hidden="true">🛑</span>
+            <div className="space-y-1">
+              <h2 className="text-base font-semibold text-gray-700 dark:text-gray-300">Debate cancelled</h2>
+              <p className="text-sm text-gray-500 dark:text-gray-400 leading-relaxed">
+                You stopped this debate before it finished. No final decision was produced.
+              </p>
+            </div>
+          </div>
+          <button
+            onClick={() => router.push("/")}
+            className="px-4 py-2 rounded-lg bg-blue-600 text-white text-sm font-medium hover:bg-blue-700 transition"
+          >
+            Start new debate
+          </button>
+        </div>
+      </div>
+    );
+  }
 
   /* ---- Error ---- */
   if (state.status === "error") {
@@ -363,6 +269,9 @@ export default function DebateStreamViewer({ threadId }: Props) {
     );
   }
 
+  const isDone = state.status === "done" && !!state.finalDecision;
+  const totalCritiques = state.rounds.reduce((n, r) => n + r.critiques.length, 0);
+
   return (
     <div className="space-y-6">
       {/* Query banner + connection status */}
@@ -374,7 +283,19 @@ export default function DebateStreamViewer({ threadId }: Props) {
             </p>
             <p className="text-gray-800 dark:text-gray-200 leading-relaxed">{state.query}</p>
           </div>
-          {state.status !== "done" && statusBadge}
+          {state.status !== "done" && (
+            <div className="flex flex-col items-end gap-2 shrink-0">
+              {statusBadge}
+              {/* Stop a running debate (server-side cancel) */}
+              <button
+                onClick={handleStop}
+                disabled={cancelling}
+                className="text-xs px-2.5 py-1 rounded-full border border-red-300 dark:border-red-700 text-red-600 dark:text-red-400 hover:bg-red-50 dark:hover:bg-red-900/20 transition disabled:opacity-50 disabled:cursor-not-allowed"
+              >
+                {cancelling ? "Stopping…" : "■ Stop debate"}
+              </button>
+            </div>
+          )}
         </div>
       )}
 
@@ -410,6 +331,7 @@ export default function DebateStreamViewer({ threadId }: Props) {
             <span className="flex items-center gap-1.5">
               <span className="w-1.5 h-1.5 bg-green-500 rounded-full animate-pulse" />
               Live
+              <span className="tabular-nums text-gray-400 dark:text-gray-500">· {elapsedLabel}</span>
             </span>
           </div>
           <div className="w-full h-1.5 bg-gray-200 dark:bg-gray-700 rounded-full overflow-hidden">
@@ -427,13 +349,16 @@ export default function DebateStreamViewer({ threadId }: Props) {
           <p className="text-xs font-semibold text-gray-400 uppercase tracking-wide mb-2">Agent status</p>
           <div className="flex flex-wrap gap-2">
             {Object.entries(state.agentStatus).map(([name, st]) => {
-              const meta = AGENT_META[name as keyof typeof AGENT_META];
+              // B4 Fix: look up in ALL_AGENT_META (standard + domain agents)
+              const meta = ALL_AGENT_META[name];
               return (
                 <span
                   key={name}
                   className={`inline-flex items-center gap-1.5 px-2.5 py-1 rounded-full text-xs font-medium border transition ${
                     st === "done"
                       ? "border-green-300 dark:border-green-700 bg-green-50 dark:bg-green-900/20 text-green-700 dark:text-green-400"
+                      : st === "timeout"
+                      ? "border-amber-300 dark:border-amber-700 bg-amber-50 dark:bg-amber-900/20 text-amber-700 dark:text-amber-400"
                       : st === "working"
                       ? "border-blue-300 dark:border-blue-700 bg-blue-50 dark:bg-blue-900/20 text-blue-700 dark:text-blue-400"
                       : "border-gray-200 dark:border-gray-700 bg-gray-50 dark:bg-gray-800 text-gray-500"
@@ -441,6 +366,8 @@ export default function DebateStreamViewer({ threadId }: Props) {
                 >
                   {st === "done" ? (
                     <span className="w-3 h-3 flex items-center justify-center text-xs">✓</span>
+                  ) : st === "timeout" ? (
+                    <span className="w-3 h-3 flex items-center justify-center text-xs">⏱</span>
                   ) : st === "working" ? (
                     <span className="w-3 h-3 border-2 border-current border-t-transparent rounded-full animate-spin block" />
                   ) : (
@@ -454,8 +381,39 @@ export default function DebateStreamViewer({ threadId }: Props) {
         </div>
       )}
 
-      {/* Live rounds */}
-      {state.rounds.map((round, rIdx) => {
+      {/* Answer-first: decision + collapsible transcript once the debate is done */}
+      {isDone && state.finalDecision && (
+        <div className="space-y-4">
+          <div className="text-center text-sm font-semibold text-green-600 dark:text-green-400 flex items-center justify-center gap-2">
+            <span className="w-2 h-2 bg-green-500 rounded-full" />
+            {state.finalDecision.termination_reason === "max_rounds_reached"
+              ? "Debate complete — max rounds reached"
+              : state.finalDecision.termination_reason === "human_override"
+              ? "Debate complete — human override applied"
+              : "Debate complete — consensus reached"}
+          </div>
+          <FinalDecisionPanel decision={state.finalDecision} />
+          <ConfidenceDriftSection rounds={state.rounds} />
+        </div>
+      )}
+      {isDone && (
+        <button
+          type="button"
+          onClick={() => setShowTranscript((o) => !o)}
+          className="w-full flex items-center justify-between py-3 border-t border-gray-200 dark:border-gray-800 text-sm font-semibold text-gray-600 dark:text-gray-300 hover:text-gray-800 dark:hover:text-gray-100 transition-colors"
+        >
+          <span className="flex items-center gap-2">
+            <span>🗒️</span> Debate transcript
+            <span className="text-xs font-normal text-gray-400">
+              {state.rounds.length} round{state.rounds.length !== 1 ? "s" : ""} · {totalCritiques} critique{totalCritiques !== 1 ? "s" : ""}
+            </span>
+          </span>
+          <span className="text-gray-400">{showTranscript ? "▲" : "▼"}</span>
+        </button>
+      )}
+
+      {/* Live rounds — shown live while streaming, or via the transcript toggle when done */}
+      {(!isDone || showTranscript) && state.rounds.map((round, rIdx) => {
         const synthesis = state.syntheses[round.round_number];
         const isFocused = focusedRoundIdx !== null && state.rounds[focusedRoundIdx]?.round_number === round.round_number;
         const PHASE_BADGE: Record<string, string> = {
@@ -469,7 +427,18 @@ export default function DebateStreamViewer({ threadId }: Props) {
             key={round.round_number}
             ref={(el) => { if (el) roundRefs.current.set(round.round_number, el); }}
             onClick={() => setFocusedRoundIdx(rIdx)}
-            className={`bg-white dark:bg-gray-900 rounded-xl border shadow-sm overflow-hidden transition-all duration-200 cursor-pointer ${
+            // Keyboard + screen-reader accessibility for round selection
+            role="button"
+            tabIndex={0}
+            aria-pressed={isFocused}
+            aria-label={`Round ${round.round_number}, ${round.phase} phase${isFocused ? " (selected)" : ""}`}
+            onKeyDown={(e) => {
+              if (e.key === "Enter" || e.key === " ") {
+                e.preventDefault();
+                setFocusedRoundIdx(rIdx);
+              }
+            }}
+            className={`bg-white dark:bg-gray-900 rounded-xl border shadow-sm overflow-hidden transition-all duration-200 cursor-pointer focus:outline-none focus-visible:ring-2 focus-visible:ring-blue-500 ${
               isFocused
                 ? "border-blue-400 dark:border-blue-600 ring-2 ring-blue-200 dark:ring-blue-800"
                 : "dark:border-gray-800 hover:border-gray-300 dark:hover:border-gray-700"
@@ -505,9 +474,36 @@ export default function DebateStreamViewer({ threadId }: Props) {
             {/* Agent outputs */}
             {round.agent_outputs.length > 0 && (
               <div className="p-4 grid grid-cols-1 sm:grid-cols-2 gap-3">
-                {round.agent_outputs.map((output) => (
-                  <AgentCard key={output.agent_name} response={output} />
-                ))}
+                {round.agent_outputs.map((output) => {
+                  const agentTools = round.toolCalls?.filter(
+                    (tc) => tc.agent_name === output.agent_name,
+                  ) ?? [];
+                  return (
+                    <div key={output.agent_name} className="space-y-1.5">
+                      <AgentCard response={output} />
+                      {/* NB3/FI1: tool activity inline under each agent card */}
+                      {agentTools.map((tc, ti) => (
+                        <div
+                          key={ti}
+                          className="text-xs bg-amber-50 dark:bg-amber-900/20 border border-amber-200 dark:border-amber-800 rounded-lg px-3 py-2 flex items-start gap-2"
+                        >
+                          <span className="shrink-0">🔧</span>
+                          <span>
+                            <span className="font-medium text-amber-700 dark:text-amber-400">
+                              {tc.tool_name}
+                            </span>
+                            {tc.output_snippet && (
+                              <span className="text-gray-500 dark:text-gray-400 ml-1">
+                                → {tc.output_snippet.slice(0, 120)}
+                                {tc.output_snippet.length > 120 ? "…" : ""}
+                              </span>
+                            )}
+                          </span>
+                        </div>
+                      ))}
+                    </div>
+                  );
+                })}
               </div>
             )}
 
@@ -537,9 +533,7 @@ export default function DebateStreamViewer({ threadId }: Props) {
                   <p className="font-semibold text-yellow-700 dark:text-yellow-400 mb-1">
                     🏛️ Moderator Synthesis
                   </p>
-                  <p className="text-gray-700 dark:text-gray-300 leading-relaxed">
-                    {synthesis.summary}
-                  </p>
+                  <Markdown className="text-gray-700 dark:text-gray-300">{synthesis.summary}</Markdown>
                   {synthesis.agreement_areas.length > 0 && (
                     <div className="mt-2 flex flex-wrap gap-1">
                       {synthesis.agreement_areas.map((a, i) => (
@@ -567,20 +561,10 @@ export default function DebateStreamViewer({ threadId }: Props) {
         </div>
       )}
 
-      {/* Final decision */}
-      {state.finalDecision && (
-        <div className="space-y-4">
-          <div className="text-center text-sm font-semibold text-green-600 dark:text-green-400 flex items-center justify-center gap-2">
-            <span className="w-2 h-2 bg-green-500 rounded-full" />
-            Debate complete — consensus reached
-          </div>
-          <FinalDecisionPanel decision={state.finalDecision} />
-          <ConfidenceDriftSection rounds={state.rounds} />
-        </div>
-      )}
+      {/* Final decision is rendered above (answer-first) once the debate is done */}
 
       {/* Keyboard hint */}
-      {state.rounds.length > 1 && (
+      {(!isDone || showTranscript) && state.rounds.length > 1 && (
         <p className="text-center text-xs text-gray-400 dark:text-gray-500 mt-2">
           Press <kbd className="px-1 py-0.5 rounded border border-gray-300 dark:border-gray-600 font-mono text-xs">J</kbd> / <kbd className="px-1 py-0.5 rounded border border-gray-300 dark:border-gray-600 font-mono text-xs">K</kbd> to navigate between rounds
         </p>

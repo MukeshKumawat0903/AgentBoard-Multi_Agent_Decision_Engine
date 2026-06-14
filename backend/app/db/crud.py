@@ -6,9 +6,9 @@ All functions accept an open aiosqlite.Connection from the get_db() dependency.
 
 from __future__ import annotations
 
-import logging
-from datetime import datetime, timezone, timedelta
 import json
+import logging
+from datetime import UTC, datetime, timedelta
 from typing import Any
 
 import aiosqlite
@@ -59,13 +59,24 @@ async def upsert_debate(db: aiosqlite.Connection, state: DebateState) -> None:
 async def save_decision(
     db: aiosqlite.Connection, decision: FinalDecision, user_query: str
 ) -> None:
-    """Persist the full FinalDecision JSON blob, replacing any previous entry."""
+    """Persist the full FinalDecision JSON blob.
+
+    Uses an upsert that preserves any cached ``evaluation_json`` for this
+    thread_id — a plain ``INSERT OR REPLACE`` would delete-then-reinsert the
+    row and silently wipe a previously cached evaluation (e.g. when a HITL
+    approve flow re-saves a decision after it was evaluated).
+    """
     decision_text = f"{decision.decision} {decision.rationale_summary}"
     await db.execute(
         """
-        INSERT OR REPLACE INTO decisions
+        INSERT INTO decisions
             (thread_id, user_query, decision_text, decision_json, created_at)
         VALUES (?, ?, ?, ?, ?)
+        ON CONFLICT(thread_id) DO UPDATE SET
+            user_query    = excluded.user_query,
+            decision_text = excluded.decision_text,
+            decision_json = excluded.decision_json,
+            created_at    = excluded.created_at
         """,
         (
             decision.thread_id,
@@ -107,7 +118,8 @@ async def get_history(
                 deb.current_round,
                 deb.max_rounds,
                 deb.agreement_score,
-                deb.termination_reason
+                deb.termination_reason,
+                deb.state_json
     """
 
     if q:
@@ -132,18 +144,31 @@ async def get_history(
     )
     rows = await cur.fetchall()
 
-    items: list[dict[str, Any]] = [
-        {
-            "thread_id":          r[0],
-            "user_query":         r[1],
-            "created_at":         r[2],
-            "status":             r[3] or "converged",
-            "total_rounds":       r[5] or 4,
-            "agreement_score":    float(r[6]) if r[6] is not None else 0.0,
-            "termination_reason": r[7] or "consensus_reached",
-        }
-        for r in rows
-    ]
+    def _parse_flags(state_json_str: str | None) -> tuple[bool, bool]:
+        """Extract use_knowledge_base and enable_agent_memory from state JSON."""
+        if not state_json_str:
+            return False, False
+        try:
+            import json as _json
+            s = _json.loads(state_json_str)
+            return bool(s.get("use_knowledge_base")), bool(s.get("enable_agent_memory"))
+        except Exception:  # noqa: BLE001
+            return False, False
+
+    items: list[dict[str, Any]] = []
+    for r in rows:
+        use_kb, use_mem = _parse_flags(r[8])
+        items.append({
+            "thread_id":            r[0],
+            "user_query":           r[1],
+            "created_at":           r[2],
+            "status":               r[3] or "converged",
+            "total_rounds":         r[5] or 4,
+            "agreement_score":      float(r[6]) if r[6] is not None else 0.0,
+            "termination_reason":   r[7] or "consensus_reached",
+            "use_knowledge_base":   use_kb,
+            "enable_agent_memory":  use_mem,
+        })
     return items, total
 
 
@@ -186,7 +211,7 @@ async def save_debate_event(
             thread_id,
             payload.get("type", "message"),
             json.dumps(payload),
-            datetime.now(timezone.utc).isoformat(),
+            datetime.now(UTC).isoformat(),
         ),
     )
     await db.commit()
@@ -237,7 +262,7 @@ async def cleanup_old_debates(
 
     Runs once at application startup.  Safe to call on an empty database.
     """
-    cutoff = (datetime.now(timezone.utc) - timedelta(days=ttl_days)).isoformat()
+    cutoff = (datetime.now(UTC) - timedelta(days=ttl_days)).isoformat()
 
     cur = await db.execute(
         "DELETE FROM debate_events WHERE created_at < ?", (cutoff,)
@@ -300,19 +325,29 @@ async def save_evaluation(
 # ---------------------------------------------------------------------------
 
 
-async def get_analytics_overview(db: aiosqlite.Connection) -> dict[str, Any]:
-    """Aggregate overview stats for all completed debates."""
+def _date_clause(days: int) -> str:
+    """Return an ``AND created_at >= ...`` SQL fragment, or empty for all-time.
+
+    ``days`` is an int the caller controls (never raw user text), so interpolating
+    it into the DATE modifier is safe here.
+    """
+    return f"AND created_at >= DATE('now', '-{int(days)} days')" if days and days > 0 else ""
+
+
+async def get_analytics_overview(db: aiosqlite.Connection, days: int = 0) -> dict[str, Any]:
+    """Aggregate overview stats for completed debates, optionally scoped to N days."""
+    dc = _date_clause(days)
     cur = await db.execute(
-        "SELECT COUNT(*) FROM debates WHERE status IN ('converged', 'max_rounds_reached')"
+        f"SELECT COUNT(*) FROM debates WHERE status IN ('converged', 'max_rounds_reached') {dc}"
     )
     row = await cur.fetchone()
     total_debates: int = row[0] if row else 0
 
     cur = await db.execute(
-        """
+        f"""
         SELECT AVG(current_round), AVG(agreement_score)
         FROM debates
-        WHERE status IN ('converged', 'max_rounds_reached')
+        WHERE status IN ('converged', 'max_rounds_reached') {dc}
         """
     )
     row = await cur.fetchone()
@@ -320,21 +355,22 @@ async def get_analytics_overview(db: aiosqlite.Connection) -> dict[str, Any]:
     avg_agreement = float(row[1]) if row and row[1] is not None else 0.0
 
     cur = await db.execute(
-        """
+        f"""
         SELECT COALESCE(termination_reason, 'unknown'), COUNT(*)
         FROM debates
-        WHERE status IN ('converged', 'max_rounds_reached')
+        WHERE status IN ('converged', 'max_rounds_reached') {dc}
         GROUP BY termination_reason
         """
     )
     rows = await cur.fetchall()
     debates_by_termination: dict[str, int] = {r[0]: r[1] for r in rows}
 
+    trend_days = days if days and days > 0 else 30
     cur = await db.execute(
-        """
+        f"""
         SELECT DATE(created_at) AS day, COUNT(*) AS cnt
         FROM debates
-        WHERE created_at >= DATE('now', '-30 days')
+        WHERE created_at >= DATE('now', '-{int(trend_days)} days')
         GROUP BY day
         ORDER BY day ASC
         """
@@ -351,17 +387,20 @@ async def get_analytics_overview(db: aiosqlite.Connection) -> dict[str, Any]:
     }
 
 
-async def get_analytics_agents(db: aiosqlite.Connection) -> dict[str, Any]:
+async def get_analytics_agents(db: aiosqlite.Connection, days: int = 0) -> dict[str, Any]:
     """Per-agent performance stats derived from stored state and decision JSON blobs."""
+    dc = _date_clause(days)
     cur = await db.execute(
-        """
+        f"""
         SELECT state_json FROM debates
-        WHERE status IN ('converged', 'max_rounds_reached') AND state_json IS NOT NULL
+        WHERE status IN ('converged', 'max_rounds_reached') AND state_json IS NOT NULL {dc}
         """
     )
     state_rows = await cur.fetchall()
 
-    cur = await db.execute("SELECT decision_json FROM decisions WHERE decision_json IS NOT NULL")
+    cur = await db.execute(
+        f"SELECT decision_json FROM decisions WHERE decision_json IS NOT NULL {dc}"
+    )
     decision_rows = await cur.fetchall()
 
     confidence_sums: dict[str, list[float]] = {}
@@ -425,10 +464,11 @@ async def get_analytics_agents(db: aiosqlite.Connection) -> dict[str, Any]:
     return {"agents": agent_stats, "agreement_matrix": matrix}
 
 
-async def get_analytics_convergence(db: aiosqlite.Connection) -> dict[str, Any]:
+async def get_analytics_convergence(db: aiosqlite.Connection, days: int = 0) -> dict[str, Any]:
     """Convergence curve, mode breakdown, and domain pack breakdown."""
+    dc = _date_clause(days)
     cur = await db.execute(
-        "SELECT payload_json FROM debate_events WHERE event_type = 'synthesis'"
+        f"SELECT payload_json FROM debate_events WHERE event_type = 'synthesis' {dc}"
     )
     rows = await cur.fetchall()
     round_scores: dict[int, list[float]] = {}
@@ -450,10 +490,10 @@ async def get_analytics_convergence(db: aiosqlite.Connection) -> dict[str, Any]:
     ]
 
     cur = await db.execute(
-        """
+        f"""
         SELECT max_rounds, COUNT(*) AS cnt
         FROM debates
-        WHERE status IN ('converged', 'max_rounds_reached')
+        WHERE status IN ('converged', 'max_rounds_reached') {dc}
         GROUP BY max_rounds
         """
     )
@@ -465,9 +505,9 @@ async def get_analytics_convergence(db: aiosqlite.Connection) -> dict[str, Any]:
         mode_breakdown[label] = mode_breakdown.get(label, 0) + row[1]
 
     cur = await db.execute(
-        """
+        f"""
         SELECT state_json FROM debates
-        WHERE status IN ('converged', 'max_rounds_reached') AND state_json IS NOT NULL
+        WHERE status IN ('converged', 'max_rounds_reached') AND state_json IS NOT NULL {dc}
         """
     )
     rows = await cur.fetchall()
@@ -487,14 +527,19 @@ async def get_analytics_convergence(db: aiosqlite.Connection) -> dict[str, Any]:
     }
 
 
-async def get_analytics_quality(db: aiosqlite.Connection) -> dict[str, Any]:
+async def get_analytics_quality(db: aiosqlite.Connection, days: int = 0) -> dict[str, Any]:
     """Quality score analytics from stored evaluation JSON blobs."""
+    qdc = (
+        f"AND dec.created_at >= DATE('now', '-{int(days)} days')"
+        if days and days > 0
+        else ""
+    )
     cur = await db.execute(
-        """
+        f"""
         SELECT deb.state_json, dec.evaluation_json
         FROM decisions dec
         JOIN debates deb ON deb.thread_id = dec.thread_id
-        WHERE dec.evaluation_json IS NOT NULL
+        WHERE dec.evaluation_json IS NOT NULL {qdc}
         """
     )
     rows = await cur.fetchall()
@@ -519,8 +564,13 @@ async def get_analytics_quality(db: aiosqlite.Connection) -> dict[str, Any]:
     for state_json_str, eval_json_str in rows:
         try:
             eval_data = json.loads(eval_json_str)
+            # EvaluationResult serialises its score as "overall"; "quality_score"/
+            # "overall_score" are kept as fallbacks for any legacy cached rows.
             quality = float(
-                eval_data.get("quality_score", eval_data.get("overall_score", 0.0))
+                eval_data.get(
+                    "overall",
+                    eval_data.get("quality_score", eval_data.get("overall_score", 0.0)),
+                )
             )
         except (json.JSONDecodeError, TypeError, ValueError):
             continue

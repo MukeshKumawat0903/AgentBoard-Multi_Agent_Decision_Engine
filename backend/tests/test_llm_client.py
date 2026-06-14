@@ -96,6 +96,44 @@ async def test_ainvoke_structured_returns_validated_model():
 
 
 @pytest.mark.anyio
+async def test_ainvoke_structured_clamps_max_retries_zero_to_one_attempt():
+    """BUG-19: max_retries=0 must still make exactly one call, not zero."""
+    provider, llm = _make_provider()
+    bound = MagicMock()
+    structured = MagicMock()
+    retried = MagicMock()
+    retried.ainvoke = AsyncMock(return_value=DemoSchema(answer="Proceed", confidence=0.82))
+    structured.with_retry.return_value = retried
+    bound.with_structured_output.return_value = structured
+    llm.bind.return_value = bound
+
+    result = await provider.ainvoke_structured(
+        DemoSchema, system_prompt="sys", user_prompt="user", max_retries=0
+    )
+
+    assert isinstance(result, DemoSchema)
+    structured.with_retry.assert_called_once_with(stop_after_attempt=1, wait_exponential_jitter=True)
+
+
+@pytest.mark.anyio
+async def test_ainvoke_structured_passes_through_positive_max_retries():
+    provider, llm = _make_provider()
+    bound = MagicMock()
+    structured = MagicMock()
+    retried = MagicMock()
+    retried.ainvoke = AsyncMock(return_value=DemoSchema(answer="Proceed", confidence=0.82))
+    structured.with_retry.return_value = retried
+    bound.with_structured_output.return_value = structured
+    llm.bind.return_value = bound
+
+    await provider.ainvoke_structured(
+        DemoSchema, system_prompt="sys", user_prompt="user", max_retries=3
+    )
+
+    structured.with_retry.assert_called_once_with(stop_after_attempt=3, wait_exponential_jitter=True)
+
+
+@pytest.mark.anyio
 async def test_ainvoke_structured_wraps_failures_as_response_errors():
     provider, llm = _make_provider()
     bound = MagicMock()

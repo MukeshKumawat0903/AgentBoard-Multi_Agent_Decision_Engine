@@ -210,7 +210,7 @@ class SemanticConsensusEngine(ConsensusEngine):
                 "Install them with: pip install sentence-transformers numpy"
             )
         self._model_name = model_name
-        self._model: "_ST | None" = None  # lazy-loaded on first call
+        self._model: _ST | None = None  # lazy-loaded on first call
 
     # ------------------------------------------------------------------
     # Public API
@@ -233,7 +233,7 @@ class SemanticConsensusEngine(ConsensusEngine):
         # L2-normalise so dot product == cosine similarity
         norms = _np.linalg.norm(embeddings, axis=1, keepdims=True)
         normalised = embeddings / _np.maximum(norms, 1e-8)
-        sim_matrix: "_np.ndarray" = normalised @ normalised.T  # (n, n)
+        sim_matrix: _np.ndarray = normalised @ normalised.T  # (n, n)
 
         n = len(responses)
         total, pairs = 0.0, 0
@@ -290,11 +290,7 @@ class SemanticConsensusEngine(ConsensusEngine):
     # Private
     # ------------------------------------------------------------------
 
-    def _load_model(self) -> "_ST":
-        if self._model is None:
-            logger.info(
-                "Loading sentence-transformer model",
-                extra={"model": self._model_name},
-            )
-            self._model = _ST(self._model_name)
-        return self._model
+    def _load_model(self) -> _ST:
+        # R5: reuse the module-level shared embedder to avoid loading weights twice
+        from app.services.retriever import get_shared_embedder  # noqa: PLC0415
+        return get_shared_embedder(self._model_name)  # type: ignore[return-value]

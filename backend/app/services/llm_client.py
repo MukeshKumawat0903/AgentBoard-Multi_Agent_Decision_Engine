@@ -122,19 +122,21 @@ class LangChainProvider:
         system_prompt: str,
         user_prompt: str,
         temperature: float = 0.3,
+        max_retries: int = 2,
     ) -> T:
         """
         Invoke the LLM and return a validated Pydantic model instance.
 
         Uses LangChain's with_structured_output() for reliable schema
         binding via tool/function calling.  No manual JSON parsing needed.
-        Built-in retry on transient failures (max 2 attempts).
+        Built-in retry on transient failures.
 
         Args:
             schema:        Pydantic model class the LLM should populate.
             system_prompt: Role/instruction for the model.
             user_prompt:   User turn message.
             temperature:   Sampling temperature (default 0.3 for structured).
+            max_retries:   Max LangChain retry attempts (B7: wired from AgentConfig).
 
         Returns:
             A validated instance of ``schema``.
@@ -144,8 +146,10 @@ class LangChainProvider:
         """
         try:
             llm = cast(Any, self._llm.bind(temperature=temperature))
+            # tenacity's stop_after_attempt(0) stops *before* the first attempt,
+            # so a config value of 0 ("no retries") must still mean one call.
             chain = llm.with_structured_output(schema).with_retry(
-                stop_after_attempt=2,
+                stop_after_attempt=max(1, max_retries),
                 wait_exponential_jitter=True,
             )
             messages = self._build_messages(system_prompt, user_prompt)
@@ -214,6 +218,47 @@ class LangChainProvider:
 
 
 # ---------------------------------------------------------------------------
+# Token cost estimation
+# ---------------------------------------------------------------------------
+# Approximate prices in USD per 1M tokens as (input, output). These are
+# estimates for surfacing rough cost only — not billing-accurate.
+_MODEL_PRICES_PER_1M: dict[str, tuple[float, float]] = {
+    "llama-3.3-70b-versatile": (0.59, 0.79),
+    "llama-3.1-8b-instant": (0.05, 0.08),
+    "mixtral-8x7b-32768": (0.24, 0.24),
+    "gemma2-9b-it": (0.20, 0.20),
+    "gpt-4o": (2.50, 10.00),
+    "gpt-4o-mini": (0.15, 0.60),
+    "gpt-4-turbo": (10.00, 30.00),
+    "gpt-3.5-turbo": (0.50, 1.50),
+    "claude-sonnet-4-20250514": (3.00, 15.00),
+    "claude-3-5-haiku-20241022": (0.80, 4.00),
+    "claude-3-opus-20240229": (15.00, 75.00),
+}
+
+
+def estimate_cost_usd(usage_by_model: dict) -> float | None:
+    """
+    Estimate total cost from per-model usage metadata.
+
+    ``usage_by_model`` maps a model name to a dict with ``input_tokens`` and
+    ``output_tokens``.  Returns None if none of the models have a known price.
+    """
+    total = 0.0
+    priced_any = False
+    for model, usage in usage_by_model.items():
+        price = _MODEL_PRICES_PER_1M.get(model)
+        if price is None:
+            continue
+        in_price, out_price = price
+        inp = usage.get("input_tokens", 0) or 0
+        out = usage.get("output_tokens", 0) or 0
+        total += (inp / 1_000_000) * in_price + (out / 1_000_000) * out_price
+        priced_any = True
+    return round(total, 6) if priced_any else None
+
+
+# ---------------------------------------------------------------------------
 # Backward-compatible alias
 # ---------------------------------------------------------------------------
 # All existing: `from app.services.llm_client import GroqClient` imports
@@ -269,7 +314,8 @@ def reset_llm_client(provider: str, api_key: str, model: str) -> LangChainProvid
         api_key=api_key,
         model=model,
     )
-    _using_custom_key = True
+    # B8 Fix: only flag custom key when the provider is NOT groq (which uses the server key)
+    _using_custom_key = (provider != "groq")
     logger.info(
         "llm_client_switched",
         extra={"provider": provider, "model": model},

@@ -6,9 +6,8 @@ schemas directly, eliminating manual JSON parsing and prompt-only JSON
 enforcement.
 """
 
-from pydantic import BaseModel, ConfigDict, Field
-
 from langchain_core.prompts import PromptTemplate
+from pydantic import BaseModel, ConfigDict, Field
 
 from app.agents.base_agent import BaseAgent
 from app.schemas.agent_response import AgentResponse, CritiqueResponse

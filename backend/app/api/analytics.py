@@ -19,7 +19,7 @@ import time
 from typing import Any
 
 import aiosqlite
-from fastapi import APIRouter, Depends
+from fastapi import APIRouter, Depends, Query
 
 from app.api.dependencies import get_db
 from app.db.crud import (
@@ -66,21 +66,25 @@ def invalidate_analytics_cache() -> None:
     summary="Aggregate debate statistics",
     response_description="Overview stats: totals, averages, per-day trend",
 )
-async def analytics_overview(db: aiosqlite.Connection = Depends(get_db)) -> dict:
+async def analytics_overview(
+    days: int = Query(0, ge=0, le=365, description="Scope to the last N days (0 = all time)."),
+    db: aiosqlite.Connection = Depends(get_db),
+) -> dict:
     """
     Returns:
-    - ``total_debates`` — count of all completed debates
+    - ``total_debates`` — count of completed debates in range
     - ``avg_rounds_to_consensus`` — mean round count across completed debates
     - ``avg_agreement_score`` — mean final agreement score
     - ``debates_by_termination`` — count grouped by termination_reason
-    - ``debates_per_day`` — list of ``{date, count}`` for the last 30 days
+    - ``debates_per_day`` — list of ``{date, count}``
     """
-    cached = _get("overview")
+    key = f"overview:{days}"
+    cached = _get(key)
     if cached is not None:
-        logger.debug("analytics_cache_hit", extra={"key": "overview"})
+        logger.debug("analytics_cache_hit", extra={"key": key})
         return cached
-    result = await get_analytics_overview(db)
-    _set("overview", result)
+    result = await get_analytics_overview(db, days=days)
+    _set(key, result)
     return result
 
 
@@ -89,19 +93,23 @@ async def analytics_overview(db: aiosqlite.Connection = Depends(get_db)) -> dict
     summary="Per-agent performance statistics",
     response_description="Agent confidence, critique severity, contribution scores, agreement matrix",
 )
-async def analytics_agents(db: aiosqlite.Connection = Depends(get_db)) -> dict:
+async def analytics_agents(
+    days: int = Query(0, ge=0, le=365, description="Scope to the last N days (0 = all time)."),
+    db: aiosqlite.Connection = Depends(get_db),
+) -> dict:
     """
     Returns:
     - ``agents`` — dict keyed by agent name with avg_confidence,
       avg_critique_severity_given, avg_contribution_score
     - ``agreement_matrix`` — pairwise co-high-confidence frequency
     """
-    cached = _get("agents")
+    key = f"agents:{days}"
+    cached = _get(key)
     if cached is not None:
-        logger.debug("analytics_cache_hit", extra={"key": "agents"})
+        logger.debug("analytics_cache_hit", extra={"key": key})
         return cached
-    result = await get_analytics_agents(db)
-    _set("agents", result)
+    result = await get_analytics_agents(db, days=days)
+    _set(key, result)
     return result
 
 
@@ -110,19 +118,23 @@ async def analytics_agents(db: aiosqlite.Connection = Depends(get_db)) -> dict:
     summary="Convergence curve and mode/domain breakdown",
     response_description="Round-by-round agreement averages and categorical breakdowns",
 )
-async def analytics_convergence(db: aiosqlite.Connection = Depends(get_db)) -> dict:
+async def analytics_convergence(
+    days: int = Query(0, ge=0, le=365, description="Scope to the last N days (0 = all time)."),
+    db: aiosqlite.Connection = Depends(get_db),
+) -> dict:
     """
     Returns:
     - ``avg_agreement_by_round`` — list of mean agreement scores per round
     - ``mode_breakdown`` — count by debate mode (quick/standard/thorough)
     - ``domain_pack_breakdown`` — count by domain pack
     """
-    cached = _get("convergence")
+    key = f"convergence:{days}"
+    cached = _get(key)
     if cached is not None:
-        logger.debug("analytics_cache_hit", extra={"key": "convergence"})
+        logger.debug("analytics_cache_hit", extra={"key": key})
         return cached
-    result = await get_analytics_convergence(db)
-    _set("convergence", result)
+    result = await get_analytics_convergence(db, days=days)
+    _set(key, result)
     return result
 
 
@@ -131,7 +143,10 @@ async def analytics_convergence(db: aiosqlite.Connection = Depends(get_db)) -> d
     summary="Decision quality score analytics",
     response_description="Quality scores by template, mode, and domain pack (requires evaluations)",
 )
-async def analytics_quality(db: aiosqlite.Connection = Depends(get_db)) -> dict:
+async def analytics_quality(
+    days: int = Query(0, ge=0, le=365, description="Scope to the last N days (0 = all time)."),
+    db: aiosqlite.Connection = Depends(get_db),
+) -> dict:
     """
     Returns aggregate quality scores derived from stored evaluation JSON blobs.
     Returns ``evaluated_count: 0`` if no evaluations have been run yet.
@@ -142,10 +157,11 @@ async def analytics_quality(db: aiosqlite.Connection = Depends(get_db)) -> dict:
     - ``scores_by_template`` / ``scores_by_mode`` / ``scores_by_domain_pack``
     - ``best_performing_templates`` / ``worst_performing_templates``
     """
-    cached = _get("quality")
+    key = f"quality:{days}"
+    cached = _get(key)
     if cached is not None:
-        logger.debug("analytics_cache_hit", extra={"key": "quality"})
+        logger.debug("analytics_cache_hit", extra={"key": key})
         return cached
-    result = await get_analytics_quality(db)
-    _set("quality", result)
+    result = await get_analytics_quality(db, days=days)
+    _set(key, result)
     return result

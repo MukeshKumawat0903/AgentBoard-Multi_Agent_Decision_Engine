@@ -174,14 +174,32 @@ export default function SimulatePage() {
               </span>
             </div>
 
+            {/* NB4: warn when some runs failed */}
+            {result.runs_completed < result.runs && (
+              <div className="mb-3 px-3 py-2 rounded-lg bg-amber-50 dark:bg-amber-900/20 border border-amber-200 dark:border-amber-800 text-xs text-amber-700 dark:text-amber-400">
+                ⚠ {result.runs_completed} of {result.runs} runs completed — {result.runs - result.runs_completed} run{result.runs - result.runs_completed !== 1 ? "s" : ""} failed.
+              </div>
+            )}
+
             <div className="space-y-3 mb-4">
+              {/* FI6: explanatory tooltip on each score label */}
               <ScoreBar label="Consistency Score" value={result.consistency_score} />
+              <p className="text-xs text-gray-400 -mt-1 pl-0.5">
+                Higher = agents reach the same decision regardless of LLM sampling variation.
+              </p>
               <ScoreBar label="Avg Agreement Score" value={result.avg_agreement_score} />
+              <p className="text-xs text-gray-400 -mt-1 pl-0.5">
+                Mean consensus level reached across all runs (0 = no consensus, 1 = full agreement).
+              </p>
             </div>
 
             <p className="text-xs text-gray-400">
               Confidence variance: <span className="font-medium tabular-nums">{result.confidence_variance.toFixed(3)}</span>
-              {" · "}{result.runs} independent runs
+              {" · "}
+              {/* NB4: show actual/requested count */}
+              {result.runs_completed === result.runs
+                ? `${result.runs} independent runs`
+                : `${result.runs_completed}/${result.runs} runs completed`}
             </p>
           </div>
 
@@ -207,7 +225,7 @@ export default function SimulatePage() {
           {/* Per-run decisions */}
           <div>
             <h3 className="font-semibold text-gray-700 dark:text-gray-300 mb-3">
-              Individual Runs ({result.runs})
+              Individual Runs ({result.runs_completed}{result.runs_completed < result.runs ? `/${result.runs}` : ""})
             </h3>
             <div className="space-y-3">
               {result.decisions.map((decision, i) => (

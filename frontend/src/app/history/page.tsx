@@ -266,6 +266,17 @@ function HistoryCard({
           <div className="flex flex-wrap items-center gap-3 mt-2 text-xs text-gray-400">
             <span>{date.toLocaleDateString()} {date.toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" })}</span>
             <span>{item.total_rounds} round{item.total_rounds !== 1 ? "s" : ""}</span>
+            {/* FI3: feature badges — show which enrichments were active */}
+            {item.use_knowledge_base && (
+              <span className="px-1.5 py-0.5 rounded bg-blue-100 dark:bg-blue-900/40 text-blue-600 dark:text-blue-400 font-medium">
+                📚 KB
+              </span>
+            )}
+            {item.enable_agent_memory && (
+              <span className="px-1.5 py-0.5 rounded bg-purple-100 dark:bg-purple-900/40 text-purple-600 dark:text-purple-400 font-medium">
+                🧠 Memory
+              </span>
+            )}
             <span
               className={`px-2 py-0.5 rounded-full font-medium ${
                 item.termination_reason === "consensus_reached"

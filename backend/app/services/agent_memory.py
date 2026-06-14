@@ -22,7 +22,7 @@ Usage::
 from __future__ import annotations
 
 import logging
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from typing import TYPE_CHECKING
 
 import aiosqlite
@@ -80,7 +80,7 @@ class AgentMemoryStore:
                     "2) One transferable lesson the agent should remember for future debates. "
                     "Be specific and actionable."
                 ),
-                user_prompt=f"Agent: {agent_name}\nFinal position:\n{position_text[:2000]}",
+                user_prompt=f"Agent: {agent_name}\nFinal position:\n{position_text[:4000]}",
             )
             async with aiosqlite.connect(self._db_url) as db:
                 await db.execute(
@@ -94,7 +94,7 @@ class AgentMemoryStore:
                         debate_id,
                         summary_obj.summary,
                         summary_obj.lesson,
-                        datetime.now(timezone.utc).isoformat(),
+                        datetime.now(UTC).isoformat(),
                     ),
                 )
                 await db.commit()
@@ -120,7 +120,7 @@ class AgentMemoryStore:
                     """
                     SELECT lesson_learned
                     FROM agent_memory
-                    WHERE agent_name = ?
+                    WHERE agent_name = ? COLLATE NOCASE
                     ORDER BY created_at DESC
                     LIMIT ?
                     """,
@@ -147,7 +147,7 @@ class AgentMemoryStore:
                     """
                     SELECT memory_id, agent_name, debate_id, summary, lesson_learned, created_at
                     FROM agent_memory
-                    WHERE agent_name = ?
+                    WHERE agent_name = ? COLLATE NOCASE
                     ORDER BY created_at DESC
                     LIMIT ?
                     """,
@@ -174,7 +174,7 @@ class AgentMemoryStore:
         try:
             async with aiosqlite.connect(self._db_url) as db:
                 cur = await db.execute(
-                    "DELETE FROM agent_memory WHERE agent_name = ?", (agent_name,)
+                    "DELETE FROM agent_memory WHERE agent_name = ? COLLATE NOCASE", (agent_name,)
                 )
                 await db.commit()
                 deleted = cur.rowcount

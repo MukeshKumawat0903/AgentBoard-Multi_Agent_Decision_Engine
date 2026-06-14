@@ -7,6 +7,7 @@
 import type { AgentResponse, AgentName } from "@/lib/types";
 import { AGENT_META } from "@/lib/types";
 import ConfidenceMeter from "./ConfidenceMeter";
+import Markdown from "./Markdown";
 
 interface AgentCardProps {
   response: AgentResponse;
@@ -48,13 +49,13 @@ export default function AgentCard({ response }: AgentCardProps) {
         {/* Position */}
         <div>
           <h4 className="font-medium text-gray-700 dark:text-gray-300 mb-1">Position</h4>
-          <p className="text-gray-600 dark:text-gray-400 whitespace-pre-line">{response.position}</p>
+          <Markdown className="text-gray-600 dark:text-gray-400">{response.position}</Markdown>
         </div>
 
         {/* Reasoning */}
         <div>
           <h4 className="font-medium text-gray-700 dark:text-gray-300 mb-1">Reasoning</h4>
-          <p className="text-gray-500 dark:text-gray-400 whitespace-pre-line">{response.reasoning}</p>
+          <Markdown className="text-gray-500 dark:text-gray-400">{response.reasoning}</Markdown>
         </div>
 
         {/* Assumptions */}

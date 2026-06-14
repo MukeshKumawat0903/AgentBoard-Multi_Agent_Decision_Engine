@@ -28,11 +28,13 @@ from typing import TYPE_CHECKING
 
 from pydantic import BaseModel, Field
 
+from app.orchestrator.debate_graph import DebateGraph
+
 if TYPE_CHECKING:
-    from app.schemas.final_decision import FinalDecision
-    from app.services.llm_client import LangChainProvider
     from app.core.config import Settings
     from app.schemas.api_models import DebateMode
+    from app.schemas.final_decision import FinalDecision
+    from app.services.llm_client import LangChainProvider
 
 logger = logging.getLogger("agentboard.simulation")
 
@@ -45,7 +47,8 @@ class SimulationResult(BaseModel):
     """Aggregate result of N independent debate runs for the same query."""
 
     query: str
-    runs: int
+    runs: int = Field(description="Number of runs requested.")
+    runs_completed: int = Field(description="Number of runs that completed successfully (≤ runs).")
     decisions: list[dict] = Field(description="Serialised FinalDecision objects for each run.")
     consistency_score: float = Field(
         ge=0.0, le=1.0,
@@ -101,37 +104,67 @@ async def run_simulation(
     query: str,
     runs: int,
     max_rounds: int,
-    mode: "DebateMode",
+    mode: DebateMode,
     llm_client: LangChainProvider,
     settings: Settings,
+    selected_agents: list[str] | None = None,
+    knowledge_base=None,
+    memory_store=None,
+    use_knowledge_base: bool = False,
+    enable_agent_memory: bool = False,
 ) -> SimulationResult:
     """
     Run ``runs`` independent debates and return aggregated stability metrics.
+
+    The optional agent / knowledge-base / memory parameters let a simulation
+    reproduce the exact configuration a single debate would use, so consistency
+    is measured against the same setup the user is actually testing.
     """
-    from app.orchestrator.debate_graph import DebateGraph
     from app.schemas.api_models import resolve_debate_config
+    from app.schemas.state import DebateState
 
     resolved_rounds, resolved_threshold, resolved_skip = resolve_debate_config(
         mode=mode,
         max_rounds=max_rounds,
         consensus_threshold=None,
         skip_critique_phase=None,
-        default_max_rounds=settings.MAX_DEBATE_ROUNDS,
-        default_threshold=settings.CONSENSUS_THRESHOLD,
     )
+
+    # Only build an explicit initial state when the run needs extra configuration
+    # (agent subset, knowledge base, or memory); otherwise let the graph build it.
+    needs_custom_state = bool(selected_agents) or use_knowledge_base or enable_agent_memory
 
     async def _single_run(_run_idx: int) -> FinalDecision | None:
         try:
             graph = DebateGraph(
                 llm_client=llm_client,
                 settings=settings,
+                knowledge_base=knowledge_base,
+                memory_store=memory_store,
+                selected_agents=selected_agents,
             )
-            _state, decision = await graph.run(
-                query,
-                max_rounds=resolved_rounds,
-                consensus_threshold=resolved_threshold,
-                skip_critique_phase=resolved_skip,
-            )
+            if needs_custom_state:
+                # Each run gets its own fresh state so concurrent runs never share it.
+                run_state = DebateState(
+                    user_query=query,
+                    max_rounds=resolved_rounds,
+                    use_knowledge_base=use_knowledge_base,
+                    enable_agent_memory=enable_agent_memory,
+                    selected_agents=selected_agents,
+                )
+                _state, decision = await graph.run(
+                    query,
+                    initial_state=run_state,
+                    consensus_threshold=resolved_threshold,
+                    skip_critique_phase=resolved_skip,
+                )
+            else:
+                _state, decision = await graph.run(
+                    query,
+                    max_rounds=resolved_rounds,
+                    consensus_threshold=resolved_threshold,
+                    skip_critique_phase=resolved_skip,
+                )
             logger.info(
                 "simulation_run_complete",
                 extra={"run": _run_idx, "agreement_score": decision.agreement_score},
@@ -151,6 +184,7 @@ async def run_simulation(
         return SimulationResult(
             query=query,
             runs=runs,
+            runs_completed=0,
             decisions=[],
             consistency_score=0.0,
             confidence_variance=0.0,
@@ -178,6 +212,7 @@ async def run_simulation(
     return SimulationResult(
         query=query,
         runs=runs,
+        runs_completed=len(decisions),
         decisions=[d.model_dump() for d in decisions],
         consistency_score=round(consistency, 3),
         confidence_variance=round(confidence_variance, 3),

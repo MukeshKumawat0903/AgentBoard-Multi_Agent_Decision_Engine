@@ -11,10 +11,11 @@ from pydantic import BaseModel, ConfigDict, Field, model_validator
 
 from app.schemas.state import DebateRound
 
-
 __all__ = [
+    "ApproveRequest",
     "DebateMode",
     "DebateStartRequest",
+    "SimulateRequest",
     "resolve_debate_config",
 ]
 
@@ -37,12 +38,17 @@ def resolve_debate_config(
     max_rounds: int | None,
     consensus_threshold: float | None,
     skip_critique_phase: bool | None,
-    default_max_rounds: int,
-    default_threshold: float,
 ) -> tuple[int, float, bool]:
     """
     Return (max_rounds, consensus_threshold, skip_critique_phase) after merging
     mode presets with any explicit overrides.  Explicit values always win.
+
+    Mode presets (``_MODE_PRESETS``, defaulting to "standard" when ``mode`` is
+    ``None``) are the single source of defaults for API-resolved debates.
+    ``Settings.MAX_DEBATE_ROUNDS`` / ``CONSENSUS_THRESHOLD`` are separate,
+    orchestrator-level fallbacks used only when ``DebateGraph`` is driven
+    directly without going through this resolution (see debate_graph.py /
+    nodes.py).
     """
     base = _MODE_PRESETS.get(mode or "standard", _MODE_PRESETS["standard"])
     resolved_rounds = max_rounds if max_rounds is not None else base["max_rounds"]
@@ -112,8 +118,6 @@ class DebateStartRequest(BaseModel):
             max_rounds=self.max_rounds,
             consensus_threshold=self.consensus_threshold,
             skip_critique_phase=self.skip_critique_phase,
-            default_max_rounds=_MODE_PRESETS["standard"]["max_rounds"],
-            default_threshold=_MODE_PRESETS["standard"]["consensus_threshold"],
         )
         self.max_rounds = resolved_rounds
         self.consensus_threshold = resolved_threshold
@@ -130,6 +134,51 @@ class DebateStartRequest(BaseModel):
                 "agents": None,
             }
         }
+    )
+
+
+class SimulateRequest(BaseModel):
+    """Request body for POST /debate/simulate."""
+
+    query: str = Field(
+        min_length=10,
+        max_length=5000,
+        description="The decision question to simulate across N independent runs.",
+    )
+    runs: int = Field(default=3, ge=2, le=5, description="Number of independent runs.")
+    max_rounds: int = Field(default=3, ge=2, le=6, description="Max rounds per run.")
+    mode: DebateMode = Field(default="standard", description="Debate mode preset.")
+    # Honour the same configuration a single debate would use, so a simulation
+    # reproduces the exact agent set / intelligence toggles being tested.
+    agents: list[str] | None = Field(
+        default=None,
+        description="Optional subset of agent names. Defaults to all enabled agents.",
+    )
+    domain_pack: str | None = Field(
+        default=None,
+        description="Optional domain pack ID. Overrides the agents list.",
+    )
+    use_knowledge_base: bool = Field(
+        default=False,
+        description="When True, agents retrieve knowledge-base context in each run.",
+    )
+    enable_agent_memory: bool = Field(
+        default=False,
+        description="When True, agents receive past-debate lessons in each run.",
+    )
+
+
+class ApproveRequest(BaseModel):
+    """Request body for POST /debate/{thread_id}/approve."""
+
+    action: Literal["approve", "override", "add_round"] = Field(
+        default="approve",
+        description="HITL action: accept as-is, inject feedback, or add a round.",
+    )
+    feedback: str = Field(
+        default="",
+        max_length=5000,
+        description="Human feedback text, used with the 'override' action.",
     )
 
 
@@ -234,6 +283,9 @@ class HistoryItem(BaseModel):
     total_rounds: int
     agreement_score: float
     termination_reason: str
+    # FI3: feature flags extracted from state_json so history cards can show badges
+    use_knowledge_base: bool = False
+    enable_agent_memory: bool = False
 
 
 class HistoryListResponse(BaseModel):

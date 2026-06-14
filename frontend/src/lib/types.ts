@@ -38,11 +38,20 @@ export interface CritiqueResponse {
 
 export type DebatePhase = "proposal" | "critique" | "revision" | "convergence";
 
+export interface ToolCallRecord {
+  agent_name: string;
+  tool_name: string;
+  input: string;
+  output_snippet: string;
+}
+
 export interface DebateRound {
   round_number: number;
   phase: DebatePhase;
   agent_outputs: AgentResponse[];
   critiques: CritiqueResponse[];
+  toolCalls?: ToolCallRecord[];  // accumulated during streaming (NB3)
+  tool_calls?: ToolCallRecord[];  // persisted on the round (from the saved trace)
 }
 
 export type DebateStatus =
@@ -51,6 +60,7 @@ export type DebateStatus =
   | "converged"
   | "max_rounds_reached"
   | "awaiting_approval"
+  | "cancelled"
   | "error";
 
 export interface DebateStatusResponse {
@@ -91,6 +101,17 @@ export interface FinalDecision {
   minority_report?: MinorityReportEntry[];
   key_disagreements?: string[];
   agent_contribution_scores?: Record<string, number>;
+  // Degraded-run indicators: agents absent from the final round
+  degraded?: boolean;
+  missing_agents?: string[];
+  // Token usage + estimated cost
+  token_usage?: {
+    input_tokens: number;
+    output_tokens: number;
+    total_tokens: number;
+    by_model?: Record<string, { input_tokens?: number; output_tokens?: number; total_tokens?: number }>;
+  };
+  estimated_cost_usd?: number | null;
 }
 
 /* ------------------------------------------------------------------ */
@@ -168,6 +189,8 @@ export interface HistoryItem {
   total_rounds: number;
   agreement_score: number;
   termination_reason: string;
+  use_knowledge_base?: boolean;    // FI3: feature badge
+  enable_agent_memory?: boolean;   // FI3: feature badge
 }
 
 export interface HistoryListResponse {
@@ -186,6 +209,7 @@ export interface DebateStartedEvent {
   thread_id: string;
   user_query: string;
   max_rounds: number;
+  agents?: string[];  // participating agent names for round-1 status seeding
 }
 
 export interface RoundStartedEvent {
@@ -243,9 +267,20 @@ export interface FinalDecisionEvent extends FinalDecision {
   type: "final_decision";
 }
 
+// B10 Fix: backend sends error/error_type/detail, not message
 export interface ErrorEvent {
   type: "error";
-  message: string;
+  error?: string;
+  error_type?: string;
+  detail?: string;
+}
+
+// B6 Fix: backend emits agent_timeout when an agent call times out
+export interface AgentTimeoutEvent {
+  type: "agent_timeout";
+  round_number: number;
+  phase: DebatePhase;
+  agent_name: string;
 }
 
 // P4.1 – HITL approval_required SSE event
@@ -267,6 +302,13 @@ export interface ToolCalledEvent {
   output_snippet: string;
 }
 
+// Terminal event emitted when a user cancels an in-flight debate
+export interface CancelledEvent {
+  type: "cancelled";
+  thread_id: string;
+  detail?: string;
+}
+
 export type DebateSSEEvent =
   | DebateStartedEvent
   | RoundStartedEvent
@@ -278,6 +320,8 @@ export type DebateSSEEvent =
   | FinalDecisionEvent
   | ApprovalRequiredEvent
   | ToolCalledEvent
+  | AgentTimeoutEvent  // B6
+  | CancelledEvent
   | ErrorEvent;
 
 /* ------------------------------------------------------------------ */
@@ -310,6 +354,7 @@ export interface DomainPack {
 export interface SimulationResult {
   query: string;
   runs: number;
+  runs_completed: number;  // NB4: actual successes (≤ runs)
   decisions: FinalDecision[];
   consistency_score: number;
   confidence_variance: number;
@@ -346,6 +391,15 @@ export interface AgentMeta {
   icon: string; // emoji
   role: string;
 }
+
+// B4 Fix: metadata for domain-pack agents (FinancialEthics, Security, Compliance, PatientSafety)
+// These are displayed in the status strip and agent cards when a domain pack is active.
+export const DOMAIN_AGENT_META: Record<string, Omit<AgentMeta, "name"> & { name: string }> = {
+  FinancialEthics: { name: "FinancialEthics", color: "#F59E0B", lightColor: "#FEF3C7", icon: "💰", role: "Financial ethics & ESG" },
+  Security:        { name: "Security",        color: "#6366F1", lightColor: "#EEF2FF", icon: "🔒", role: "Cybersecurity & ops risk" },
+  Compliance:      { name: "Compliance",      color: "#0891B2", lightColor: "#CFFAFE", icon: "📋", role: "Regulatory compliance" },
+  PatientSafety:   { name: "PatientSafety",   color: "#EC4899", lightColor: "#FCE7F3", icon: "🏥", role: "Patient safety & clinical risk" },
+};
 
 export const AGENT_META: Record<AgentName, AgentMeta> = {
   Analyst: {

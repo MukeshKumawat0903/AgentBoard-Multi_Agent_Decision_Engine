@@ -31,9 +31,12 @@ from app.agents.base_agent import BaseAgent
 from app.agents.moderator_agent import ModeratorAgent
 from app.core.config import Settings
 from app.orchestrator.lg_state import DebateGraphState
-from app.schemas.final_decision import FinalDecision, MinorityReportEntry
+from app.schemas.final_decision import MinorityReportEntry
 from app.schemas.state import DebateRound, DebateState
-from app.services.consensus import ConsensusEngine, SemanticConsensusEngine
+from app.services.consensus import ConsensusEngine, SemanticConsensusEngine, _word_overlap
+
+# B11: threshold below which agents are considered "stuck" (drift-based early stop)
+_DRIFT_EARLY_STOP_THRESHOLD: float = 0.05
 
 _PROPOSAL_TIMEOUT: float = 15.0
 _CRITIQUE_TIMEOUT: float = 15.0
@@ -53,10 +56,17 @@ _PersistState = Callable[["DebateState"], Awaitable[None]] | None
 # proposals_node
 # ---------------------------------------------------------------------------
 
+def _agent_timeout(agent: BaseAgent, base: float, tool_multiplier: float) -> float:
+    """Give tool-using agents extra time (they run a tool *and* an LLM call)."""
+    return base * tool_multiplier if getattr(agent, "allowed_tools", None) else base
+
+
 def make_proposals_node(
     agents: dict[str, BaseAgent],
     emit: _Emit,
     persist_state: _PersistState = None,
+    timeout: float = _PROPOSAL_TIMEOUT,
+    tool_multiplier: float = 1.5,
 ) -> _NodeFn:
     """Return an async node that starts a new round and runs all proposals."""
 
@@ -84,9 +94,10 @@ def make_proposals_node(
         })
 
         async def _safe_run(agent: BaseAgent):
+            agent_timeout = _agent_timeout(agent, timeout, tool_multiplier)
             try:
                 result = await asyncio.wait_for(
-                    agent.run(ds), timeout=_PROPOSAL_TIMEOUT
+                    agent.run(ds), timeout=agent_timeout
                 )
                 if result is not None:
                     emit("agent_output", {
@@ -99,10 +110,10 @@ def make_proposals_node(
                         "assumptions": result.assumptions,
                     })
                 return result
-            except asyncio.TimeoutError:
+            except TimeoutError:
                 logger.warning(
                     "agent_proposal_timeout",
-                    extra={"agent": agent.name, "timeout": _PROPOSAL_TIMEOUT},
+                    extra={"agent": agent.name, "timeout": agent_timeout},
                 )
                 emit("agent_timeout", {
                     "round_number": ds.current_round,
@@ -110,7 +121,7 @@ def make_proposals_node(
                     "agent_name": agent.name,
                 })
                 return None
-            except Exception as exc:
+            except Exception as exc:  # noqa: BLE001
                 logger.error(
                     "agent_proposal_failed",
                     extra={"agent": agent.name, "error": str(exc)},
@@ -121,6 +132,14 @@ def make_proposals_node(
         for r in results:
             if r is not None:
                 round_data.agent_outputs.append(r)
+
+        # Record tool calls on the round so the persisted trace shows tool activity.
+        # Clear afterwards so revisions_node's copy below only picks up tool calls
+        # made during the revision phase, not these proposal-phase ones again.
+        for agent in agents.values():
+            if getattr(agent, "_last_tool_calls", None):
+                round_data.tool_calls.extend(agent._last_tool_calls)
+                agent._last_tool_calls = []
 
         ds.touch()
         if persist_state is not None:
@@ -147,6 +166,7 @@ def make_critiques_node(
     agents: dict[str, BaseAgent],
     emit: _Emit,
     persist_state: _PersistState = None,
+    timeout: float = _CRITIQUE_TIMEOUT,
 ) -> _NodeFn:
     """Return an async node that runs every agent's critique in parallel."""
 
@@ -165,7 +185,7 @@ def make_critiques_node(
         async def _safe_critique(agent: BaseAgent, target):
             try:
                 result = await asyncio.wait_for(
-                    agent.critique(ds, target), timeout=_CRITIQUE_TIMEOUT
+                    agent.critique(ds, target), timeout=timeout
                 )
                 if result is not None:
                     emit("critique_completed", {
@@ -177,10 +197,10 @@ def make_critiques_node(
                         "confidence_score": result.confidence_score,
                     })
                 return result
-            except asyncio.TimeoutError:
+            except TimeoutError:
                 logger.warning(
                     "agent_critique_timeout",
-                    extra={"critic": agent.name, "target": target.agent_name, "timeout": _CRITIQUE_TIMEOUT},
+                    extra={"critic": agent.name, "target": target.agent_name, "timeout": timeout},
                 )
                 emit("agent_timeout", {
                     "round_number": ds.current_round,
@@ -188,7 +208,7 @@ def make_critiques_node(
                     "agent_name": agent.name,
                 })
                 return None
-            except Exception as exc:
+            except Exception as exc:  # noqa: BLE001
                 logger.error(
                     "agent_critique_failed",
                     extra={
@@ -235,6 +255,8 @@ def make_revisions_node(
     agents: dict[str, BaseAgent],
     emit: _Emit,
     persist_state: _PersistState = None,
+    timeout: float = _REVISION_TIMEOUT,
+    tool_multiplier: float = 1.5,
 ) -> _NodeFn:
     """Return an async node that runs each agent's revision in parallel."""
 
@@ -257,9 +279,10 @@ def make_revisions_node(
         async def _safe_revise(agent: BaseAgent, critiques: list):
             if not critiques:
                 return None
+            agent_timeout = _agent_timeout(agent, timeout, tool_multiplier)
             try:
                 result = await asyncio.wait_for(
-                    agent.revise(ds, critiques), timeout=_REVISION_TIMEOUT
+                    agent.revise(ds, critiques), timeout=agent_timeout
                 )
                 if result is not None:
                     emit("agent_output", {
@@ -272,10 +295,10 @@ def make_revisions_node(
                         "assumptions": result.assumptions,
                     })
                 return result
-            except asyncio.TimeoutError:
+            except TimeoutError:
                 logger.warning(
                     "agent_revision_timeout",
-                    extra={"agent": agent.name, "timeout": _REVISION_TIMEOUT},
+                    extra={"agent": agent.name, "timeout": agent_timeout},
                 )
                 emit("agent_timeout", {
                     "round_number": ds.current_round,
@@ -283,7 +306,7 @@ def make_revisions_node(
                     "agent_name": agent.name,
                 })
                 return None
-            except Exception as exc:
+            except Exception as exc:  # noqa: BLE001
                 logger.error(
                     "agent_revision_failed",
                     extra={"agent": agent.name, "error": str(exc)},
@@ -304,6 +327,11 @@ def make_revisions_node(
                         round_data.agent_outputs[j] = result
                         break
                 ds.confidence_scores[name] = result.confidence_score
+
+        # Record tool calls on the round so the persisted trace shows tool activity.
+        for agent in agents.values():
+            if getattr(agent, "_last_tool_calls", None):
+                round_data.tool_calls.extend(agent._last_tool_calls)
 
         ds.touch()
         if persist_state is not None:
@@ -374,7 +402,7 @@ def make_convergence_node(
                     round_data.agent_outputs,
                     semantic_weight=settings.SEMANTIC_CONSENSUS_WEIGHT,
                 )
-            except Exception as exc:
+            except Exception as exc:  # noqa: BLE001
                 logger.warning(
                     "semantic_consensus_failed",
                     extra={"error": str(exc)},
@@ -421,46 +449,43 @@ def make_convergence_node(
             ds.termination_reason = "max_rounds_reached"
             should_continue = False
         elif not synthesis.should_continue and ds.confidence_scores:
-            if all(s > 0.9 for s in ds.confidence_scores.values()):
+            if all(s > settings.ALL_CONFIDENT_THRESHOLD for s in ds.confidence_scores.values()):
                 ds.termination_reason = "consensus_reached"
                 should_continue = False
 
-        # --- P4.1 Human-in-the-Loop ---
-        # When hitl_mode is enabled and the convergence would end the debate,
-        # pause the graph with a LangGraph interrupt and wait for approval.
-        hitl_active = state.get("hitl_mode", False)
-        awaiting_approval = False
-        if hitl_active and not should_continue:
-            ds.status = "awaiting_approval"
-            ds.touch()
-            if persist_state is not None:
-                await persist_state(ds)
+        # B11: Drift-based early termination — stop when agents have stopped moving,
+        # even if the agreement threshold hasn't been crossed yet.
+        if should_continue and len(ds.rounds) >= 2:
+            drift = ConsensusEngine().detect_position_drift(
+                ds.rounds[-2].agent_outputs,
+                round_data.agent_outputs,
+            )
+            if drift < settings.DRIFT_EARLY_STOP_THRESHOLD and ds.confidence_scores:
+                logger.info(
+                    "drift_early_termination",
+                    extra={
+                        "drift": round(drift, 4),
+                        "round": ds.current_round,
+                        "agreement_score": agreement_score,
+                    },
+                )
+                ds.termination_reason = "consensus_reached"
+                should_continue = False
 
-            approval = interrupt({
+        # B2 Fix: Build the HITL interrupt payload here (in convergence_node) and
+        # store it in graph state.  The actual interrupt() call lives in the
+        # dedicated hitl_node, which LangGraph only reaches when should_continue
+        # is False AND hitl_mode is True.  This prevents the expensive
+        # moderator.synthesize() call from re-running on resume.
+        hitl_interrupt_payload: dict | None = None
+        if state.get("hitl_mode", False) and not should_continue:
+            hitl_interrupt_payload = {
                 "round_number": ds.current_round,
                 "agreement_score": agreement_score,
                 "termination_reason": ds.termination_reason,
                 "synthesis_summary": synthesis.summary,
                 "options": ["approve", "override", "add_round"],
-            })
-
-            action = approval.get("action", "approve") if isinstance(approval, dict) else "approve"
-            feedback = approval.get("feedback", "") if isinstance(approval, dict) else ""
-
-            ds.status = "in_progress"
-            ds.touch()
-
-            if action == "override":
-                ds.human_feedback = feedback
-                ds.termination_reason = "human_override"
-                should_continue = False
-            elif action == "add_round":
-                ds.max_rounds += 1
-                should_continue = True
-            else:
-                should_continue = False
-
-            awaiting_approval = False
+            }
 
         logger.info(
             "phase_timing",
@@ -477,10 +502,78 @@ def make_convergence_node(
         return {
             "debate_state": ds,
             "should_continue": should_continue,
-            "awaiting_approval": awaiting_approval,
+            "awaiting_approval": False,
+            "hitl_interrupt_payload": hitl_interrupt_payload,
         }
 
     return convergence_node
+
+
+# ---------------------------------------------------------------------------
+# hitl_node  (B2 fix — HITL approval lives here, not in convergence_node)
+# ---------------------------------------------------------------------------
+
+def make_hitl_node(
+    emit: _Emit,
+    persist_state: _PersistState = None,
+) -> _NodeFn:
+    """
+    Human-in-the-Loop pause node.
+
+    Only reached when hitl_mode=True and convergence_node decided to stop.
+    Calls LangGraph interrupt() exactly once; on resume the node re-runs
+    but interrupt() immediately returns the approval dict, so moderator.synthesize()
+    is never invoked a second time (it lives in convergence_node).
+    """
+
+    async def hitl_node(state: DebateGraphState) -> dict:
+        ds = state["debate_state"]
+        payload = state.get("hitl_interrupt_payload") or {
+            "round_number": ds.current_round,
+            "agreement_score": ds.agreement_score,
+            "termination_reason": ds.termination_reason,
+            "synthesis_summary": "",
+            "options": ["approve", "override", "add_round"],
+        }
+
+        ds.status = "awaiting_approval"
+        ds.touch()
+        if persist_state is not None:
+            await persist_state(ds)
+
+        # On first entry: pauses here and emits approval_required via debate_graph.py.
+        # On resume:      interrupt() returns the Command(resume=...) value immediately.
+        approval = interrupt(payload)
+
+        action = approval.get("action", "approve") if isinstance(approval, dict) else "approve"
+        feedback = approval.get("feedback", "") if isinstance(approval, dict) else ""
+
+        ds.status = "in_progress"
+        ds.touch()
+
+        should_continue = False
+        if action == "override":
+            ds.human_feedback = feedback
+            ds.termination_reason = "human_override"
+        elif action == "add_round":
+            ds.max_rounds += 1
+            should_continue = True
+
+        logger.info(
+            "hitl_decision",
+            extra={
+                "thread_id": ds.thread_id,
+                "action": action,
+                "should_continue": should_continue,
+            },
+        )
+        return {
+            "debate_state": ds,
+            "should_continue": should_continue,
+            "hitl_interrupt_payload": None,  # consumed; clear from state
+        }
+
+    return hitl_node
 
 
 # ---------------------------------------------------------------------------
@@ -492,72 +585,115 @@ def make_finalize_node(
     emit: _Emit,
     persist_state: _PersistState = None,
     memory_store=None,
+    settings: Settings | None = None,
+    expected_agents: list[str] | None = None,
 ) -> _NodeFn:
     """Return an async node that asks the moderator for the FinalDecision."""
+    minority_band = settings.MINORITY_REPORT_BAND if settings is not None else 0.20
 
     async def finalize_node(state: DebateGraphState) -> dict:
         _t0 = time.monotonic()
         ds = state["debate_state"]
 
         decision = await moderator.finalize(ds)
-        # Guarantee debate_trace always reflects ground-truth state
-        decision = decision.model_copy(update={"debate_trace": list(ds.rounds)})
+        # Guarantee debate_trace always reflects ground-truth state. Also overwrite
+        # agreement_score with the consensus engine's computed value (ds.agreement_score)
+        # rather than the judge LLM's self-reported number — every other surface
+        # (per-round synthesis events, status endpoint, debates analytics, the
+        # convergence decision itself) uses the engine score, so the decision panel
+        # would otherwise disagree with the live stream. Fall back to the LLM's
+        # value only in the degenerate case where no round ever computed one.
+        decision_update: dict[str, object] = {"debate_trace": list(ds.rounds)}
+        if ds.rounds:
+            decision_update["agreement_score"] = ds.agreement_score
+        decision = decision.model_copy(update=decision_update)
 
-        # --- P1.5: populate richer output fields ---
-        # Agent contribution scores: mean confidence across all rounds per agent
-        contribution: dict[str, float] = {}
-        for name in ds.confidence_scores:
-            scores = [
-                output.confidence_score
-                for round_data in ds.rounds
-                for output in round_data.agent_outputs
-                if output.agent_name == name
-            ]
-            contribution[name] = sum(scores) / len(scores) if scores else 0.0
-
-        # Minority report: agents whose final confidence < mean (diverged)
-        if contribution:
-            mean_conf = sum(contribution.values()) / len(contribution)
-            minority: list[MinorityReportEntry] = []
-            for round_data in reversed(ds.rounds):
-                seen = {m.agent_name for m in minority}
-                for output in round_data.agent_outputs:
-                    if output.agent_name not in seen and output.confidence_score < mean_conf - 0.1:
-                        minority.append(MinorityReportEntry(
-                            agent_name=output.agent_name,
-                            final_position=output.position[:300],
-                            dissent_reason=(
-                                f"Confidence ({output.confidence_score:.2f}) below group mean "
-                                f"({mean_conf:.2f}) in final round."
-                            ),
-                            confidence_score=output.confidence_score,
-                        ))
+        # Agent contribution scores: similarity(agent's final position, the decision)
+        # × final confidence, normalised to sum to 1.0, so an agent whose position
+        # was overruled scores lower than the one whose position became the decision.
+        decision_text = f"{decision.decision} {decision.rationale_summary}"
+        final_outputs_for_contrib = ds.rounds[-1].agent_outputs if ds.rounds else []
+        raw_contrib: dict[str, float] = {}
+        for output in final_outputs_for_contrib:
+            alignment = _word_overlap(output.position, decision_text)
+            raw_contrib[output.agent_name] = alignment * output.confidence_score
+        contrib_total = sum(raw_contrib.values())
+        if contrib_total > 0:
+            contribution = {n: round(v / contrib_total, 4) for n, v in raw_contrib.items()}
+        elif raw_contrib:
+            # All-zero alignment (e.g. degenerate text) → equal split across participants.
+            equal = round(1.0 / len(raw_contrib), 4)
+            contribution = dict.fromkeys(raw_contrib, equal)
         else:
-            minority = []
+            contribution = {}
 
-        # Key disagreements: collect from the moderator's dissenting_opinions
-        # and unique critique summary points across all rounds
-        key_disags: list[str] = list(decision.dissenting_opinions or [])
-        for round_data in ds.rounds:
-            for critique in round_data.critiques:
-                for pt in critique.critique_points:
-                    if pt and pt not in key_disags:
-                        key_disags.append(pt)
-                        if len(key_disags) >= 10:
-                            break
-                if len(key_disags) >= 10:
+        # B3 Fix: Minority report — use FINAL round only and the 0.20 threshold from spec.
+        # Previous code used an all-rounds mean with a 0.10 band, which caused agents
+        # who converged in later rounds to still be flagged as dissenters.
+        minority: list[MinorityReportEntry] = []
+        if ds.rounds:
+            final_outputs = ds.rounds[-1].agent_outputs
+            if final_outputs:
+                final_confidences = {o.agent_name: o.confidence_score for o in final_outputs}
+                mean_conf = sum(final_confidences.values()) / len(final_confidences)
+                minority = [
+                    MinorityReportEntry(
+                        agent_name=output.agent_name,
+                        final_position=output.position[:300],
+                        dissent_reason=(
+                            f"Confidence ({output.confidence_score:.2f}) is more than "
+                            f"{minority_band:.2f} below the group mean ({mean_conf:.2f}) "
+                            f"in the final round."
+                        ),
+                        confidence_score=output.confidence_score,
+                    )
+                    for output in final_outputs
+                    if output.confidence_score < mean_conf - minority_band
+                ]
+
+        # Key disagreements are the highest-severity unresolved critique points from
+        # the final round only, sorted critical→low. dissenting_opinions stays a
+        # separate field and is not merged in here.
+        _SEVERITY_RANK = {"critical": 0, "high": 1, "medium": 2, "low": 3}
+        final_critiques = ds.rounds[-1].critiques if ds.rounds else []
+        sorted_critiques = sorted(
+            final_critiques, key=lambda c: _SEVERITY_RANK.get(c.severity, 99)
+        )
+        key_disags: list[str] = []
+        for critique in sorted_critiques:
+            for pt in critique.critique_points:
+                if pt and pt not in key_disags:
+                    key_disags.append(pt)
+                if len(key_disags) >= 5:
                     break
+            if len(key_disags) >= 5:
+                break
+
+        # Flag a degraded decision when an expected agent was absent from the final
+        # round (timed out or errored), so the UI can warn that fewer voices shaped it.
+        final_names = (
+            {o.agent_name for o in ds.rounds[-1].agent_outputs} if ds.rounds else set()
+        )
+        expected = set(expected_agents or []) or {
+            o.agent_name for rd in ds.rounds for o in rd.agent_outputs
+        }
+        missing_agents = sorted(expected - final_names)
 
         decision = decision.model_copy(update={
             "minority_report": minority,
-            "key_disagreements": key_disags[:10],  # cap at 10 items
+            "key_disagreements": key_disags,  # top-5 by severity, final round only
             "agent_contribution_scores": contribution,
+            "degraded": bool(missing_agents),
+            "missing_agents": missing_agents,
         })
 
+        # "converged" covers both organic consensus and a human-approved override —
+        # either way a final decision was reached, not just "ran out of rounds".
+        # Anything else (including max_rounds_reached and unrecognised reasons)
+        # honestly falls back to max_rounds_reached.
+        _CONVERGED_REASONS = {"consensus_reached", "human_override"}
         ds.status = (
-            "converged"
-            if ds.termination_reason == "consensus_reached"
-            else "max_rounds_reached"
+            "converged" if ds.termination_reason in _CONVERGED_REASONS else "max_rounds_reached"
         )
         ds.touch()
         if persist_state is not None:
@@ -601,12 +737,13 @@ def make_finalize_node(
                                 output.position,
                             )
                         )
-                        task.add_done_callback(
-                            lambda t: t.exception() and logger.warning(
-                                "agent_memory_save_failed",
-                                extra={"error": str(t.exception())},
-                            )
-                        )
+                        def _on_memory_done(t: asyncio.Task[None]) -> None:
+                            if not t.cancelled() and t.exception():
+                                logger.warning(
+                                    "agent_memory_save_failed",
+                                    extra={"error": str(t.exception())},
+                                )
+                        task.add_done_callback(_on_memory_done)
                         saved_names.add(output.agent_name)
                 break  # only save from the last round
 

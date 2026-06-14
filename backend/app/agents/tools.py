@@ -21,7 +21,7 @@ Usage::
 from __future__ import annotations
 
 import logging
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from typing import Any
 
 from langchain_core.tools import BaseTool
@@ -46,7 +46,7 @@ def _safe_calc(expression: str) -> str:
             return "Error: expression contains unsafe characters"
         result = numexpr.evaluate(expression.replace("^", "**"))
         return str(result.item() if hasattr(result, "item") else result)
-    except Exception as exc:
+    except Exception as exc:  # noqa: BLE001
         return f"Error: {exc}"
 
 
@@ -62,12 +62,14 @@ class WebSearchTool(BaseTool):
 
     def _run(self, query: str, **kwargs: Any) -> str:
         try:
-            from langchain_community.tools import DuckDuckGoSearchRun  # type: ignore[import-untyped]
+            from langchain_community.tools import (
+                DuckDuckGoSearchRun,  # type: ignore[import-untyped]
+            )
             search = DuckDuckGoSearchRun()
             return search.run(query)[:2000]  # cap at 2 KB
         except ImportError:
             return "web_search unavailable: langchain-community DuckDuckGoSearchRun not installed."
-        except Exception as exc:
+        except Exception as exc:  # noqa: BLE001
             logger.warning("web_search_failed", extra={"query": query, "error": str(exc)})
             return f"Search failed: {exc}"
 
@@ -99,7 +101,7 @@ class GetCurrentDateTool(BaseTool):
     description: str = "Returns the current UTC date and day of the week."
 
     def _run(self, tool_input: str = "", **kwargs: Any) -> str:
-        now = datetime.now(timezone.utc)
+        now = datetime.now(UTC)
         return f"{now.strftime('%Y-%m-%d')} ({now.strftime('%A')})"
 
     async def _arun(self, tool_input: str = "", **kwargs: Any) -> str:
