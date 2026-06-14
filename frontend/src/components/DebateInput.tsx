@@ -281,7 +281,7 @@ export default function DebateInput({
                     aria-hidden="true"
                   />
                   <span className="font-semibold text-sm">Custom</span>
-                  <span className="ml-auto text-[10px] font-medium uppercase tracking-wide opacity-70 tabular-nums">{customRounds} rds</span>
+                  <span className="ml-auto text-[10px] font-medium uppercase tracking-wide opacity-70 tabular-nums">{customRounds} rds · {customThreshold.toFixed(2)}</span>
                   {selected && (
                     <span
                       aria-hidden="true"

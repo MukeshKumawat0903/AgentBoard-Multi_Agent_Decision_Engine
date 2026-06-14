@@ -105,6 +105,14 @@ class DebateState(BaseModel):
         le=8,
         description="Minimum rounds before consensus may be declared (caps at max_rounds).",
     )
+    mode: str | None = Field(
+        default=None,
+        description=(
+            "Preset the debate was started with (quick/standard/thorough), persisted so "
+            "analytics can group by mode instead of inferring it from the round count. "
+            "None for legacy records and direct-graph runs."
+        ),
+    )
     rounds: list[DebateRound] = Field(
         default_factory=list,
         description="Full ordered history of all rounds.",

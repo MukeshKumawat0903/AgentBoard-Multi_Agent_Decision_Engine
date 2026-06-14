@@ -466,6 +466,20 @@ async def get_analytics_agents(db: aiosqlite.Connection, days: int = 0) -> dict[
     return {"agents": agent_stats, "agreement_matrix": matrix}
 
 
+# Legacy fallback: debates written before `mode` was persisted on the state
+# inferred the preset from the round count. New debates store `mode` directly.
+_LEGACY_MODE_BY_ROUNDS = {2: "quick", 4: "standard", 6: "thorough"}
+
+
+def _mode_label(state: dict[str, Any]) -> str:
+    """Mode a debate ran in — the persisted ``mode``, or inferred from ``max_rounds``
+    for legacy records written before the mode was stored on the state."""
+    mode = state.get("mode")
+    if mode:
+        return str(mode)
+    return _LEGACY_MODE_BY_ROUNDS.get(state.get("max_rounds", 4), "custom")
+
+
 async def get_analytics_convergence(db: aiosqlite.Connection, days: int = 0) -> dict[str, Any]:
     """Convergence curve, mode breakdown, and domain pack breakdown."""
     dc = _date_clause(days)
@@ -491,21 +505,10 @@ async def get_analytics_convergence(db: aiosqlite.Connection, days: int = 0) -> 
         if round_scores.get(r)
     ]
 
-    cur = await db.execute(
-        f"""
-        SELECT max_rounds, COUNT(*) AS cnt
-        FROM debates
-        WHERE status IN ('converged', 'max_rounds_reached') {dc}
-        GROUP BY max_rounds
-        """
-    )
-    rows = await cur.fetchall()
-    _mode_map = {2: "quick", 4: "standard", 6: "thorough"}
-    mode_breakdown: dict[str, int] = {}
-    for row in rows:
-        label = _mode_map.get(row[0], f"custom_{row[0]}")
-        mode_breakdown[label] = mode_breakdown.get(label, 0) + row[1]
-
+    # Mode and domain-pack breakdowns both come from the persisted state, so we
+    # read it once. Mode is taken from the stored `mode` (or inferred from the
+    # round count for legacy rows) rather than guessing — the two no longer
+    # correspond now that round count is user-adjustable.
     cur = await db.execute(
         f"""
         SELECT state_json FROM debates
@@ -513,14 +516,17 @@ async def get_analytics_convergence(db: aiosqlite.Connection, days: int = 0) -> 
         """
     )
     rows = await cur.fetchall()
+    mode_breakdown: dict[str, int] = {}
     domain_pack_counts: dict[str, int] = {}
     for row in rows:
         try:
             state = json.loads(row[0])
-            pack = state.get("domain_pack") or "default"
-            domain_pack_counts[pack] = domain_pack_counts.get(pack, 0) + 1
         except (json.JSONDecodeError, TypeError):
             continue
+        label = _mode_label(state)
+        mode_breakdown[label] = mode_breakdown.get(label, 0) + 1
+        pack = state.get("domain_pack") or "default"
+        domain_pack_counts[pack] = domain_pack_counts.get(pack, 0) + 1
 
     return {
         "avg_agreement_by_round": avg_agreement_by_round,
@@ -557,7 +563,6 @@ async def get_analytics_quality(db: aiosqlite.Connection, days: int = 0) -> dict
             "worst_performing_templates": [],
         }
 
-    _mode_map = {2: "quick", 4: "standard", 6: "thorough"}
     template_scores: dict[str, list[float]] = {}
     mode_scores: dict[str, list[float]] = {}
     domain_scores: dict[str, list[float]] = {}
@@ -586,7 +591,7 @@ async def get_analytics_quality(db: aiosqlite.Connection, days: int = 0) -> dict
         template = state.get("template_id") or state.get("domain_pack") or "default"
         template_scores.setdefault(template, []).append(quality)
 
-        mode = _mode_map.get(state.get("max_rounds", 4), "custom")
+        mode = _mode_label(state)
         mode_scores.setdefault(mode, []).append(quality)
 
         dp = state.get("domain_pack") or "default"
