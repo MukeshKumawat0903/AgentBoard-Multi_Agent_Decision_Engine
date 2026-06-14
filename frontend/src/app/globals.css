@@ -12,6 +12,23 @@
   --agent-strategy: #22c55e;
   --agent-ethics: #a855f7;
   --agent-moderator: #eab308;
+
+  /* Surface hierarchy (RGB triplets so Tailwind alpha works).
+     Light: page is faintly tinted, cards are white. */
+  --surface: 248 250 252;          /* slate-50  */
+  --surface-raised: 255 255 255;   /* white     */
+  --surface-overlay: 255 255 255;  /* white     */
+  --line: 226 232 240;             /* slate-200 */
+  --line-strong: 203 213 225;      /* slate-300 */
+}
+
+.dark {
+  /* Dark: three distinct elevation steps — page darkest, overlays lightest. */
+  --surface: 2 6 23;               /* slate-950 */
+  --surface-raised: 15 23 42;      /* slate-900 */
+  --surface-overlay: 30 41 59;     /* slate-800 */
+  --line: 30 41 59;                /* slate-800 */
+  --line-strong: 51 65 85;         /* slate-700 */
 }
 
 html {
@@ -19,8 +36,42 @@ html {
 }
 
 body {
-  @apply bg-gray-50 text-gray-900 dark:bg-gray-950 dark:text-gray-100 antialiased;
+  @apply bg-surface text-gray-900 dark:text-gray-100 antialiased;
   font-feature-settings: "cv02", "cv03", "cv04", "cv11";
+}
+
+/* ------------------------------------------------------------------ */
+/* Confetti burst — one-shot celebratory particles (consensus moment). */
+/* Direction comes from per-particle --dx/--dy custom properties.      */
+/* ------------------------------------------------------------------ */
+
+@keyframes confetti-burst {
+  0% {
+    transform: translate(0, 0) rotate(0deg) scale(1);
+    opacity: 1;
+  }
+  100% {
+    transform: translate(var(--dx), var(--dy)) rotate(540deg) scale(0.5);
+    opacity: 0;
+  }
+}
+
+/* ------------------------------------------------------------------ */
+/* Reduced motion                                                      */
+/* Collapse all animation/transition durations for users who opt out. */
+/* ------------------------------------------------------------------ */
+
+@media (prefers-reduced-motion: reduce) {
+  *,
+  *::before,
+  *::after {
+    animation-duration: 0.01ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 0.01ms !important;
+  }
+  html {
+    scroll-behavior: auto;
+  }
 }
 
 /* ------------------------------------------------------------------ */

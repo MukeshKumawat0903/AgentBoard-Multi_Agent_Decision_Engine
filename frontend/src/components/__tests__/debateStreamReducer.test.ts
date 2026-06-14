@@ -10,6 +10,7 @@ import {
   initialStreamState,
   type StreamState,
 } from "@/lib/debateStreamReducer";
+import type { DebateRound } from "@/lib/types";
 
 // ── helpers ────────────────────────────────────────────────────────────────
 
@@ -65,6 +66,14 @@ describe("meta actions", () => {
     const state = stateWith({ approvalRequired: { type: "approval_required", round_number: 1, agreement_score: 0.7, termination_reason: "consensus_reached", synthesis_summary: "", options: [] } });
     const next = debateStreamReducer(state, { type: "clear_approval" });
     expect(next.approvalRequired).toBeNull();
+  });
+
+  it("stream_error does not override a finished (done) debate", () => {
+    // A late socket close after the REST fallback already delivered the decision
+    // must not flip a completed debate into an error.
+    const state = stateWith({ status: "done" });
+    const next = debateStreamReducer(state, { type: "stream_error" });
+    expect(next.status).toBe("done");
   });
 });
 
@@ -306,6 +315,38 @@ describe("final_decision", () => {
     expect(next.status).toBe("done");
     expect(next.finalDecision?.termination_reason).toBe("consensus_reached");
     expect(next.finalDecision?.decision).toBe("Proceed carefully");
+  });
+
+  it("seeds rounds from debate_trace when no live rounds were streamed", () => {
+    // Opening a completed debate from History delivers only this terminal frame,
+    // so the transcript/drift chart must come from the decision's debate_trace.
+    const trace: DebateRound[] = [
+      { round_number: 1, phase: "convergence", agent_outputs: [
+        { agent_name: "Analyst", round_number: 1, position: "p", reasoning: "r", assumptions: [], confidence_score: 0.7, timestamp: "" },
+      ], critiques: [] },
+    ];
+    const next = debateStreamReducer(initialStreamState, {
+      event: {
+        type: "final_decision",
+        thread_id: "t1",
+        query: "Should we expand?",
+        decision: "Proceed",
+        rationale_summary: "x",
+        confidence_score: 0.8,
+        agreement_score: 0.7,
+        risk_flags: [],
+        alternatives: [],
+        dissenting_opinions: [],
+        debate_trace: trace,
+        total_rounds: 1,
+        termination_reason: "max_rounds_reached",
+        created_at: new Date().toISOString(),
+      },
+    });
+    expect(next.status).toBe("done");
+    expect(next.rounds).toHaveLength(1);
+    expect(next.currentRound).toBe(1);
+    expect(next.query).toBe("Should we expand?");
   });
 });
 

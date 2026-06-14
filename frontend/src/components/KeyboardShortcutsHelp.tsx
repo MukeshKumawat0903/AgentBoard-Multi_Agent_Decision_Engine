@@ -117,11 +117,11 @@ export default function KeyboardShortcutsHelp({
       {/* Panel */}
       <div
         ref={panelRef}
-        className="relative z-[1] w-full max-w-sm rounded-2xl bg-white dark:bg-gray-900
-                   border border-gray-200 dark:border-gray-700 shadow-xl animate-fadeIn overflow-hidden"
+        className="relative z-[1] w-full max-w-sm rounded-2xl bg-surface-raised
+                   border border-line shadow-xl animate-fadeIn overflow-hidden"
       >
         {/* Header */}
-        <div className="flex items-center justify-between px-5 py-4 border-b border-gray-200 dark:border-gray-700">
+        <div className="flex items-center justify-between px-5 py-4 border-b border-line">
           <h2 className="font-semibold text-gray-800 dark:text-gray-100 text-base">
             Keyboard Shortcuts
           </h2>
@@ -132,7 +132,7 @@ export default function KeyboardShortcutsHelp({
             aria-label="Close shortcuts overlay"
             className="p-1.5 rounded-lg text-gray-500 hover:text-gray-700 dark:hover:text-gray-200
                        hover:bg-gray-100 dark:hover:bg-gray-800 transition
-                       focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-blue-500"
+                       focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent-500"
           >
             <svg width="16" height="16" viewBox="0 0 16 16" fill="none" aria-hidden="true">
               <path d="M4 4l8 8M12 4l-8 8" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" />
@@ -157,7 +157,7 @@ export default function KeyboardShortcutsHelp({
         </ul>
 
         {/* Footer hint */}
-        <div className="px-5 py-3 bg-gray-50 dark:bg-gray-800/50 border-t border-gray-200 dark:border-gray-700">
+        <div className="px-5 py-3 bg-gray-50 dark:bg-gray-800/50 border-t border-line">
           <p className="text-xs text-gray-400 dark:text-gray-500 text-center">
             Shortcuts are disabled when an input is focused.
           </p>

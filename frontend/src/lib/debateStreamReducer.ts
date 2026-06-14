@@ -65,6 +65,9 @@ export function ensureRound(rounds: DebateRound[], roundNumber: number): DebateR
 
 export function debateStreamReducer(state: StreamState, action: StreamAction): StreamState {
   if ("type" in action && action.type === "stream_error") {
+    // A terminal result already arrived (e.g. via the REST fallback) — don't
+    // downgrade a finished debate to an error because the SSE socket closed.
+    if (state.status === "done" || state.status === "cancelled") return state;
     return { ...state, status: "error", error: "Stream connection lost." };
   }
   if ("type" in action && action.type === "clear_approval") {
@@ -181,9 +184,22 @@ export function debateStreamReducer(state: StreamState, action: StreamAction): S
     }
 
     case "final_decision": {
-      // eslint-disable-next-line @typescript-eslint/no-unused-vars
-      const { type, ...decision } = event as FinalDecision & { type: string };
-      return { ...state, status: "done", finalDecision: decision as FinalDecision };
+      const decision = { ...(event as FinalDecision & { type?: string }) };
+      delete decision.type;
+      // When a completed debate is opened fresh (e.g. from History), the stream
+      // only delivers this terminal frame — no per-round events. Seed the rounds
+      // (and query) from the decision's debate_trace so the transcript and the
+      // confidence-drift chart still render.
+      const trace = decision.debate_trace ?? [];
+      const seededRounds = state.rounds.length === 0 && trace.length > 0 ? trace : state.rounds;
+      return {
+        ...state,
+        status: "done",
+        finalDecision: decision as FinalDecision,
+        rounds: seededRounds,
+        currentRound: seededRounds.length || state.currentRound,
+        query: state.query || decision.query || "",
+      };
     }
 
     case "tool_called": {

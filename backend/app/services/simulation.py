@@ -123,7 +123,7 @@ async def run_simulation(
     from app.schemas.api_models import resolve_debate_config
     from app.schemas.state import DebateState
 
-    resolved_rounds, resolved_threshold, resolved_skip = resolve_debate_config(
+    resolved_rounds, resolved_threshold, resolved_skip, resolved_min = resolve_debate_config(
         mode=mode,
         max_rounds=max_rounds,
         consensus_threshold=None,
@@ -148,6 +148,7 @@ async def run_simulation(
                 run_state = DebateState(
                     user_query=query,
                     max_rounds=resolved_rounds,
+                    min_rounds=resolved_min,
                     use_knowledge_base=use_knowledge_base,
                     enable_agent_memory=enable_agent_memory,
                     selected_agents=selected_agents,
@@ -162,6 +163,7 @@ async def run_simulation(
                 _state, decision = await graph.run(
                     query,
                     max_rounds=resolved_rounds,
+                    min_rounds=resolved_min,
                     consensus_threshold=resolved_threshold,
                     skip_critique_phase=resolved_skip,
                 )

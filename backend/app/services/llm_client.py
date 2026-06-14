@@ -73,19 +73,41 @@ class LangChainProvider:
     # Provider factory
     # ------------------------------------------------------------------
 
+    # Models that reject sampling parameters: Anthropic removed temperature/
+    # top_p/top_k on Opus 4.7+ and the Fable/Mythos 5 family (400 if sent);
+    # OpenAI's gpt-5 reasoning family only supports the default temperature.
+    _NO_TEMPERATURE_PREFIXES = (
+        "claude-opus-4-7",
+        "claude-opus-4-8",
+        "claude-fable",
+        "claude-mythos",
+        "gpt-5",
+    )
+
+    @classmethod
+    def _sampling_kwargs(cls, model: str) -> dict:
+        """Return sampling kwargs, omitting temperature where the API rejects it."""
+        if model.startswith(cls._NO_TEMPERATURE_PREFIXES):
+            return {}
+        return {"temperature": 0.7}
+
     @staticmethod
     def _build_llm(provider: str, api_key: str, model: str):
         """Build the appropriate LangChain chat model for the given provider."""
         secret = SecretStr(api_key) if api_key else None
+        sampling = LangChainProvider._sampling_kwargs(model)
         if provider == "groq":
             from langchain_groq import ChatGroq  # type: ignore[import-untyped]
-            return ChatGroq(api_key=secret, model=model, temperature=0.7)
+            return ChatGroq(api_key=secret, model=model, **sampling)
         elif provider == "openai":
             from langchain_openai import ChatOpenAI  # type: ignore[import-untyped]
-            return ChatOpenAI(api_key=secret, model=model, temperature=0.7)
+            return ChatOpenAI(api_key=secret, model=model, **sampling)
         elif provider == "anthropic":
             from langchain_anthropic import ChatAnthropic  # type: ignore[import-untyped]
-            return ChatAnthropic(api_key=secret, model=model, temperature=0.7)  # type: ignore[call-arg]
+            return ChatAnthropic(api_key=secret, model=model, **sampling)  # type: ignore[call-arg]
+        elif provider == "gemini":
+            from langchain_google_genai import ChatGoogleGenerativeAI  # type: ignore[import-untyped]
+            return ChatGoogleGenerativeAI(google_api_key=secret, model=model, **sampling)
         else:
             raise ValueError(f"Unsupported LLM provider: {provider!r}")
 
@@ -220,20 +242,32 @@ class LangChainProvider:
 # ---------------------------------------------------------------------------
 # Token cost estimation
 # ---------------------------------------------------------------------------
-# Approximate prices in USD per 1M tokens as (input, output). These are
-# estimates for surfacing rough cost only — not billing-accurate.
+# Approximate prices in USD per 1M tokens as (input, output). These are rough
+# estimates for surfacing approximate cost only — not billing-accurate. Keys
+# track the models offered in PROVIDER_MODELS (app/schemas/api_models.py);
+# unknown models fall back to None in estimate_cost_usd.
 _MODEL_PRICES_PER_1M: dict[str, tuple[float, float]] = {
+    # Groq
     "llama-3.3-70b-versatile": (0.59, 0.79),
     "llama-3.1-8b-instant": (0.05, 0.08),
-    "mixtral-8x7b-32768": (0.24, 0.24),
-    "gemma2-9b-it": (0.20, 0.20),
-    "gpt-4o": (2.50, 10.00),
-    "gpt-4o-mini": (0.15, 0.60),
-    "gpt-4-turbo": (10.00, 30.00),
-    "gpt-3.5-turbo": (0.50, 1.50),
-    "claude-sonnet-4-20250514": (3.00, 15.00),
-    "claude-3-5-haiku-20241022": (0.80, 4.00),
-    "claude-3-opus-20240229": (15.00, 75.00),
+    "openai/gpt-oss-120b": (0.15, 0.75),
+    "openai/gpt-oss-20b": (0.10, 0.50),
+    "moonshotai/kimi-k2-instruct-0905": (1.00, 3.00),
+    "qwen/qwen3-32b": (0.29, 0.59),
+    # OpenAI
+    "gpt-5.5": (2.50, 10.00),
+    "gpt-5.5-pro": (15.00, 60.00),
+    "gpt-5.4-mini": (0.25, 2.00),
+    # Anthropic
+    "claude-opus-4-8": (15.00, 75.00),
+    "claude-sonnet-4-6": (3.00, 15.00),
+    "claude-haiku-4-5": (0.80, 4.00),
+    "claude-fable-5": (1.00, 5.00),
+    # Gemini
+    "gemini-3.5-flash": (0.30, 2.50),
+    "gemini-3.1-pro-preview": (1.25, 10.00),
+    "gemini-2.5-pro": (1.25, 10.00),
+    "gemini-2.5-flash": (0.30, 2.50),
 }
 
 
@@ -290,6 +324,8 @@ def get_llm_client() -> LangChainProvider:
             api_key, model = settings.OPENAI_API_KEY, settings.OPENAI_MODEL
         elif provider == "anthropic":
             api_key, model = settings.ANTHROPIC_API_KEY, settings.ANTHROPIC_MODEL
+        elif provider == "gemini":
+            api_key, model = settings.GEMINI_API_KEY, settings.GEMINI_MODEL
         else:
             api_key, model = settings.GROQ_API_KEY, settings.GROQ_MODEL
 

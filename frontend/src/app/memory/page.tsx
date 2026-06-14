@@ -99,7 +99,7 @@ export default function MemoryPage() {
   return (
     <div className="max-w-3xl mx-auto px-4 py-8 space-y-6 animate-fadeIn">
       <div>
-        <h1 className="text-2xl font-bold text-gray-800 dark:text-gray-100 mb-1">Agent Memory</h1>
+        <h1 className="text-2xl font-bold tracking-tight text-gray-800 dark:text-gray-100 mb-1">Agent Memory</h1>
         <p className="text-sm text-gray-500 dark:text-gray-400">
           Lessons and summaries accumulated by agents from past debates. Clear per-agent to reset.
         </p>
@@ -107,7 +107,7 @@ export default function MemoryPage() {
 
       {agentsLoading && (
         <div className="py-8 flex justify-center">
-          <span className="w-5 h-5 border-4 border-blue-500 border-t-transparent rounded-full animate-spin" />
+          <span className="w-5 h-5 border-4 border-accent-500 border-t-transparent rounded-full animate-spin" />
         </div>
       )}
 
@@ -120,8 +120,8 @@ export default function MemoryPage() {
         const hasEntries = state.entries.length > 0;
 
         return (
-          <div key={agent.name} className="bg-white dark:bg-gray-900 rounded-xl border dark:border-gray-800 shadow-sm">
-            <div className="px-5 py-4 border-b dark:border-gray-800 flex items-center justify-between">
+          <div key={agent.name} className="rounded-2xl bg-surface-raised ring-1 ring-black/5 dark:ring-white/10 shadow-card">
+            <div className="px-5 py-4 border-b border-line flex items-center justify-between">
               <div className="flex items-center gap-2">
                 <span className="text-lg">{agent.icon}</span>
                 <span className="font-semibold text-gray-800 dark:text-gray-100 text-sm">

@@ -118,14 +118,14 @@ export default function KnowledgePage() {
   return (
     <div className="max-w-3xl mx-auto px-4 py-8 space-y-8 animate-fadeIn">
       <div>
-        <h1 className="text-2xl font-bold text-gray-800 dark:text-gray-100 mb-1">Knowledge Base</h1>
+        <h1 className="text-2xl font-bold tracking-tight text-gray-800 dark:text-gray-100 mb-1">Knowledge Base</h1>
         <p className="text-sm text-gray-500 dark:text-gray-400">
           Upload documents (PDF, TXT, Markdown) so agents can retrieve relevant context during debates.
         </p>
       </div>
 
       {/* Upload card */}
-      <div className="bg-white dark:bg-gray-900 rounded-xl border dark:border-gray-800 shadow-sm p-6">
+      <div className="rounded-2xl bg-surface-raised ring-1 ring-black/5 dark:ring-white/10 shadow-card p-6">
         <h2 className="text-sm font-semibold text-gray-700 dark:text-gray-300 mb-3">Upload Document</h2>
         {/* NB5b: drag-and-drop enabled — dashed border now fulfils its visual promise */}
         <div
@@ -135,12 +135,12 @@ export default function KnowledgePage() {
           onDrop={handleDrop}
           className={`flex flex-col items-center justify-center border-2 border-dashed rounded-lg p-8 cursor-pointer transition-colors ${
             dragOver
-              ? "border-blue-500 dark:border-blue-400 bg-blue-50 dark:bg-blue-900/20"
-              : "border-gray-300 dark:border-gray-600 hover:border-blue-400 dark:hover:border-blue-600"
+              ? "border-accent-500 dark:border-accent-400 bg-blue-50 dark:bg-blue-900/20"
+              : "border-line-strong hover:border-accent-400 dark:hover:border-blue-600"
           }`}
         >
           {uploading ? (
-            <span className="w-8 h-8 border-4 border-blue-500 border-t-transparent rounded-full animate-spin mb-2" />
+            <span className="w-8 h-8 border-4 border-accent-500 border-t-transparent rounded-full animate-spin mb-2" />
           ) : (
             <span className="text-3xl mb-2">{dragOver ? "📂" : "📄"}</span>
           )}
@@ -166,15 +166,15 @@ export default function KnowledgePage() {
       </div>
 
       {/* Document list */}
-      <div className="bg-white dark:bg-gray-900 rounded-xl border dark:border-gray-800 shadow-sm">
-        <div className="px-6 py-4 border-b dark:border-gray-800 flex items-center justify-between">
+      <div className="rounded-2xl bg-surface-raised ring-1 ring-black/5 dark:ring-white/10 shadow-card">
+        <div className="px-6 py-4 border-b border-line flex items-center justify-between">
           <h2 className="text-sm font-semibold text-gray-700 dark:text-gray-300">
             Indexed Documents
           </h2>
           <button
             onClick={fetchDocs}
             disabled={loading}
-            className="text-xs text-blue-600 dark:text-blue-400 hover:underline disabled:opacity-50"
+            className="text-xs text-accent-600 dark:text-accent-400 hover:underline disabled:opacity-50"
           >
             Refresh
           </button>
@@ -187,7 +187,7 @@ export default function KnowledgePage() {
             <p className="text-sm text-red-500 dark:text-red-400">{fetchError}</p>
             <button
               onClick={fetchDocs}
-              className="text-xs text-blue-600 dark:text-blue-400 hover:underline"
+              className="text-xs text-accent-600 dark:text-accent-400 hover:underline"
             >
               Retry
             </button>
@@ -209,7 +209,7 @@ export default function KnowledgePage() {
             </div>
             <button
               onClick={() => fileInputRef.current?.click()}
-              className="px-4 py-2 rounded-lg bg-blue-600 text-white text-sm font-medium hover:bg-blue-700 transition focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-blue-500"
+              className="px-4 py-2 rounded-lg bg-accent-600 text-white text-sm font-medium hover:bg-accent-700 transition focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent-500"
             >
               Upload a document
             </button>

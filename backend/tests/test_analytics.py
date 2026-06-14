@@ -217,18 +217,27 @@ class TestAnalyticsConvergenceCRUD:
         assert curve[1] == pytest.approx(0.75, abs=0.01)
 
     @pytest.mark.anyio
-    async def test_mode_breakdown_maps_max_rounds(self):
+    async def test_mode_breakdown_prefers_persisted_mode(self):
+        # New rows carry the persisted `mode`; legacy rows (no `mode`) fall back
+        # to inferring the preset from the round count.
+        state_rows = [
+            (json.dumps({"mode": "quick"}),),
+            (json.dumps({"mode": "standard"}),),
+            (json.dumps({"mode": "standard"}),),
+            (json.dumps({"mode": "thorough"}),),
+            (json.dumps({"max_rounds": 2}),),   # legacy → quick
+            (json.dumps({"max_rounds": 6}),),   # legacy → thorough
+        ]
         db = _FakeDB(
             {
                 "event_type = 'synthesis'": [],
-                "group by max_rounds": [(2, 3), (4, 7), (6, 1)],
-                "state_json": [],
+                "state_json": state_rows,
             }
         )
         result = await get_analytics_convergence(db)  # type: ignore[arg-type]
-        assert result["mode_breakdown"]["quick"] == 3
-        assert result["mode_breakdown"]["standard"] == 7
-        assert result["mode_breakdown"]["thorough"] == 1
+        assert result["mode_breakdown"]["quick"] == 2       # 1 persisted + 1 legacy (2 rounds)
+        assert result["mode_breakdown"]["standard"] == 2    # both persisted
+        assert result["mode_breakdown"]["thorough"] == 2    # 1 persisted + 1 legacy (6 rounds)
 
 
 # ---------------------------------------------------------------------------

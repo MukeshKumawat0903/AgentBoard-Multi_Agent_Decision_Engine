@@ -58,7 +58,9 @@ describe("AgentCard", () => {
     const { container } = render(
       <AgentCard response={makeResponse({ agent_name: "UnknownAgent" })} />
     );
-    const card = container.firstChild as HTMLElement;
-    expect(card.style.borderColor).toBe("rgb(107, 114, 128)"); // #6B7280
+    // The accent rail is the first absolutely-positioned span inside the card.
+    const rail = container.querySelector("span[aria-hidden]") as HTMLElement;
+    expect(rail).toBeTruthy();
+    expect(rail.style.backgroundColor).toBe("rgb(107, 114, 128)"); // #6B7280
   });
 });

@@ -33,7 +33,7 @@ logger = logging.getLogger("agentboard.evaluator")
 # Output schema
 # ---------------------------------------------------------------------------
 
-class EvaluationScores(BaseModel):
+class EvaluationLLMOutput(BaseModel):
     """LLM-generated quality scores for a decision."""
 
     completeness: float = Field(
@@ -109,7 +109,7 @@ async def evaluate_decision(
 
     try:
         scores = await llm_client.ainvoke_structured(
-            EvaluationScores,
+            EvaluationLLMOutput,
             system_prompt=_EVAL_SYSTEM_PROMPT,
             user_prompt=user_prompt,
         )

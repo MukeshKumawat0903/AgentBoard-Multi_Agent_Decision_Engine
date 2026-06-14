@@ -1,41 +1,45 @@
 /**
- * AgentCard – displays a single agent's response with colour-coded styling.
+ * AgentCard – displays a single agent's response.
+ *
+ * Neutral raised card with a 4px accent rail in the agent's colour and an
+ * AgentAvatar header — reads identically in light and dark mode.
  */
 
 "use client";
 
-import type { AgentResponse, AgentName } from "@/lib/types";
-import { AGENT_META } from "@/lib/types";
+import type { AgentResponse } from "@/lib/types";
+import { AGENT_META, DOMAIN_AGENT_META } from "@/lib/types";
 import ConfidenceMeter from "./ConfidenceMeter";
 import Markdown from "./Markdown";
+import AgentAvatar, { agentColor } from "./ui/AgentAvatar";
 
 interface AgentCardProps {
   response: AgentResponse;
 }
 
 export default function AgentCard({ response }: AgentCardProps) {
-  const meta = AGENT_META[response.agent_name as AgentName] ?? {
-    name: response.agent_name,
-    color: "#6B7280",
-    lightColor: "#F3F4F6",
-    icon: "🤖",
-    role: "Agent",
-  };
+  const name = response.agent_name;
+  const meta =
+    AGENT_META[name as keyof typeof AGENT_META] ??
+    DOMAIN_AGENT_META[name] ??
+    { name, role: "Agent" };
+  const color = agentColor(name);
 
   return (
-    <div
-      className="rounded-xl border shadow-sm overflow-hidden dark:bg-gray-900 transition-all duration-200 hover:-translate-y-0.5 hover:shadow-md"
-      style={{ borderColor: meta.color }}
-    >
+    <div className="relative overflow-hidden rounded-2xl bg-surface-raised ring-1 ring-black/5 dark:ring-white/10 shadow-card transition-all duration-200 hover:-translate-y-0.5 hover:shadow-card-hover">
+      {/* Accent rail */}
+      <span
+        aria-hidden="true"
+        className="absolute left-0 top-0 bottom-0 w-1"
+        style={{ backgroundColor: color }}
+      />
+
       {/* Header */}
-      <div
-        className="px-4 py-3 flex items-center justify-between dark:!bg-gray-800"
-        style={{ backgroundColor: meta.lightColor }}
-      >
-        <div className="flex items-center gap-2">
-          <span className="text-xl">{meta.icon}</span>
+      <div className="pl-5 pr-4 py-3 flex items-center justify-between border-b border-line">
+        <div className="flex items-center gap-2.5">
+          <AgentAvatar name={name} size="md" />
           <div>
-            <h3 className="font-semibold text-sm" style={{ color: meta.color }}>
+            <h3 className="font-semibold text-sm text-gray-800 dark:text-gray-100">
               {meta.name}
             </h3>
             <p className="text-[11px] text-gray-500 dark:text-gray-400">{meta.role}</p>
@@ -45,7 +49,7 @@ export default function AgentCard({ response }: AgentCardProps) {
       </div>
 
       {/* Body */}
-      <div className="px-4 py-3 space-y-3 text-sm">
+      <div className="pl-5 pr-4 py-3 space-y-3 text-sm">
         {/* Position */}
         <div>
           <h4 className="font-medium text-gray-700 dark:text-gray-300 mb-1">Position</h4>

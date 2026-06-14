@@ -30,8 +30,12 @@ async def _fresh_db() -> aiosqlite.Connection:
         CREATE TABLE IF NOT EXISTS debates (
             thread_id TEXT PRIMARY KEY,
             user_query TEXT,
-            state_json TEXT,
             status TEXT,
+            current_round INTEGER,
+            max_rounds INTEGER,
+            agreement_score REAL,
+            termination_reason TEXT,
+            state_json TEXT,
             created_at TEXT,
             updated_at TEXT
         );
@@ -45,6 +49,7 @@ async def _fresh_db() -> aiosqlite.Connection:
         CREATE TABLE IF NOT EXISTS debate_events (
             event_id INTEGER PRIMARY KEY AUTOINCREMENT,
             thread_id TEXT NOT NULL,
+            event_type TEXT,
             payload_json TEXT NOT NULL,
             created_at TEXT NOT NULL
         );
@@ -64,7 +69,8 @@ class TestCleanupOldDebates:
         db = await _fresh_db()
         old_ts = (datetime.now(timezone.utc) - timedelta(days=100)).isoformat()
         await db.execute(
-            "INSERT INTO debates VALUES (?, ?, ?, ?, ?, ?)",
+            "INSERT INTO debates (thread_id, user_query, state_json, status, created_at, updated_at) "
+            "VALUES (?, ?, ?, ?, ?, ?)",
             ("old-t1", "Old query", "{}", "converged", old_ts, old_ts),
         )
         await db.commit()
@@ -72,7 +78,9 @@ class TestCleanupOldDebates:
         deleted = await cleanup_old_debates(db, ttl_days=90)
 
         async with db.execute("SELECT COUNT(*) FROM debates") as cur:
-            count = (await cur.fetchone())[0]
+            row = await cur.fetchone()
+        assert row is not None
+        count = row[0]
         assert count == 0
         await db.close()
 
@@ -81,7 +89,8 @@ class TestCleanupOldDebates:
         db = await _fresh_db()
         recent_ts = datetime.now(timezone.utc).isoformat()
         await db.execute(
-            "INSERT INTO debates VALUES (?, ?, ?, ?, ?, ?)",
+            "INSERT INTO debates (thread_id, user_query, state_json, status, created_at, updated_at) "
+            "VALUES (?, ?, ?, ?, ?, ?)",
             ("new-t1", "New query", "{}", "converged", recent_ts, recent_ts),
         )
         await db.commit()
@@ -89,7 +98,9 @@ class TestCleanupOldDebates:
         await cleanup_old_debates(db, ttl_days=90)
 
         async with db.execute("SELECT COUNT(*) FROM debates") as cur:
-            count = (await cur.fetchone())[0]
+            row = await cur.fetchone()
+        assert row is not None
+        count = row[0]
         assert count == 1
         await db.close()
 
@@ -99,7 +110,8 @@ class TestCleanupOldDebates:
         old_ts = (datetime.now(timezone.utc) - timedelta(days=100)).isoformat()
         new_ts = datetime.now(timezone.utc).isoformat()
         await db.executemany(
-            "INSERT INTO debates VALUES (?, ?, ?, ?, ?, ?)",
+            "INSERT INTO debates (thread_id, user_query, state_json, status, created_at, updated_at) "
+            "VALUES (?, ?, ?, ?, ?, ?)",
             [
                 ("old-t1", "Q1", "{}", "converged", old_ts, old_ts),
                 ("new-t1", "Q2", "{}", "converged", new_ts, new_ts),
@@ -155,7 +167,9 @@ class TestDebateStatePersistence:
         await db.commit()
 
         async with db.execute("SELECT COUNT(*) FROM debates WHERE thread_id=?", (state.thread_id,)) as cur:
-            count = (await cur.fetchone())[0]
+            row = await cur.fetchone()
+        assert row is not None
+        count = row[0]
         assert count == 1
         await db.close()
 

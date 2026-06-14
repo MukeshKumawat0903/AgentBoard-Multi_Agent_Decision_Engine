@@ -66,14 +66,14 @@ export default function SimulatePage() {
   return (
     <div className="max-w-3xl mx-auto px-4 py-8 space-y-8 animate-fadeIn">
       <div>
-        <h1 className="text-2xl font-bold text-gray-800 dark:text-gray-100 mb-1">Scenario Simulation</h1>
+        <h1 className="text-2xl font-bold tracking-tight text-gray-800 dark:text-gray-100 mb-1">Scenario Simulation</h1>
         <p className="text-sm text-gray-500 dark:text-gray-400">
           Run N independent debates in parallel and compare their consistency and stability.
         </p>
       </div>
 
       {/* Input form */}
-      <form onSubmit={handleSubmit} className="bg-white dark:bg-gray-900 rounded-xl border dark:border-gray-800 shadow-sm p-6 space-y-5">
+      <form onSubmit={handleSubmit} className="rounded-2xl bg-surface-raised ring-1 ring-black/5 dark:ring-white/10 shadow-card p-6 space-y-5">
         <div>
           <label className="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1">
             Decision query
@@ -84,9 +84,9 @@ export default function SimulatePage() {
             onChange={(e) => setQuery(e.target.value)}
             disabled={loading}
             placeholder="e.g. Should we migrate our monolith to microservices?"
-            className="w-full rounded-lg border border-gray-300 dark:border-gray-600 px-4 py-3 text-sm
-                       bg-white dark:bg-gray-800 text-gray-900 dark:text-gray-100
-                       placeholder:text-gray-400 focus:outline-none focus:ring-2 focus:ring-blue-500
+            className="w-full rounded-lg border border-line-strong px-4 py-3 text-sm
+                       bg-surface-raised text-gray-900 dark:text-gray-100
+                       placeholder:text-gray-400 focus:outline-none focus:ring-2 focus:ring-accent-500
                        disabled:opacity-60 resize-y"
           />
         </div>
@@ -103,9 +103,9 @@ export default function SimulatePage() {
               value={runs}
               onChange={(e) => setRuns(Number(e.target.value))}
               disabled={loading}
-              className="w-full rounded-lg border border-gray-300 dark:border-gray-600 px-3 py-2 text-sm
-                         bg-white dark:bg-gray-800 text-gray-900 dark:text-gray-100
-                         focus:outline-none focus:ring-2 focus:ring-blue-500 disabled:opacity-60"
+              className="w-full rounded-lg border border-line-strong px-3 py-2 text-sm
+                         bg-surface-raised text-gray-900 dark:text-gray-100
+                         focus:outline-none focus:ring-2 focus:ring-accent-500 disabled:opacity-60"
             />
           </div>
           <div>
@@ -119,9 +119,9 @@ export default function SimulatePage() {
               value={maxRounds}
               onChange={(e) => setMaxRounds(Number(e.target.value))}
               disabled={loading}
-              className="w-full rounded-lg border border-gray-300 dark:border-gray-600 px-3 py-2 text-sm
-                         bg-white dark:bg-gray-800 text-gray-900 dark:text-gray-100
-                         focus:outline-none focus:ring-2 focus:ring-blue-500 disabled:opacity-60"
+              className="w-full rounded-lg border border-line-strong px-3 py-2 text-sm
+                         bg-surface-raised text-gray-900 dark:text-gray-100
+                         focus:outline-none focus:ring-2 focus:ring-accent-500 disabled:opacity-60"
             />
           </div>
           <div>
@@ -132,9 +132,9 @@ export default function SimulatePage() {
               value={mode}
               onChange={(e) => setMode(e.target.value)}
               disabled={loading}
-              className="w-full rounded-lg border border-gray-300 dark:border-gray-600 px-3 py-2 text-sm
-                         bg-white dark:bg-gray-800 text-gray-900 dark:text-gray-100
-                         focus:outline-none focus:ring-2 focus:ring-blue-500 disabled:opacity-60"
+              className="w-full rounded-lg border border-line-strong px-3 py-2 text-sm
+                         bg-surface-raised text-gray-900 dark:text-gray-100
+                         focus:outline-none focus:ring-2 focus:ring-accent-500 disabled:opacity-60"
             >
               <option value="quick">Quick</option>
               <option value="standard">Standard</option>
@@ -146,8 +146,8 @@ export default function SimulatePage() {
         <button
           type="submit"
           disabled={loading || query.trim().length < 10}
-          className="w-full py-3 rounded-lg bg-blue-600 text-white font-semibold text-sm
-                     hover:bg-blue-700 disabled:opacity-50 disabled:cursor-not-allowed transition"
+          className="w-full py-3 rounded-lg bg-accent-600 text-white font-semibold text-sm
+                     hover:bg-accent-700 disabled:opacity-50 disabled:cursor-not-allowed transition"
         >
           {loading ? (
             <span className="flex items-center justify-center gap-2">
@@ -166,7 +166,7 @@ export default function SimulatePage() {
       {result && (
         <div className="space-y-6">
           {/* Stability overview */}
-          <div className="bg-white dark:bg-gray-900 rounded-xl border dark:border-gray-800 shadow-sm p-6">
+          <div className="rounded-2xl bg-surface-raised ring-1 ring-black/5 dark:ring-white/10 shadow-card p-6">
             <div className="flex items-center justify-between mb-4">
               <h2 className="text-lg font-bold text-gray-800 dark:text-gray-100">Stability Overview</h2>
               <span className={`px-3 py-1 rounded-full text-sm font-bold ${RATING_COLOR[result.stability_rating] ?? ""}`}>
@@ -205,7 +205,7 @@ export default function SimulatePage() {
 
           {/* Stable risk flags */}
           {result.stable_risk_flags.length > 0 && (
-            <div className="bg-white dark:bg-gray-900 rounded-xl border dark:border-gray-800 shadow-sm p-6">
+            <div className="rounded-2xl bg-surface-raised ring-1 ring-black/5 dark:ring-white/10 shadow-card p-6">
               <h3 className="font-semibold text-gray-700 dark:text-gray-300 mb-3">
                 Stable Risk Flags <span className="text-xs text-gray-400">(appear in ≥70% of runs)</span>
               </h3>
@@ -231,10 +231,10 @@ export default function SimulatePage() {
               {result.decisions.map((decision, i) => (
                 <div
                   key={i}
-                  className="bg-white dark:bg-gray-900 rounded-xl border dark:border-gray-800 shadow-sm p-4"
+                  className="rounded-2xl bg-surface-raised ring-1 ring-black/5 dark:ring-white/10 shadow-card p-4"
                 >
                   <div className="flex items-center gap-2 mb-2">
-                    <span className="text-xs font-semibold text-blue-600 dark:text-blue-400">
+                    <span className="text-xs font-semibold text-accent-600 dark:text-accent-400">
                       Run {i + 1}
                     </span>
                     <span className="text-xs text-gray-400 tabular-nums">

@@ -213,6 +213,60 @@ TEMPLATES: list[DebateTemplate] = [
         mode="standard",
         tags=["finance", "CapEx", "OpEx", "infrastructure", "TCO"],
     ),
+    # Ethics & hard dilemmas (4) — high-conflict prompts that stress-test whether the
+    # agents genuinely reason differently rather than converging on round one.
+    DebateTemplate(
+        id="ai-medical-authority",
+        title="Autonomous AI Doctors",
+        category="Technology",
+        icon="🩺",
+        query=(
+            "Should AI systems be allowed to make final medical diagnoses and treatment "
+            "decisions without human physician oversight, if they statistically outperform "
+            "doctors on accuracy? Weigh patient safety, accountability, liability, and trust."
+        ),
+        mode="thorough",
+        tags=["AI", "healthcare", "ethics", "automation", "accountability"],
+    ),
+    DebateTemplate(
+        id="layoffs-vs-competitiveness",
+        title="Layoffs vs. Competitiveness",
+        category="Business",
+        icon="⚖️",
+        query=(
+            "Our company faces a stark choice: lay off 30% of employees and adopt AI to stay "
+            "cost-competitive, or keep everyone and risk losing market position to AI-native "
+            "rivals. Which path should we take, and how should we weigh people against survival?"
+        ),
+        mode="thorough",
+        tags=["layoffs", "AI", "ethics", "competitiveness", "workforce"],
+    ),
+    DebateTemplate(
+        id="ai-job-replacement-tax",
+        title="Tax on AI Job Replacement",
+        category="Strategy",
+        icon="🏛️",
+        query=(
+            "Should governments levy a tax on companies for every human job replaced by AI, "
+            "using the proceeds to fund retraining and social safety nets? Consider innovation "
+            "incentives, enforceability, economic impact, and fairness."
+        ),
+        mode="thorough",
+        tags=["policy", "AI", "taxation", "labor", "ethics"],
+    ),
+    DebateTemplate(
+        id="autonomous-vehicle-dilemma",
+        title="Self-Driving Trolley Problem",
+        category="Strategy",
+        icon="🚗",
+        query=(
+            "An autonomous vehicle facing an unavoidable crash must choose between an action "
+            "that kills its single passenger and inaction that kills five pedestrians. How "
+            "should the vehicle be programmed to decide, and who is accountable for the outcome?"
+        ),
+        mode="thorough",
+        tags=["autonomous vehicles", "ethics", "safety", "liability", "AI"],
+    ),
 ]
 
 # Fast lookup by id

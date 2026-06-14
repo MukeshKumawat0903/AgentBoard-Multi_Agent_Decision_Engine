@@ -353,11 +353,12 @@ async def start_debate(
             ).model_dump(),
         )
     selected_agents, domain_pack = _resolve_active_agents(body)
-    resolved_rounds, resolved_threshold, resolved_skip = resolve_debate_config(
+    resolved_rounds, resolved_threshold, resolved_skip, resolved_min = resolve_debate_config(
         mode=body.mode,
         max_rounds=body.max_rounds,
         consensus_threshold=body.consensus_threshold,
         skip_critique_phase=body.skip_critique_phase,
+        min_rounds=body.min_rounds,
     )
     from app.api.dependencies import get_knowledge_base, get_memory_store
     kb = get_knowledge_base() if body.use_knowledge_base else None
@@ -366,6 +367,8 @@ async def start_debate(
     debate_state = DebateState(
         user_query=body.query,
         max_rounds=resolved_rounds,
+        min_rounds=resolved_min,
+        mode=body.mode,
         use_knowledge_base=bool(body.use_knowledge_base),
         enable_agent_memory=bool(body.enable_agent_memory),
         selected_agents=selected_agents,
@@ -433,15 +436,18 @@ async def start_debate_async(
     selected_agents, domain_pack = _resolve_active_agents(body)
     # Pre-create state so we have a thread_id before the graph runs.
     # Create channels at the same time so no events are lost.
-    resolved_rounds, resolved_threshold, resolved_skip = resolve_debate_config(
+    resolved_rounds, resolved_threshold, resolved_skip, resolved_min = resolve_debate_config(
         mode=body.mode,
         max_rounds=body.max_rounds,
         consensus_threshold=body.consensus_threshold,
         skip_critique_phase=body.skip_critique_phase,
+        min_rounds=body.min_rounds,
     )
     debate_state = DebateState(
         user_query=body.query,
         max_rounds=resolved_rounds,
+        min_rounds=resolved_min,
+        mode=body.mode,
         use_knowledge_base=bool(body.use_knowledge_base),
         enable_agent_memory=bool(body.enable_agent_memory),
         selected_agents=selected_agents,
