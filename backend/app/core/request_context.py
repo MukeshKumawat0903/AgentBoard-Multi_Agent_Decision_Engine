@@ -2,7 +2,6 @@
 
 from contextvars import ContextVar, Token
 
-
 _request_id: ContextVar[str | None] = ContextVar("request_id", default=None)
 
 

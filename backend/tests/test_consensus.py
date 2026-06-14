@@ -26,8 +26,16 @@ Coverage:
 
 import pytest
 
-from app.schemas.agent_response import AgentResponse
-from app.services.consensus import ConsensusEngine, _word_overlap
+from app.schemas.agent_response import AgentResponse, CritiqueResponse
+from app.services.consensus import (
+    ConsensusEngine,
+    ConsensusSignals,
+    _word_overlap,
+    count_dissenting_agents,
+    count_open_disagreements,
+    is_consensus_reached,
+    select_dissenting_agents,
+)
 
 
 # ---------------------------------------------------------------------------
@@ -374,3 +382,92 @@ class TestPhase10AcceptanceCriteria:
 
         # When the high-confidence pair agrees, total score should be higher
         assert score_high > score_low
+
+
+# ---------------------------------------------------------------------------
+# Hybrid consensus gate helpers
+# ---------------------------------------------------------------------------
+
+def _critique(severity: str, points: list[str], round_number: int = 1) -> CritiqueResponse:
+    return CritiqueResponse(
+        critic_agent="Risk",
+        target_agent="Strategy",
+        round_number=round_number,
+        critique_points=points,
+        severity=severity,  # type: ignore[arg-type]
+        confidence_score=0.7,
+    )
+
+
+class TestCountDissentingAgents:
+    def test_empty_returns_zero(self):
+        assert count_dissenting_agents([], band=0.2) == 0
+
+    def test_uniform_confidence_has_no_dissenters(self):
+        responses = [_response(n, "x", confidence=0.8) for n in ("A", "B", "C")]
+        assert count_dissenting_agents(responses, band=0.2) == 0
+
+    def test_low_outlier_is_a_dissenter(self):
+        # mean = (0.9 + 0.9 + 0.4) / 3 = 0.733; band 0.2 → threshold 0.533; 0.4 < 0.533
+        responses = [
+            _response("A", "x", confidence=0.9),
+            _response("B", "x", confidence=0.9),
+            _response("C", "x", confidence=0.4),
+        ]
+        assert count_dissenting_agents(responses, band=0.2) == 1
+        # select_ and count_ agree by construction
+        assert len(select_dissenting_agents(responses, band=0.2)) == 1
+
+
+class TestCountOpenDisagreements:
+    def test_only_high_severity_counts(self):
+        critiques = [
+            _critique("low", ["minor nit"]),
+            _critique("medium", ["meh"]),
+            _critique("high", ["serious gap"]),
+            _critique("critical", ["dealbreaker"]),
+        ]
+        assert count_open_disagreements(critiques) == 2
+
+    def test_distinct_points_deduplicated(self):
+        critiques = [
+            _critique("high", ["same point", "same point", "other point"]),
+            _critique("critical", ["other point"]),
+        ]
+        assert count_open_disagreements(critiques) == 2
+
+    def test_empty_returns_zero(self):
+        assert count_open_disagreements([]) == 0
+
+
+class TestIsConsensusReached:
+    def _signals(self, **overrides) -> ConsensusSignals:
+        base = dict(
+            position_agreement=0.8,
+            rounds_completed=2,
+            dissenting_agents=0,
+            open_disagreements=0,
+            confidence_converged=True,
+        )
+        base.update(overrides)
+        return ConsensusSignals(**base)
+
+    _GATE = dict(threshold=0.75, min_rounds=2, max_dissent=1, max_open_disagreements=2)
+
+    def test_all_criteria_met(self):
+        assert is_consensus_reached(self._signals(), **self._GATE) is True
+
+    def test_below_threshold_blocks(self):
+        assert is_consensus_reached(self._signals(position_agreement=0.5), **self._GATE) is False
+
+    def test_too_few_rounds_blocks(self):
+        assert is_consensus_reached(self._signals(rounds_completed=1), **self._GATE) is False
+
+    def test_too_much_dissent_blocks(self):
+        assert is_consensus_reached(self._signals(dissenting_agents=2), **self._GATE) is False
+
+    def test_too_many_open_disagreements_blocks(self):
+        assert is_consensus_reached(self._signals(open_disagreements=5), **self._GATE) is False
+
+    def test_unconverged_confidence_blocks(self):
+        assert is_consensus_reached(self._signals(confidence_converged=False), **self._GATE) is False

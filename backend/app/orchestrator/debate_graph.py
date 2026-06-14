@@ -37,7 +37,7 @@ from __future__ import annotations
 import asyncio
 import logging
 import time
-from collections.abc import Awaitable, Callable, Coroutine
+from collections.abc import Awaitable, Callable
 from typing import Any, cast
 
 from langgraph.checkpoint.sqlite.aio import AsyncSqliteSaver  # type: ignore[import-untyped]
@@ -48,15 +48,16 @@ from app.agents.analyst_agent import AnalystAgent
 from app.agents.base_agent import BaseAgent
 from app.agents.ethics_agent import EthicsAgent
 from app.agents.moderator_agent import ModeratorAgent
+from app.agents.registry import registry
 from app.agents.risk_agent import RiskAgent
 from app.agents.strategy_agent import StrategyAgent
-from app.agents.registry import registry
 from app.core.config import Settings
 from app.orchestrator.lg_state import DebateGraphState
 from app.orchestrator.nodes import (
     make_convergence_node,
     make_critiques_node,
     make_finalize_node,
+    make_hitl_node,
     make_proposals_node,
     make_revisions_node,
 )
@@ -88,7 +89,7 @@ class DebateGraph:
         settings: Settings,
         queue_list: list | None = None,
         replay_buffer: list | None = None,
-        on_event: Callable[[dict], Coroutine[Any, Any, None]] | None = None,
+        persist_queue: asyncio.Queue | None = None,
         on_state_change: Callable[[DebateState], Awaitable[None]] | None = None,
         knowledge_base=None,
         memory_store=None,
@@ -99,7 +100,7 @@ class DebateGraph:
         self._llm_client = llm_client
         self._queue_list = queue_list
         self._replay_buffer = replay_buffer
-        self._on_event = on_event
+        self._persist_queue = persist_queue
         self._on_state_change = on_state_change
         self._knowledge_base = knowledge_base
         self._memory_store = memory_store
@@ -150,15 +151,56 @@ class DebateGraph:
     # ------------------------------------------------------------------
 
     def _emit(self, event_type: str, data: dict) -> None:
-        """Broadcast a typed SSE event to all connected clients."""
+        """Hand a typed SSE event to the per-thread writer for ordered persistence + broadcast.
+
+        The writer task (owned by the API layer) persists each payload on a
+        single connection in emission order, attaches the resulting DB
+        ``event_id``, then broadcasts to subscriber queues — so live frames
+        carry the same id a later replay would assign them. When no writer is
+        configured (the synchronous /debate/start path has no subscribers),
+        broadcast directly instead.
+        """
         payload = {"type": event_type, **data}
+        if self._persist_queue is not None:
+            self._persist_queue.put_nowait(payload)
+            return
         if self._replay_buffer is not None:
             self._replay_buffer.append(payload)
-        if self._on_event is not None:
-            asyncio.create_task(self._on_event(payload))
         if self._queue_list:
             for q in list(self._queue_list):  # snapshot to avoid mutation races
                 q.put_nowait(payload)
+
+    # ------------------------------------------------------------------
+    # Token usage capture
+    # ------------------------------------------------------------------
+
+    async def _ainvoke_with_usage(self, graph, graph_input, config) -> tuple[dict, dict]:
+        """Invoke the graph while capturing aggregate LLM token usage by model."""
+        from langchain_core.callbacks import get_usage_metadata_callback
+
+        with get_usage_metadata_callback() as usage_cb:
+            result = await graph.ainvoke(graph_input, config=config)
+        return result, dict(usage_cb.usage_metadata)
+
+    @staticmethod
+    def _attach_usage(decision: FinalDecision | None, usage_by_model: dict) -> FinalDecision | None:
+        """Attach aggregate token usage and an estimated cost to a decision."""
+        if decision is None or not usage_by_model:
+            return decision
+        from app.services.llm_client import estimate_cost_usd
+
+        input_tokens = sum((u.get("input_tokens", 0) or 0) for u in usage_by_model.values())
+        output_tokens = sum((u.get("output_tokens", 0) or 0) for u in usage_by_model.values())
+        summary = {
+            "input_tokens": input_tokens,
+            "output_tokens": output_tokens,
+            "total_tokens": input_tokens + output_tokens,
+            "by_model": usage_by_model,
+        }
+        return decision.model_copy(update={
+            "token_usage": summary,
+            "estimated_cost_usd": estimate_cost_usd(usage_by_model),
+        })
 
     # ------------------------------------------------------------------
     # Graph construction
@@ -169,11 +211,16 @@ class DebateGraph:
         emit = self._emit
         workflow = StateGraph(DebateGraphState)
 
-        workflow.add_node("proposals",   make_proposals_node(self.agents, emit, self._on_state_change))   # type: ignore[arg-type]
-        workflow.add_node("critiques",   make_critiques_node(self.agents, emit, self._on_state_change))   # type: ignore[arg-type]
-        workflow.add_node("revisions",   make_revisions_node(self.agents, emit, self._on_state_change))   # type: ignore[arg-type]
+        # Per-phase timeouts are configurable via Settings.
+        _tool_mult = self.settings.AGENT_TOOL_TIMEOUT_MULTIPLIER
+        workflow.add_node("proposals",   make_proposals_node(self.agents, emit, self._on_state_change, self.settings.AGENT_PROPOSAL_TIMEOUT, _tool_mult))   # type: ignore[arg-type]
+        workflow.add_node("critiques",   make_critiques_node(self.agents, emit, self._on_state_change, self.settings.AGENT_CRITIQUE_TIMEOUT))   # type: ignore[arg-type]
+        workflow.add_node("revisions",   make_revisions_node(self.agents, emit, self._on_state_change, self.settings.AGENT_REVISION_TIMEOUT, _tool_mult))   # type: ignore[arg-type]
         workflow.add_node("convergence", make_convergence_node(self.moderator, self.settings, emit, self._on_state_change))  # type: ignore[arg-type]
-        workflow.add_node("finalize",    make_finalize_node(self.moderator, emit, self._on_state_change, self._memory_store))  # type: ignore[arg-type]
+        # B2 Fix: HITL approval is a separate node so moderator.synthesize() is never
+        # re-executed on resume — only interrupt()/approval handling re-runs.
+        workflow.add_node("hitl",        make_hitl_node(emit, self._on_state_change))  # type: ignore[arg-type]
+        workflow.add_node("finalize",    make_finalize_node(self.moderator, emit, self._on_state_change, self._memory_store, self.settings, list(self.agents.keys())))  # type: ignore[arg-type]
 
         workflow.add_edge(START, "proposals")
 
@@ -186,12 +233,20 @@ class DebateGraph:
         workflow.add_edge("critiques", "revisions")
         workflow.add_edge("revisions", "convergence")
 
-        # Conditional edge: loop back, pause for approval, or finalize.
+        # Convergence routes: loop back | HITL approval pause | finalize directly
         workflow.add_conditional_edges(
             "convergence",
             lambda state: (
-                "proposals" if state["should_continue"] else "finalize"
+                "proposals" if state["should_continue"]
+                else ("hitl" if state.get("hitl_mode") else "finalize")
             ),
+            {"proposals": "proposals", "hitl": "hitl", "finalize": "finalize"},
+        )
+
+        # After HITL approval: either add a round (loop) or finalize
+        workflow.add_conditional_edges(
+            "hitl",
+            lambda state: "proposals" if state["should_continue"] else "finalize",
             {"proposals": "proposals", "finalize": "finalize"},
         )
 
@@ -207,6 +262,7 @@ class DebateGraph:
         query: str,
         max_rounds: int | None = None,
         *,
+        min_rounds: int | None = None,
         initial_state: DebateState | None = None,
         consensus_threshold: float | None = None,
         skip_critique_phase: bool = False,
@@ -242,6 +298,11 @@ class DebateGraph:
                     if max_rounds is not None
                     else self.settings.MAX_DEBATE_ROUNDS
                 ),
+                min_rounds=(
+                    min_rounds
+                    if min_rounds is not None
+                    else self.settings.MIN_DEBATE_ROUNDS
+                ),
             )
         if debate_state.selected_agents != self._selected_agents:
             self._configure_participants(debate_state.selected_agents)
@@ -262,6 +323,9 @@ class DebateGraph:
             "thread_id": debate_state.thread_id,
             "user_query": debate_state.user_query,
             "max_rounds": debate_state.max_rounds,
+            # Surface participating agents so the UI can show their status rows
+            # immediately during round-1 proposals (before any output lands).
+            "agents": list(self.agents.keys()),
         })
 
         initial_graph_state: DebateGraphState = {
@@ -272,6 +336,7 @@ class DebateGraph:
             "consensus_threshold": consensus_threshold,
             "hitl_mode": hitl_mode and self.settings.HITL_ENABLED,
             "awaiting_approval": False,
+            "hitl_interrupt_payload": None,
         }
 
         # Phase 2: scope graph execution to this debate's thread_id so
@@ -284,7 +349,9 @@ class DebateGraph:
         ) as checkpointer:
             await checkpointer.setup()
             graph = self._build(checkpointer)
-            result = await graph.ainvoke(initial_graph_state, config=thread_config)
+            result, token_usage = await self._ainvoke_with_usage(
+                graph, initial_graph_state, thread_config
+            )
 
         if result.get("__interrupt__"):
             interrupt_payload = result["__interrupt__"][0].value
@@ -296,7 +363,7 @@ class DebateGraph:
             return paused_state, None
 
         final_debate_state: DebateState = result["debate_state"]
-        final_decision: FinalDecision = result["final_decision"]
+        final_decision: FinalDecision = self._attach_usage(result["final_decision"], token_usage)
 
         self.logger.info(
             "debate_total_timing",
@@ -351,7 +418,7 @@ class DebateGraph:
             graph = self._build(checkpointer)
             # Passing None lets LangGraph load the state from the checkpoint
             # instead of restarting the graph from the beginning.
-            result = await graph.ainvoke(None, config=thread_config)
+            result, token_usage = await self._ainvoke_with_usage(graph, None, thread_config)
 
         if result.get("__interrupt__"):
             interrupt_payload = result["__interrupt__"][0].value
@@ -363,7 +430,7 @@ class DebateGraph:
             return paused_state, None
 
         final_debate_state: DebateState = result["debate_state"]
-        final_decision: FinalDecision = result["final_decision"]
+        final_decision: FinalDecision = self._attach_usage(result["final_decision"], token_usage)
 
         self.logger.info(
             "debate_resume_complete",
@@ -438,9 +505,10 @@ class DebateGraph:
             self._emit("debate_approved", {"thread_id": thread_id, "action": action})
 
             graph = self._build(checkpointer)
-            result = await graph.ainvoke(
+            result, token_usage = await self._ainvoke_with_usage(
+                graph,
                 Command(resume={"action": action, "feedback": feedback}),
-                config=thread_config,
+                thread_config,
             )
 
         if result.get("__interrupt__"):
@@ -453,7 +521,7 @@ class DebateGraph:
             return paused_state, None
 
         final_debate_state: DebateState = result["debate_state"]
-        final_decision: FinalDecision = result["final_decision"]
+        final_decision: FinalDecision = self._attach_usage(result["final_decision"], token_usage)
 
         self.logger.info(
             "debate_approve_complete",

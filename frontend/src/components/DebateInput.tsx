@@ -1,36 +1,65 @@
-﻿/**
+/**
  * DebateInput – form for starting a new debate.
  *
- * Contains a textarea (min 10 chars), debate mode selector, and a submit
- * button with loading state. Supports AbortController-based cancellation
- * via an optional onCancel prop.
+ * Contains a textarea (min 10 chars), debate mode selector, intelligence
+ * options, and a submit button with loading state. Supports
+ * AbortController-based cancellation via an optional onCancel prop.
+ *
+ * The participating-agent roster lives in the right-rail AgentRoster; this
+ * form receives the agent list and current selection as props and folds them
+ * into the submit payload.
  */
 
 "use client";
 
 import { useState, useEffect, useRef, type FormEvent, type ChangeEvent } from "react";
-import { getAgents } from "@/lib/api";
+import { Check, Microscope, Settings2, SlidersHorizontal, Sparkles, Zap, type LucideIcon } from "lucide-react";
+import type { AgentOption } from "./AgentRoster";
+import Toggle from "./Toggle";
+import Button from "./ui/Button";
 
 type DebateMode = "quick" | "standard" | "thorough";
+/** UI-level mode selection: the three presets plus a "custom" rounds option. */
+type ModeSelection = DebateMode | "custom";
 
-const MODE_OPTIONS: { value: DebateMode; label: string; description: string }[] = [
-  { value: "quick",    label: "⚡ Quick",    description: "2 rounds · No critiques · Threshold 0.60" },
-  { value: "standard", label: "⚖️ Standard", description: "4 rounds · Full critique · Threshold 0.75" },
-  { value: "thorough", label: "🔬 Thorough", description: "6 rounds · Full critique · Threshold 0.85" },
+const MODE_OPTIONS: {
+  value: DebateMode;
+  label: string;
+  Icon: LucideIcon;
+  duration: string;
+  description: string;
+}[] = [
+  { value: "quick",    label: "Quick",    Icon: Zap,               duration: "~30 s",    description: "2 rounds · No critiques · Threshold 0.60" },
+  { value: "standard", label: "Standard", Icon: SlidersHorizontal, duration: "~1–2 min", description: "2 rounds · Full critique · Threshold 0.75" },
+  { value: "thorough", label: "Thorough", Icon: Microscope,        duration: "~3 min",   description: "6 rounds · Full critique · Threshold 0.85" },
 ];
 
-interface AgentOption { name: string; icon: string; role: string; }
+// "Custom" runs Standard's full-critique config with a round count and
+// consensus threshold the user picks. The backend enforces a 2-round minimum
+// and a 0.1–0.95 threshold; the UI keeps threshold to a sensible 0.5–0.95.
+const CUSTOM_MIN_ROUNDS = 2;
+const CUSTOM_MAX_ROUNDS = 6;
+const CUSTOM_DEFAULT_ROUNDS = 4;
+const CUSTOM_MIN_THRESHOLD = 0.5;
+const CUSTOM_MAX_THRESHOLD = 0.95;
+const CUSTOM_THRESHOLD_STEP = 0.05;
+const CUSTOM_DEFAULT_THRESHOLD = 0.75;
 
-const DEFAULT_AGENTS: AgentOption[] = [
-  { name: "Analyst",   icon: "📊", role: "Objective data analyst" },
-  { name: "Risk",      icon: "⚠️", role: "Adversarial risk assessor" },
-  { name: "Strategy",  icon: "🎯", role: "Actionable strategy proposer" },
-  { name: "Ethics",    icon: "⚖️", role: "Ethics and compliance guardian" },
-  { name: "Moderator", icon: "🏛️", role: "Neutral synthesizer" },
-];
+/** Round to 2 decimals so stepping the threshold doesn't drift (e.g. 0.7500001). */
+function roundThreshold(v: number): number {
+  return Math.round(v * 100) / 100;
+}
+
+/** One-click starter questions shown under the textarea for first-time users. */
+export interface SampleQuestion {
+  label: string;
+  query: string;
+}
 
 export interface DebateOptions {
   mode: DebateMode;
+  max_rounds?: number;
+  consensus_threshold?: number;
   agents?: string[];
   use_knowledge_base?: boolean;
   enable_agent_memory?: boolean;
@@ -42,43 +71,37 @@ interface DebateInputProps {
   onSubmit: (query: string, options: DebateOptions) => void;
   onCancel?: () => void;
   isLoading: boolean;
+  agents: AgentOption[];
+  selectedAgents: Set<string>;
   prefillQuery?: string;
   prefillMode?: DebateMode;
   selectedDomainPack?: string | null;
+  samples?: SampleQuestion[];
 }
 
 export default function DebateInput({
   onSubmit,
   onCancel,
   isLoading,
+  agents,
+  selectedAgents,
   prefillQuery,
   prefillMode,
   selectedDomainPack,
+  samples,
 }: DebateInputProps) {
   const [query, setQuery] = useState(prefillQuery ?? "");
-  const [mode, setMode] = useState<DebateMode>(prefillMode ?? "standard");
+  const [selection, setSelection] = useState<ModeSelection>(prefillMode ?? "standard");
+  // Round count + consensus threshold for the "custom" option; ignored for presets.
+  const [customRounds, setCustomRounds] = useState<number>(CUSTOM_DEFAULT_ROUNDS);
+  const [customThreshold, setCustomThreshold] = useState<number>(CUSTOM_DEFAULT_THRESHOLD);
   const [touched, setTouched] = useState(false);
   const [showErrorState, setShowErrorState] = useState(false);
   const [isShaking, setIsShaking] = useState(false);
   const textareaRef = useRef<HTMLTextAreaElement>(null);
-  const [agents, setAgents] = useState<AgentOption[]>(DEFAULT_AGENTS);
-  const [selectedAgents, setSelectedAgents] = useState<Set<string>>(
-    () => new Set(DEFAULT_AGENTS.map((a) => a.name))
-  );
   const [useKnowledgeBase, setUseKnowledgeBase] = useState(false);
   const [enableAgentMemory, setEnableAgentMemory] = useState(false);
   const [supervised, setSupervised] = useState(false);
-
-  useEffect(() => {
-    getAgents()
-      .then((res) => {
-        if (res && res.length > 0) {
-          setAgents(res.map((a) => ({ name: a.name, icon: a.icon, role: a.role })));
-          setSelectedAgents(new Set(res.map((a) => a.name)));
-        }
-      })
-      .catch(() => {}); // fall back to defaults
-  }, []);
 
   // Auto-expand textarea height as content grows.
   useEffect(() => {
@@ -87,20 +110,6 @@ export default function DebateInput({
     el.style.height = "auto";
     el.style.height = `${el.scrollHeight}px`;
   }, [query]);
-
-  function toggleAgent(name: string) {
-    if (name === "Moderator") return; // Moderator is always required
-    setSelectedAgents((prev) => {
-      const next = new Set(prev);
-      if (next.has(name)) {
-        if (next.size <= 2) return prev; // must keep at least 2 agents
-        next.delete(name);
-      } else {
-        next.add(name);
-      }
-      return next;
-    });
-  }
 
   function handleSubmit(e: FormEvent) {
     e.preventDefault();
@@ -113,8 +122,13 @@ export default function DebateInput({
       return;
     }
     const allSelected = selectedAgents.size === agents.length;
+    const isCustom = selection === "custom";
     onSubmit(query.trim(), {
-      mode,
+      // "Custom" maps to Standard's config with an explicit round override;
+      // the presets resolve their own round count on the backend.
+      mode: isCustom ? "standard" : selection,
+      max_rounds: isCustom ? customRounds : undefined,
+      consensus_threshold: isCustom ? customThreshold : undefined,
       agents: allSelected ? undefined : [...selectedAgents],
       use_knowledge_base: useKnowledgeBase,
       enable_agent_memory: enableAgentMemory,
@@ -128,7 +142,7 @@ export default function DebateInput({
   const charCount = query.length;
 
   return (
-    <form onSubmit={handleSubmit} className="space-y-5">
+    <form onSubmit={handleSubmit} className="flex flex-col gap-2.5 lg:flex-1 lg:min-h-0 lg:justify-between">
       {/* Text area */}
       <div>
         <div className="flex justify-between items-center mb-1">
@@ -138,7 +152,7 @@ export default function DebateInput({
           >
             What should the agents debate?
           </label>
-          <span className={`text-xs tabular-nums ${charCount > 4800 ? "text-red-500" : "text-gray-400 dark:text-gray-500"}`}>
+          <span className={`text-xs tabular-nums ${charCount > 4800 ? "text-red-500" : "text-gray-500 dark:text-gray-400"}`}>
             {charCount} / 5000
           </span>
         </div>
@@ -158,14 +172,14 @@ export default function DebateInput({
           placeholder="e.g. Should our company expand into the Asian market in Q3?"
           disabled={isLoading}
           maxLength={5000}
-          className={`w-full rounded-lg border px-4 py-3 text-sm min-h-[96px] overflow-hidden
-                     bg-white dark:bg-gray-800 text-gray-900 dark:text-gray-100
+          className={`w-full rounded-lg border px-4 py-2 text-sm min-h-[52px] overflow-hidden
+                     bg-surface-raised text-gray-900 dark:text-gray-100
                      placeholder:text-gray-400 dark:placeholder:text-gray-500
                      focus:outline-none transition
-                     disabled:bg-gray-50 dark:disabled:bg-gray-700 disabled:text-gray-400
+                     disabled:bg-gray-50 dark:disabled:bg-gray-800 disabled:text-gray-400
                      ${showErrorState
                        ? "border-red-500 dark:border-red-500 ring-2 ring-red-400/30 focus:ring-red-500"
-                       : "border-gray-300 dark:border-gray-600 focus:ring-2 focus:ring-blue-500 focus:border-transparent"
+                       : "border-line-strong focus:ring-2 focus:ring-accent-500 focus:border-transparent"
                      }
                      ${isShaking ? "animate-shake" : ""}`}
         />
@@ -174,142 +188,229 @@ export default function DebateInput({
             Query must be at least 10 characters.
           </p>
         )}
+
+        {/* Sample question chips — shown until the user starts typing */}
+        {samples && samples.length > 0 && query.trim().length === 0 && !isLoading && (
+          <div className="mt-2 flex flex-wrap items-center gap-1.5">
+            <span className="inline-flex items-center gap-1 text-xs text-gray-400 dark:text-gray-500">
+              <Sparkles className="w-3 h-3" aria-hidden="true" /> Try:
+            </span>
+            {samples.map((s) => (
+              <button
+                key={s.label}
+                type="button"
+                onClick={() => {
+                  setQuery(s.query);
+                  textareaRef.current?.focus();
+                }}
+                className="text-xs px-2.5 py-1 rounded-full border border-line text-gray-600 dark:text-gray-300
+                           hover:border-accent-400 hover:text-accent-700 dark:hover:text-accent-300
+                           hover:bg-accent-50 dark:hover:bg-accent-900/20 transition"
+              >
+                {s.label}
+              </button>
+            ))}
+          </div>
+        )}
       </div>
 
       {/* Debate mode selector */}
       <div>
-        <label className="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-2">
+        <label className="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1.5">
           Debate mode
         </label>
-        <div className="grid grid-cols-3 gap-2">
-          {MODE_OPTIONS.map(({ value, label, description }) => (
-            <button
-              key={value}
-              type="button"
-              onClick={() => setMode(value)}
-              disabled={isLoading}
-              className={`rounded-lg border px-3 py-2.5 text-left text-xs transition
-                ${mode === value
-                  ? "border-blue-500 bg-blue-50 dark:bg-blue-900/30 text-blue-700 dark:text-blue-300"
-                  : "border-gray-200 dark:border-gray-600 bg-white dark:bg-gray-800 text-gray-600 dark:text-gray-400 hover:border-gray-300 dark:hover:border-gray-500"
-                }
-                disabled:opacity-50 disabled:cursor-not-allowed`}
-            >
-              <div className="font-semibold mb-0.5">{label}</div>
-              <div className="opacity-75 leading-snug">{description}</div>
-            </button>
-          ))}
-        </div>
-      </div>
-
-      {/* Agent selector */}
-      <div>
-        <div className="flex items-center justify-between mb-2">
-          <label className="block text-sm font-medium text-gray-700 dark:text-gray-300">
-            Participating agents
-          </label>
-          <span className="text-xs text-gray-400">
-            {selectedAgents.size} / {agents.length} selected
-          </span>
-        </div>
-        <div className="flex flex-wrap gap-2">
-          {agents.map(({ name, icon, role }) => {
-            const isSelected = selectedAgents.has(name);
-            const isRequired = name === "Moderator";
+        <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-2">
+          {MODE_OPTIONS.map(({ value, label, Icon, duration, description }) => {
+            const selected = selection === value;
             return (
               <button
-                key={name}
+                key={value}
                 type="button"
-                onClick={() => toggleAgent(name)}
-                disabled={isLoading || isRequired}
-                title={isRequired ? "Moderator is always required" : role}
-                className={`inline-flex items-center gap-1.5 px-3 py-1.5 rounded-full text-xs font-medium border transition
-                  ${isSelected
-                    ? "border-blue-500 bg-blue-50 dark:bg-blue-900/30 text-blue-700 dark:text-blue-300"
-                    : "border-gray-300 dark:border-gray-600 bg-white dark:bg-gray-800 text-gray-500 dark:text-gray-400 opacity-60"
+                onClick={() => setSelection(value)}
+                disabled={isLoading}
+                aria-pressed={selected}
+                title={description}
+                className={`rounded-xl border px-3 py-1.5 text-left text-xs transition
+                  ${selected
+                    ? "border-accent-500 ring-1 ring-accent-500 bg-accent-50 dark:bg-accent-900/20 text-accent-700 dark:text-accent-300"
+                    : "border-line bg-surface-raised text-gray-600 dark:text-gray-400 hover:border-line-strong"
                   }
-                  ${isRequired ? "cursor-default" : "hover:border-blue-400 cursor-pointer"}
-                  disabled:cursor-default`}
+                  disabled:opacity-50 disabled:cursor-not-allowed`}
               >
-                <span>{icon}</span>
-                <span>{name}</span>
-                {isRequired && <span className="opacity-60 text-xs">*</span>}
+                <span className="flex items-center gap-1.5">
+                  <Icon
+                    className={`w-4 h-4 shrink-0 ${selected ? "text-accent-600 dark:text-accent-400" : "text-gray-400"}`}
+                    aria-hidden="true"
+                  />
+                  <span className="font-semibold text-sm">{label}</span>
+                  <span className="ml-auto text-[10px] font-medium uppercase tracking-wide opacity-70">{duration}</span>
+                  {selected && (
+                    <span
+                      aria-hidden="true"
+                      className="w-4 h-4 rounded-full bg-accent-600 text-white flex items-center justify-center shrink-0"
+                    >
+                      <Check className="w-2.5 h-2.5" strokeWidth={3} />
+                    </span>
+                  )}
+                </span>
+                <span className="block opacity-75 leading-snug mt-1">{description}</span>
               </button>
             );
           })}
+
+          {/* 4th option — Custom: Standard's config with a user-chosen round count */}
+          {(() => {
+            const selected = selection === "custom";
+            return (
+              <button
+                type="button"
+                onClick={() => setSelection("custom")}
+                disabled={isLoading}
+                aria-pressed={selected}
+                title="Full critique with a round count you choose"
+                className={`rounded-xl border px-3 py-1.5 text-left text-xs transition
+                  ${selected
+                    ? "border-accent-500 ring-1 ring-accent-500 bg-accent-50 dark:bg-accent-900/20 text-accent-700 dark:text-accent-300"
+                    : "border-line bg-surface-raised text-gray-600 dark:text-gray-400 hover:border-line-strong"
+                  }
+                  disabled:opacity-50 disabled:cursor-not-allowed`}
+              >
+                <span className="flex items-center gap-1.5">
+                  <Settings2
+                    className={`w-4 h-4 shrink-0 ${selected ? "text-accent-600 dark:text-accent-400" : "text-gray-400"}`}
+                    aria-hidden="true"
+                  />
+                  <span className="font-semibold text-sm">Custom</span>
+                  <span className="ml-auto text-[10px] font-medium uppercase tracking-wide opacity-70 tabular-nums">{customRounds} rds · {customThreshold.toFixed(2)}</span>
+                  {selected && (
+                    <span
+                      aria-hidden="true"
+                      className="w-4 h-4 rounded-full bg-accent-600 text-white flex items-center justify-center shrink-0"
+                    >
+                      <Check className="w-2.5 h-2.5" strokeWidth={3} />
+                    </span>
+                  )}
+                </span>
+                <span className="block opacity-75 leading-snug mt-1">Pick rounds · Full critique</span>
+              </button>
+            );
+          })()}
         </div>
+
+        {/* Custom controls — shown only when Custom is selected, so the form stays compact */}
+        {selection === "custom" && (
+          <div className="mt-2 rounded-xl border border-line bg-surface-raised px-3 py-2.5 space-y-2">
+            {/* Rounds */}
+            <div className="flex items-center gap-3">
+              <span className="w-20 text-xs font-medium text-gray-700 dark:text-gray-300">Rounds</span>
+              <div className="flex items-center gap-2">
+                <button
+                  type="button"
+                  onClick={() => setCustomRounds((r) => Math.max(CUSTOM_MIN_ROUNDS, r - 1))}
+                  disabled={isLoading || customRounds <= CUSTOM_MIN_ROUNDS}
+                  aria-label="Fewer rounds"
+                  className="w-7 h-7 rounded-lg border border-line-strong text-gray-700 dark:text-gray-300 flex items-center justify-center text-base leading-none hover:border-accent-400 disabled:opacity-40 disabled:cursor-not-allowed transition"
+                >
+                  −
+                </button>
+                <span className="w-9 text-center text-sm font-semibold tabular-nums" aria-live="polite">{customRounds}</span>
+                <button
+                  type="button"
+                  onClick={() => setCustomRounds((r) => Math.min(CUSTOM_MAX_ROUNDS, r + 1))}
+                  disabled={isLoading || customRounds >= CUSTOM_MAX_ROUNDS}
+                  aria-label="More rounds"
+                  className="w-7 h-7 rounded-lg border border-line-strong text-gray-700 dark:text-gray-300 flex items-center justify-center text-base leading-none hover:border-accent-400 disabled:opacity-40 disabled:cursor-not-allowed transition"
+                >
+                  +
+                </button>
+              </div>
+              <span className="ml-auto text-[11px] text-gray-500 dark:text-gray-400">
+                {CUSTOM_MIN_ROUNDS}–{CUSTOM_MAX_ROUNDS} · full critique
+              </span>
+            </div>
+            {/* Consensus threshold */}
+            <div className="flex items-center gap-3">
+              <span className="w-20 text-xs font-medium text-gray-700 dark:text-gray-300">Threshold</span>
+              <div className="flex items-center gap-2">
+                <button
+                  type="button"
+                  onClick={() => setCustomThreshold((t) => roundThreshold(Math.max(CUSTOM_MIN_THRESHOLD, t - CUSTOM_THRESHOLD_STEP)))}
+                  disabled={isLoading || customThreshold <= CUSTOM_MIN_THRESHOLD}
+                  aria-label="Lower consensus threshold"
+                  className="w-7 h-7 rounded-lg border border-line-strong text-gray-700 dark:text-gray-300 flex items-center justify-center text-base leading-none hover:border-accent-400 disabled:opacity-40 disabled:cursor-not-allowed transition"
+                >
+                  −
+                </button>
+                <span className="w-9 text-center text-sm font-semibold tabular-nums" aria-live="polite">{customThreshold.toFixed(2)}</span>
+                <button
+                  type="button"
+                  onClick={() => setCustomThreshold((t) => roundThreshold(Math.min(CUSTOM_MAX_THRESHOLD, t + CUSTOM_THRESHOLD_STEP)))}
+                  disabled={isLoading || customThreshold >= CUSTOM_MAX_THRESHOLD}
+                  aria-label="Raise consensus threshold"
+                  className="w-7 h-7 rounded-lg border border-line-strong text-gray-700 dark:text-gray-300 flex items-center justify-center text-base leading-none hover:border-accent-400 disabled:opacity-40 disabled:cursor-not-allowed transition"
+                >
+                  +
+                </button>
+              </div>
+              <span className="ml-auto text-[11px] text-gray-500 dark:text-gray-400">
+                agreement to stop early
+              </span>
+            </div>
+          </div>
+        )}
       </div>
 
       {/* P3 Intelligence toggles */}
-      <div className="rounded-lg border border-gray-200 dark:border-gray-700 p-3 space-y-2">
-        <p className="text-xs font-semibold text-gray-500 dark:text-gray-400 uppercase tracking-wide mb-2">
+      <div className="rounded-xl border border-line px-3 py-2 space-y-1">
+        <p className="text-xs font-semibold text-gray-500 dark:text-gray-400 uppercase tracking-wide mb-1">
           Intelligence options
         </p>
         <label className="flex items-center gap-3 cursor-pointer select-none">
-          <input
-            type="checkbox"
-            checked={useKnowledgeBase}
-            onChange={(e) => setUseKnowledgeBase(e.target.checked)}
-            disabled={isLoading}
-            className="rounded border-gray-300 text-blue-600 focus:ring-blue-500"
-          />
+          <Toggle checked={useKnowledgeBase} onChange={setUseKnowledgeBase} disabled={isLoading} />
           <span className="text-sm text-gray-700 dark:text-gray-300">
             <span className="font-medium">Knowledge Base</span>
-            <span className="text-gray-400 dark:text-gray-500 ml-1">– inject relevant documents into agent prompts</span>
+            <span className="text-gray-500 dark:text-gray-400 ml-1">– inject relevant documents into agent prompts</span>
             <a href="/knowledge" className="ml-2 text-blue-500 hover:underline text-xs">Manage docs ↗</a>
           </span>
         </label>
         <label className="flex items-center gap-3 cursor-pointer select-none">
-          <input
-            type="checkbox"
-            checked={enableAgentMemory}
-            onChange={(e) => setEnableAgentMemory(e.target.checked)}
-            disabled={isLoading}
-            className="rounded border-gray-300 text-blue-600 focus:ring-blue-500"
-          />
+          <Toggle checked={enableAgentMemory} onChange={setEnableAgentMemory} disabled={isLoading} />
           <span className="text-sm text-gray-700 dark:text-gray-300">
             <span className="font-medium">Agent Memory</span>
-            <span className="text-gray-400 dark:text-gray-500 ml-1">— use lessons learned from prior debates</span>
+            <span className="text-gray-500 dark:text-gray-400 ml-1">— use lessons learned from prior debates</span>
           </span>
         </label>
         <label className="flex items-center gap-3 cursor-pointer select-none">
-          <input
-            type="checkbox"
-            checked={supervised}
-            onChange={(e) => setSupervised(e.target.checked)}
-            disabled={isLoading}
-            className="rounded border-gray-300 text-purple-600 focus:ring-purple-500"
-          />
+          <Toggle checked={supervised} onChange={setSupervised} disabled={isLoading} />
           <span className="text-sm text-gray-700 dark:text-gray-300">
             <span className="font-medium">Supervised mode</span>
-            <span className="text-gray-400 dark:text-gray-500 ml-1">— pause for human review before finalising</span>
+            <span className="text-gray-500 dark:text-gray-400 ml-1">— pause for human review before finalising</span>
           </span>
         </label>
       </div>
 
-      {/* Submit / Cancel */}
-      <div className="flex gap-3">
-        <button
-          type="submit"
-          disabled={isLoading || query.trim().length < 10}
-          className="flex-1 py-3 rounded-lg bg-blue-600 text-white font-semibold text-sm
-                     hover:bg-blue-700 focus:ring-2 focus:ring-blue-400 focus:ring-offset-2
-                     disabled:opacity-50 disabled:cursor-not-allowed transition"
-        >
-          {isLoading ? "Agents are debating…" : "Start Debate"}
-        </button>
-        {isLoading && onCancel && (
-          <button
-            type="button"
-            onClick={onCancel}
-            className="px-4 py-3 rounded-lg bg-gray-200 dark:bg-gray-700 text-gray-700 dark:text-gray-300
-                       text-sm font-medium hover:bg-gray-300 dark:hover:bg-gray-600 transition"
+      {/* Submit / Cancel — docked to the bottom of the config panel on desktop;
+          a normal in-flow button on mobile so it never overlaps the form. */}
+      <div className="flex flex-col gap-1.5 pt-1.5 bg-surface-raised border-t border-line
+                      lg:sticky lg:bottom-0 lg:mt-3 lg:-mx-5 lg:-mb-5 lg:px-5 lg:py-2
+                      lg:shadow-[0_-6px_16px_-8px_rgba(0,0,0,0.12)]">
+        <div className="flex gap-3">
+          <Button
+            type="submit"
+            variant="primary"
+            disabled={isLoading || query.trim().length < 10}
+            loading={isLoading}
+            className="flex-1 font-semibold py-1.5"
           >
-            Cancel
-          </button>
-        )}
+            {isLoading ? "Agents are debating…" : "Start Debate"}
+          </Button>
+          {isLoading && onCancel && (
+            <Button type="button" variant="secondary" onClick={onCancel}>
+              Cancel
+            </Button>
+          )}
+        </div>
       </div>
     </form>
   );
 }
-

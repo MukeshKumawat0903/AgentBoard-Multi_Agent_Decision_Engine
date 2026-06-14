@@ -5,7 +5,7 @@
 
 "use client";
 
-import { useState, useEffect, useRef } from "react";
+import { useState, useEffect, useRef, useCallback } from "react";
 import {
   listKnowledgeDocuments,
   uploadKnowledgeDocument,
@@ -15,6 +15,10 @@ import type { KnowledgeDocument } from "@/lib/types";
 import { useToast } from "@/components/Toast";
 import { SkeletonList } from "@/components/Skeleton";
 
+// NB5c: keep in sync with KB_MAX_FILE_MB in config.py
+const MAX_FILE_BYTES = 10 * 1024 * 1024;
+const ALLOWED_EXTS = [".pdf", ".txt", ".md"];
+
 export default function KnowledgePage() {
   const { showToast } = useToast();
   const [docs, setDocs] = useState<KnowledgeDocument[]>([]);
@@ -23,6 +27,7 @@ export default function KnowledgePage() {
   const [uploading, setUploading] = useState(false);
   const [uploadError, setUploadError] = useState<string | null>(null);
   const [deleteTarget, setDeleteTarget] = useState<string | null>(null);
+  const [dragOver, setDragOver] = useState(false);  // NB5b: drag-drop state
   const fileInputRef = useRef<HTMLInputElement>(null);
 
   async function fetchDocs() {
@@ -40,27 +45,62 @@ export default function KnowledgePage() {
 
   useEffect(() => { fetchDocs(); }, []);
 
-  async function handleFileChange(e: React.ChangeEvent<HTMLInputElement>) {
-    const file = e.target.files?.[0];
-    if (!file) return;
+  // NB5c: validate file before sending to API
+  function validateFile(file: File): string | null {
+    const ext = "." + file.name.split(".").pop()?.toLowerCase();
+    if (!ALLOWED_EXTS.includes(ext)) {
+      return `Unsupported type '${ext}'. Allowed: ${ALLOWED_EXTS.join(", ")}`;
+    }
+    if (file.size > MAX_FILE_BYTES) {
+      return `File too large (${(file.size / 1024 / 1024).toFixed(1)} MB). Max ${MAX_FILE_BYTES / 1024 / 1024} MB.`;
+    }
+    return null;
+  }
+
+  async function uploadFile(file: File) {
+    const err = validateFile(file);
+    if (err) { setUploadError(err); return; }
     setUploading(true);
     setUploadError(null);
     try {
-      await uploadKnowledgeDocument(file);
+      const result = await uploadKnowledgeDocument(file);
       await fetchDocs();
-    } catch (err) {
-      setUploadError(err instanceof Error ? err.message : "Upload failed.");
+      // NB5a: success toast
+      showToast(`Uploaded "${file.name}" — ${result.chunks_indexed} chunks indexed`, "success");
+    } catch (uploadErr) {
+      setUploadError(uploadErr instanceof Error ? uploadErr.message : "Upload failed.");
     } finally {
       setUploading(false);
       if (fileInputRef.current) fileInputRef.current.value = "";
     }
   }
 
+  async function handleFileChange(e: React.ChangeEvent<HTMLInputElement>) {
+    const file = e.target.files?.[0];
+    if (file) await uploadFile(file);
+  }
+
+  // NB5b: drag-and-drop handlers
+  const handleDragOver = useCallback((e: React.DragEvent) => {
+    e.preventDefault();
+    setDragOver(true);
+  }, []);
+
+  const handleDragLeave = useCallback(() => setDragOver(false), []);
+
+  const handleDrop = useCallback(async (e: React.DragEvent) => {
+    e.preventDefault();
+    setDragOver(false);
+    const file = e.dataTransfer.files?.[0];
+    if (file) await uploadFile(file);
+  }, []); // eslint-disable-line react-hooks/exhaustive-deps
+
   async function handleDelete(name: string) {
     setDeleteTarget(name);
     try {
       await deleteKnowledgeDocument(name);
       setDocs((prev) => prev.filter((d) => d.name !== name));
+      showToast(`"${name}" removed from knowledge base`, "success");
     } catch (err) {
       showToast(err instanceof Error ? err.message : "Delete failed.", "error");
     } finally {
@@ -68,39 +108,57 @@ export default function KnowledgePage() {
     }
   }
 
+  // FI7: colour-code chunk count as a quality signal
+  function chunkQualityColor(chunks: number): string {
+    if (chunks === 0) return "text-red-500 dark:text-red-400";
+    if (chunks <= 2)  return "text-amber-500 dark:text-amber-400";
+    return "text-green-600 dark:text-green-400";
+  }
+
   return (
     <div className="max-w-3xl mx-auto px-4 py-8 space-y-8 animate-fadeIn">
       <div>
-        <h1 className="text-2xl font-bold text-gray-800 dark:text-gray-100 mb-1">Knowledge Base</h1>
+        <h1 className="text-2xl font-bold tracking-tight text-gray-800 dark:text-gray-100 mb-1">Knowledge Base</h1>
         <p className="text-sm text-gray-500 dark:text-gray-400">
           Upload documents (PDF, TXT, Markdown) so agents can retrieve relevant context during debates.
         </p>
       </div>
 
       {/* Upload card */}
-      <div className="bg-white dark:bg-gray-900 rounded-xl border dark:border-gray-800 shadow-sm p-6">
+      <div className="rounded-2xl bg-surface-raised ring-1 ring-black/5 dark:ring-white/10 shadow-card p-6">
         <h2 className="text-sm font-semibold text-gray-700 dark:text-gray-300 mb-3">Upload Document</h2>
+        {/* NB5b: drag-and-drop enabled — dashed border now fulfils its visual promise */}
         <div
           onClick={() => fileInputRef.current?.click()}
-          className="flex flex-col items-center justify-center border-2 border-dashed border-gray-300 dark:border-gray-600 rounded-lg p-8 cursor-pointer
-                     hover:border-blue-400 dark:hover:border-blue-600 transition-colors"
+          onDragOver={handleDragOver}
+          onDragLeave={handleDragLeave}
+          onDrop={handleDrop}
+          className={`flex flex-col items-center justify-center border-2 border-dashed rounded-lg p-8 cursor-pointer transition-colors ${
+            dragOver
+              ? "border-accent-500 dark:border-accent-400 bg-blue-50 dark:bg-blue-900/20"
+              : "border-line-strong hover:border-accent-400 dark:hover:border-blue-600"
+          }`}
         >
           {uploading ? (
-            <span className="w-8 h-8 border-4 border-blue-500 border-t-transparent rounded-full animate-spin mb-2" />
+            <span className="w-8 h-8 border-4 border-accent-500 border-t-transparent rounded-full animate-spin mb-2" />
           ) : (
-            <span className="text-3xl mb-2">📄</span>
+            <span className="text-3xl mb-2">{dragOver ? "📂" : "📄"}</span>
           )}
-          <p className="text-sm text-gray-500 dark:text-gray-400">
-            {uploading ? "Uploading…" : "Click to upload PDF, TXT, or Markdown (max 10 MB)"}
+          <p className="text-sm text-gray-500 dark:text-gray-400 text-center">
+            {uploading
+              ? "Uploading…"
+              : dragOver
+              ? "Drop to upload"
+              : "Click or drag a file here · PDF, TXT, Markdown (max 10 MB)"}
           </p>
           {uploadError && (
-            <p className="text-xs text-red-500 mt-2">{uploadError}</p>
+            <p className="text-xs text-red-500 mt-2 text-center">{uploadError}</p>
           )}
         </div>
         <input
           ref={fileInputRef}
           type="file"
-          accept=".pdf,.txt,.md"
+          accept={ALLOWED_EXTS.join(",")}
           className="hidden"
           onChange={handleFileChange}
           disabled={uploading}
@@ -108,15 +166,15 @@ export default function KnowledgePage() {
       </div>
 
       {/* Document list */}
-      <div className="bg-white dark:bg-gray-900 rounded-xl border dark:border-gray-800 shadow-sm">
-        <div className="px-6 py-4 border-b dark:border-gray-800 flex items-center justify-between">
+      <div className="rounded-2xl bg-surface-raised ring-1 ring-black/5 dark:ring-white/10 shadow-card">
+        <div className="px-6 py-4 border-b border-line flex items-center justify-between">
           <h2 className="text-sm font-semibold text-gray-700 dark:text-gray-300">
             Indexed Documents
           </h2>
           <button
             onClick={fetchDocs}
             disabled={loading}
-            className="text-xs text-blue-600 dark:text-blue-400 hover:underline disabled:opacity-50"
+            className="text-xs text-accent-600 dark:text-accent-400 hover:underline disabled:opacity-50"
           >
             Refresh
           </button>
@@ -129,7 +187,7 @@ export default function KnowledgePage() {
             <p className="text-sm text-red-500 dark:text-red-400">{fetchError}</p>
             <button
               onClick={fetchDocs}
-              className="text-xs text-blue-600 dark:text-blue-400 hover:underline"
+              className="text-xs text-accent-600 dark:text-accent-400 hover:underline"
             >
               Retry
             </button>
@@ -151,7 +209,7 @@ export default function KnowledgePage() {
             </div>
             <button
               onClick={() => fileInputRef.current?.click()}
-              className="px-4 py-2 rounded-lg bg-blue-600 text-white text-sm font-medium hover:bg-blue-700 transition focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-blue-500"
+              className="px-4 py-2 rounded-lg bg-accent-600 text-white text-sm font-medium hover:bg-accent-700 transition focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent-500"
             >
               Upload a document
             </button>
@@ -168,8 +226,11 @@ export default function KnowledgePage() {
                     <p className="text-sm text-gray-700 dark:text-gray-300 truncate font-medium">
                       {doc.name}
                     </p>
-                    <p className="text-xs text-gray-400">
+                    {/* FI7: colour-coded chunk count as quality signal */}
+                    <p className={`text-xs font-medium ${chunkQualityColor(doc.chunks)}`}>
                       {doc.chunks} chunk{doc.chunks !== 1 ? "s" : ""} indexed
+                      {doc.chunks === 0 && " — no text extracted"}
+                      {doc.chunks > 0 && doc.chunks <= 2 && " — very short"}
                     </p>
                   </div>
                 </div>

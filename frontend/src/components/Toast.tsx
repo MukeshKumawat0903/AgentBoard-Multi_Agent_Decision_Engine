@@ -45,7 +45,7 @@ const DISMISS_AFTER_MS = 5000;
 const VARIANT_STYLES: Record<ToastVariant, string> = {
   success: "bg-green-600 dark:bg-green-700",
   error:   "bg-red-600   dark:bg-red-700",
-  info:    "bg-blue-600  dark:bg-blue-700",
+  info:    "bg-accent-600  dark:bg-blue-700",
 };
 
 const VARIANT_ICONS: Record<ToastVariant, string> = {

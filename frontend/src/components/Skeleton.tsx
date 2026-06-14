@@ -55,7 +55,7 @@ export function SkeletonCard({ className = "" }: { className?: string }) {
   return (
     <div
       aria-hidden="true"
-      className={`rounded-xl border border-gray-200 dark:border-gray-700 bg-white dark:bg-gray-900 p-4 space-y-3 ${className}`}
+      className={`rounded-2xl bg-surface-raised ring-1 ring-black/5 dark:ring-white/10 shadow-card p-4 space-y-3 ${className}`}
     >
       {/* header */}
       <div className="flex items-center gap-3">
@@ -78,7 +78,7 @@ export function SkeletonKpi({ className = "" }: { className?: string }) {
   return (
     <div
       aria-hidden="true"
-      className={`rounded-xl border border-gray-200 dark:border-gray-700 bg-white dark:bg-gray-900 p-5 space-y-2 ${className}`}
+      className={`rounded-2xl bg-surface-raised ring-1 ring-black/5 dark:ring-white/10 shadow-card p-5 space-y-2 ${className}`}
     >
       <SkeletonBlock className="h-3 w-2/3" />
       <SkeletonBlock className="h-8 w-1/2" />
@@ -122,7 +122,7 @@ export function SkeletonAgentPanel({ className = "" }: { className?: string }) {
   return (
     <div
       aria-hidden="true"
-      className={`rounded-xl border border-gray-200 dark:border-gray-700 bg-white dark:bg-gray-900 overflow-hidden ${className}`}
+      className={`rounded-2xl bg-surface-raised ring-1 ring-black/5 dark:ring-white/10 shadow-card overflow-hidden ${className}`}
     >
       {/* header strip */}
       <div className={`${base} h-14 w-full rounded-none`} />

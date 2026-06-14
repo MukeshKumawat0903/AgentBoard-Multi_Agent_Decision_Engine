@@ -1,26 +1,20 @@
 /**
  * Agent memory management page.
  * View and clear per-agent learned memories from past debates.
+ *
+ * NB11: agent list is fetched live from GET /agents so new domain/custom
+ * agents appear automatically without a frontend code change.
+ * NB2: agent names are stored in title case ("Analyst") — COLLATE NOCASE
+ * was added to the SQL query to make the lookup case-insensitive.
  */
 
 "use client";
 
 import { useState, useEffect } from "react";
-import { getAgentMemory, clearAgentMemory } from "@/lib/api";
+import { getAgentMemory, clearAgentMemory, getAgents } from "@/lib/api";
 import type { MemoryEntry } from "@/lib/api";
+import type { AgentConfigResponse } from "@/lib/types";
 import { SkeletonText } from "@/components/Skeleton";
-
-const KNOWN_AGENTS = [
-  { name: "analyst", label: "Analyst", icon: "🔍" },
-  { name: "risk", label: "Risk", icon: "⚠️" },
-  { name: "strategy", label: "Strategy", icon: "🎯" },
-  { name: "ethics", label: "Ethics", icon: "⚖️" },
-  { name: "moderator", label: "Moderator", icon: "🧑‍⚖️" },
-  { name: "financial_ethics", label: "Financial Ethics", icon: "💰" },
-  { name: "security", label: "Security", icon: "🔒" },
-  { name: "compliance", label: "Compliance", icon: "📋" },
-  { name: "patient_safety", label: "Patient Safety", icon: "🏥" },
-];
 
 interface AgentMemoryState {
   entries: MemoryEntry[];
@@ -39,36 +33,44 @@ function timeAgo(dateStr: string): string {
 }
 
 export default function MemoryPage() {
-  const [memoryMap, setMemoryMap] = useState<Record<string, AgentMemoryState>>(
-    () =>
-      Object.fromEntries(
-        KNOWN_AGENTS.map((a) => [
-          a.name,
-          { entries: [], loading: true, clearing: false, error: null },
-        ])
-      )
-  );
+  const [agents, setAgents] = useState<AgentConfigResponse[]>([]);
+  const [agentsLoading, setAgentsLoading] = useState(true);
+  const [memoryMap, setMemoryMap] = useState<Record<string, AgentMemoryState>>({});
 
+  // NB11: fetch live agent list so domain/custom agents appear automatically
   useEffect(() => {
-    KNOWN_AGENTS.forEach((agent) => {
-      getAgentMemory(agent.name, 20)
-        .then((entries) =>
-          setMemoryMap((prev) => ({
-            ...prev,
-            [agent.name]: { ...prev[agent.name], entries, loading: false },
-          }))
-        )
-        .catch((err) =>
-          setMemoryMap((prev) => ({
-            ...prev,
-            [agent.name]: {
-              ...prev[agent.name],
-              loading: false,
-              error: err instanceof Error ? err.message : "Failed to load",
-            },
-          }))
-        );
-    });
+    getAgents()
+      .then((list) => {
+        setAgents(list);
+        // Initialise memory state map for each agent
+        const initial: Record<string, AgentMemoryState> = {};
+        for (const a of list) {
+          initial[a.name] = { entries: [], loading: true, clearing: false, error: null };
+        }
+        setMemoryMap(initial);
+        // Load memory for each agent using the registry name (title case)
+        for (const a of list) {
+          getAgentMemory(a.name, 20)
+            .then((entries) =>
+              setMemoryMap((prev) => ({
+                ...prev,
+                [a.name]: { ...prev[a.name], entries, loading: false },
+              }))
+            )
+            .catch((err) =>
+              setMemoryMap((prev) => ({
+                ...prev,
+                [a.name]: {
+                  ...prev[a.name],
+                  loading: false,
+                  error: err instanceof Error ? err.message : "Failed to load",
+                },
+              }))
+            );
+        }
+      })
+      .catch(() => setAgents([]))
+      .finally(() => setAgentsLoading(false));
   }, []);
 
   async function handleClear(agentName: string) {
@@ -97,23 +99,33 @@ export default function MemoryPage() {
   return (
     <div className="max-w-3xl mx-auto px-4 py-8 space-y-6 animate-fadeIn">
       <div>
-        <h1 className="text-2xl font-bold text-gray-800 dark:text-gray-100 mb-1">Agent Memory</h1>
+        <h1 className="text-2xl font-bold tracking-tight text-gray-800 dark:text-gray-100 mb-1">Agent Memory</h1>
         <p className="text-sm text-gray-500 dark:text-gray-400">
           Lessons and summaries accumulated by agents from past debates. Clear per-agent to reset.
         </p>
       </div>
 
-      {KNOWN_AGENTS.map((agent) => {
-        const state = memoryMap[agent.name];
+      {agentsLoading && (
+        <div className="py-8 flex justify-center">
+          <span className="w-5 h-5 border-4 border-accent-500 border-t-transparent rounded-full animate-spin" />
+        </div>
+      )}
+
+      {!agentsLoading && agents.length === 0 && (
+        <p className="text-sm text-gray-400 py-4">No agents registered. Start the backend and reload.</p>
+      )}
+
+      {agents.map((agent) => {
+        const state = memoryMap[agent.name] ?? { entries: [], loading: true, clearing: false, error: null };
         const hasEntries = state.entries.length > 0;
 
         return (
-          <div key={agent.name} className="bg-white dark:bg-gray-900 rounded-xl border dark:border-gray-800 shadow-sm">
-            <div className="px-5 py-4 border-b dark:border-gray-800 flex items-center justify-between">
+          <div key={agent.name} className="rounded-2xl bg-surface-raised ring-1 ring-black/5 dark:ring-white/10 shadow-card">
+            <div className="px-5 py-4 border-b border-line flex items-center justify-between">
               <div className="flex items-center gap-2">
                 <span className="text-lg">{agent.icon}</span>
                 <span className="font-semibold text-gray-800 dark:text-gray-100 text-sm">
-                  {agent.label} Agent
+                  {agent.name} Agent
                 </span>
                 {!state.loading && (
                   <span className="ml-1 text-xs text-gray-400">
@@ -164,6 +176,7 @@ export default function MemoryPage() {
                           {timeAgo(entry.created_at)}
                         </span>
                       </div>
+                      {/* FI8: lesson and summary are both visible inline */}
                       {entry.lesson_learned && (
                         <p className="text-sm text-gray-700 dark:text-gray-200 leading-snug">
                           {entry.lesson_learned}

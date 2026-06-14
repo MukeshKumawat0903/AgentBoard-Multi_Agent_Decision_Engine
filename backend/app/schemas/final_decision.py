@@ -5,7 +5,7 @@ The structured, auditable output produced by the Moderator Agent
 once the debate has converged or reached the maximum round limit.
 """
 
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 
 from pydantic import BaseModel, ConfigDict, Field
 
@@ -19,6 +19,23 @@ class MinorityReportEntry(BaseModel):
     final_position: str = Field(description="The agent's final stated position.")
     dissent_reason: str = Field(description="Why this position differs from the consensus.")
     confidence_score: float = Field(ge=0.0, le=1.0, description="Agent's self-assessed confidence.")
+
+
+class AgentStance(BaseModel):
+    """One agent's stance on a contested topic."""
+
+    agent: str = Field(description="Name of the agent, e.g. 'Analyst', 'Ethics'.")
+    stance: str = Field(description="What this agent argues on the topic, in one sentence.")
+
+
+class StructuredDisagreement(BaseModel):
+    """A contested topic framed as the opposing agents' stances (agent-vs-agent)."""
+
+    topic: str = Field(description="The point of contention.")
+    positions: list[AgentStance] = Field(
+        default_factory=list,
+        description="The opposing agents and their stances on this topic (usually 2).",
+    )
 
 
 class FinalDecision(BaseModel):
@@ -78,7 +95,7 @@ class FinalDecision(BaseModel):
         description="Why the debate ended, e.g. 'consensus_reached' or 'max_rounds_reached'.",
     )
     created_at: datetime = Field(
-        default_factory=lambda: datetime.now(timezone.utc),
+        default_factory=lambda: datetime.now(UTC),
         description="UTC timestamp when the final decision was produced.",
     )
     # --- P1.5: Richer output fields ---
@@ -90,9 +107,30 @@ class FinalDecision(BaseModel):
         default_factory=list,
         description="Top thematic disagreements that persisted across rounds.",
     )
+    structured_disagreements: list[StructuredDisagreement] = Field(
+        default_factory=list,
+        description="Key disagreements framed as opposing agents' stances (agent-vs-agent).",
+    )
     agent_contribution_scores: dict[str, float] = Field(
         default_factory=dict,
         description="Per-agent contribution score (0–1) based on confidence trajectory across rounds.",
+    )
+    degraded: bool = Field(
+        default=False,
+        description="True when one or more expected agents were absent from the final round "
+        "(timed out or errored), so the decision rests on fewer voices.",
+    )
+    missing_agents: list[str] = Field(
+        default_factory=list,
+        description="Names of agents that did not contribute to the final round.",
+    )
+    token_usage: dict = Field(
+        default_factory=dict,
+        description="Aggregate LLM token usage for the debate: input/output/total and by_model.",
+    )
+    estimated_cost_usd: float | None = Field(
+        default=None,
+        description="Best-effort estimated cost in USD (None when the model price is unknown).",
     )
 
     model_config = ConfigDict(

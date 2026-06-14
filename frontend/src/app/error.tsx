@@ -16,7 +16,7 @@ export default function GlobalError({ error, reset }: ErrorProps) {
   return (
     <div className="max-w-lg mx-auto text-center py-24 space-y-6 px-4">
       <div className="text-5xl">⚠️</div>
-      <h1 className="text-2xl font-bold text-gray-800 dark:text-gray-100">
+      <h1 className="text-2xl font-bold tracking-tight text-gray-800 dark:text-gray-100">
         Something went wrong
       </h1>
       <p className="text-gray-500 dark:text-gray-400 text-sm">
@@ -25,7 +25,7 @@ export default function GlobalError({ error, reset }: ErrorProps) {
       <div className="flex items-center justify-center gap-3">
         <button
           onClick={reset}
-          className="px-4 py-2 rounded-lg bg-blue-600 text-white text-sm font-medium hover:bg-blue-700 transition"
+          className="px-4 py-2 rounded-lg bg-accent-600 text-white text-sm font-medium hover:bg-accent-700 transition"
         >
           Try again
         </button>

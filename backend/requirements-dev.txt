@@ -2,3 +2,10 @@
 pytest==8.3.0
 pytest-asyncio==0.24.0
 anyio==4.4.0
+# Phase 6.4 — parallel test execution + coverage
+pytest-cov>=5.0.0
+pytest-xdist>=3.0.0
+# Phase 6.5 — type gate
+mypy>=1.8.0
+# lint + format
+ruff>=0.6.0

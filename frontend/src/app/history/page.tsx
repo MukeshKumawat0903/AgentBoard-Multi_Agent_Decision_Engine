@@ -6,10 +6,14 @@
 "use client";
 
 import { useEffect, useState, useCallback, useMemo } from "react";
+import Link from "next/link";
 import { useRouter } from "next/navigation";
+import { BookOpen, Brain, Check } from "lucide-react";
 import type { HistoryItem, HistoryListResponse } from "@/lib/types";
 import { getHistory, ApiError } from "@/lib/api";
 import { SkeletonList } from "@/components/Skeleton";
+import Badge from "@/components/ui/Badge";
+import Button from "@/components/ui/Button";
 
 const LIMIT = 15;
 
@@ -88,7 +92,7 @@ export default function HistoryPage() {
     <div className="max-w-4xl mx-auto space-y-6 animate-fadeIn">
       {/* Header */}
       <div>
-        <h1 className="text-2xl font-bold text-gray-800 dark:text-gray-100">
+        <h1 className="text-2xl font-bold tracking-tight text-gray-800 dark:text-gray-100">
           Debate History
         </h1>
         <p className="text-gray-500 dark:text-gray-400 text-sm mt-1">
@@ -103,22 +107,15 @@ export default function HistoryPage() {
           value={inputValue}
           onChange={(e) => setInputValue(e.target.value)}
           placeholder="Search by query or decision…"
-          className="flex-1 px-4 py-2 rounded-lg border border-gray-300 dark:border-gray-700 bg-white dark:bg-gray-900 text-gray-800 dark:text-gray-200 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500"
+          className="flex-1 px-4 py-2 rounded-lg border border-line-strong bg-surface-raised text-gray-800 dark:text-gray-200 text-sm focus:outline-none focus:ring-2 focus:ring-accent-500"
         />
-        <button
-          type="submit"
-          className="px-4 py-2 rounded-lg bg-blue-600 text-white text-sm font-medium hover:bg-blue-700 transition"
-        >
+        <Button type="submit" variant="primary" size="sm" className="px-4">
           Search
-        </button>
+        </Button>
         {(query || terminationFilter !== "all" || sortOrder !== "newest") && (
-          <button
-            type="button"
-            onClick={handleClear}
-            className="px-4 py-2 rounded-lg bg-gray-200 dark:bg-gray-700 text-gray-600 dark:text-gray-300 text-sm font-medium hover:bg-gray-300 dark:hover:bg-gray-600 transition"
-          >
+          <Button type="button" variant="secondary" size="sm" className="px-4" onClick={handleClear}>
             Reset
-          </button>
+          </Button>
         )}
       </form>
 
@@ -130,13 +127,14 @@ export default function HistoryPage() {
             key={f}
             type="button"
             onClick={() => { setTerminationFilter(f); setPage(1); }}
-            className={`px-3 py-1 rounded-full text-xs font-medium border transition ${
+            className={`inline-flex items-center gap-1 px-3 py-1 rounded-full text-xs font-medium border transition ${
               terminationFilter === f
-                ? "bg-blue-600 border-blue-600 text-white"
-                : "border-gray-300 dark:border-gray-600 text-gray-600 dark:text-gray-400 hover:border-blue-400"
+                ? "bg-accent-600 border-accent-600 text-white"
+                : "border-line-strong text-gray-600 dark:text-gray-400 hover:border-accent-400"
             }`}
           >
-            {f === "all" ? "All" : f === "consensus_reached" ? "✓ Consensus" : "Max Rounds"}
+            {f === "consensus_reached" && <Check className="w-3 h-3" aria-hidden="true" />}
+            {f === "all" ? "All" : f === "consensus_reached" ? "Consensus" : "Max Rounds"}
           </button>
         ))}
 
@@ -145,7 +143,7 @@ export default function HistoryPage() {
           <select
             value={sortOrder}
             onChange={(e) => setSortOrder(e.target.value as SortOrder)}
-            className="text-xs rounded border border-gray-300 dark:border-gray-600 bg-white dark:bg-gray-800 text-gray-700 dark:text-gray-300 px-2 py-1 focus:outline-none focus:ring-1 focus:ring-blue-500"
+            className="text-xs rounded border border-line-strong bg-surface-raised text-gray-700 dark:text-gray-300 px-2 py-1 focus:outline-none focus:ring-1 focus:ring-accent-500"
           >
             <option value="newest">Newest first</option>
             <option value="oldest">Oldest first</option>
@@ -192,12 +190,12 @@ export default function HistoryPage() {
             )}
           </div>
           {!query && terminationFilter === "all" && (
-            <a
+            <Link
               href="/"
-              className="px-5 py-2.5 rounded-lg bg-blue-600 text-white text-sm font-medium hover:bg-blue-700 transition focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-blue-500"
+              className="px-5 py-2.5 rounded-lg bg-accent-600 text-white text-sm font-medium hover:bg-accent-700 transition focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent-500"
             >
               Start your first debate →
-            </a>
+            </Link>
           )}
         </div>
       ) : (
@@ -215,20 +213,12 @@ export default function HistoryPage() {
             Page {page} of {totalPages} ({data?.total} total)
           </span>
           <div className="flex gap-2">
-            <button
-              disabled={page <= 1}
-              onClick={() => setPage((p) => p - 1)}
-              className="px-3 py-1.5 text-sm rounded-lg border border-gray-300 dark:border-gray-700 disabled:opacity-40 hover:bg-gray-50 dark:hover:bg-gray-800 transition"
-            >
+            <Button size="sm" variant="outline" disabled={page <= 1} onClick={() => setPage((p) => p - 1)}>
               Previous
-            </button>
-            <button
-              disabled={page >= totalPages}
-              onClick={() => setPage((p) => p + 1)}
-              className="px-3 py-1.5 text-sm rounded-lg border border-gray-300 dark:border-gray-700 disabled:opacity-40 hover:bg-gray-50 dark:hover:bg-gray-800 transition"
-            >
+            </Button>
+            <Button size="sm" variant="outline" disabled={page >= totalPages} onClick={() => setPage((p) => p + 1)}>
               Next
-            </button>
+            </Button>
           </div>
         </div>
       )}
@@ -255,26 +245,35 @@ function HistoryCard({
 
   return (
     <div
-      className="bg-white dark:bg-gray-900 rounded-xl border dark:border-gray-800 p-4 hover:shadow-md transition cursor-pointer group"
+      className="rounded-2xl bg-surface-raised ring-1 ring-black/5 dark:ring-white/10 shadow-card p-4
+                 hover:-translate-y-0.5 hover:shadow-card-hover transition-all duration-200 cursor-pointer group"
       onClick={() => router.push(`/debate/${item.thread_id}`)}
     >
       <div className="flex items-start gap-4">
         <div className="flex-1 min-w-0">
-          <p className="text-gray-800 dark:text-gray-200 font-medium truncate group-hover:text-blue-600 dark:group-hover:text-blue-400 transition">
+          <p className="text-gray-800 dark:text-gray-200 font-medium truncate group-hover:text-accent-600 dark:group-hover:text-accent-400 transition">
             {item.user_query}
           </p>
           <div className="flex flex-wrap items-center gap-3 mt-2 text-xs text-gray-400">
             <span>{date.toLocaleDateString()} {date.toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" })}</span>
             <span>{item.total_rounds} round{item.total_rounds !== 1 ? "s" : ""}</span>
-            <span
-              className={`px-2 py-0.5 rounded-full font-medium ${
-                item.termination_reason === "consensus_reached"
-                  ? "bg-green-100 dark:bg-green-900/40 text-green-700 dark:text-green-400"
-                  : "bg-orange-100 dark:bg-orange-900/40 text-orange-700 dark:text-orange-400"
-              }`}
-            >
-              {item.termination_reason === "consensus_reached" ? "✓ Consensus" : "Max Rounds"}
-            </span>
+            {/* Feature badges — show which enrichments were active */}
+            {item.use_knowledge_base && (
+              <Badge tone="info">
+                <BookOpen className="w-3 h-3" aria-hidden="true" /> KB
+              </Badge>
+            )}
+            {item.enable_agent_memory && (
+              <Badge tone="violet">
+                <Brain className="w-3 h-3" aria-hidden="true" /> Memory
+              </Badge>
+            )}
+            <Badge tone={item.termination_reason === "consensus_reached" ? "success" : "warning"}>
+              {item.termination_reason === "consensus_reached" && (
+                <Check className="w-3 h-3" aria-hidden="true" />
+              )}
+              {item.termination_reason === "consensus_reached" ? "Consensus" : "Max Rounds"}
+            </Badge>
           </div>
 
           {/* Agreement bar */}
@@ -297,24 +296,26 @@ function HistoryCard({
 
         {/* Buttons */}
         <div className="flex flex-col gap-1 shrink-0">
-          <button
+          <Button
+            size="sm"
+            variant="primary"
             onClick={(e) => {
               e.stopPropagation();
               router.push(`/debate/${item.thread_id}`);
             }}
-            className="px-3 py-1 rounded-lg bg-blue-600 text-white text-xs font-medium hover:bg-blue-700 transition"
           >
             View
-          </button>
-          <button
+          </Button>
+          <Button
+            size="sm"
+            variant="outline"
             onClick={(e) => {
               e.stopPropagation();
               router.push(`/compare?a=${item.thread_id}`);
             }}
-            className="px-3 py-1 rounded-lg border border-gray-300 dark:border-gray-600 text-gray-600 dark:text-gray-300 text-xs font-medium hover:bg-gray-50 dark:hover:bg-gray-800 transition"
           >
             Compare
-          </button>
+          </Button>
         </div>
       </div>
     </div>

@@ -1,22 +1,86 @@
 /**
- * Home page — the debate input form.
+ * Home page — the New Debate workspace.
  *
- * Submits the query via the async endpoint, then navigates immediately
- * to the live-streaming debate page.
+ * Two-pane layout: the left column is the configuration form (question, mode,
+ * intelligence options, Start); the right rail is context (domain pack →
+ * agent roster → recent debates). Submits via the async endpoint, then
+ * navigates immediately to the live-streaming debate page.
  */
 
 "use client";
 
 import { useState, useRef, useEffect } from "react";
+import Link from "next/link";
 import { useRouter } from "next/navigation";
+import { ChevronDown, LayoutGrid } from "lucide-react";
 import DebateInput from "@/components/DebateInput";
-import type { DebateOptions } from "@/components/DebateInput";
+import type { DebateOptions, SampleQuestion } from "@/components/DebateInput";
+import AgentRoster, { type AgentOption } from "@/components/AgentRoster";
 import LoadingState from "@/components/LoadingState";
 import TemplateCard from "@/components/TemplateCard";
-import { startDebateAsync, getTemplates, getDomainPacks, getHistory } from "@/lib/api";
+import Badge from "@/components/ui/Badge";
+import Card from "@/components/ui/Card";
+import { startDebateAsync, getTemplates, getDomainPacks, getHistory, getAgents } from "@/lib/api";
 import { useToast } from "@/components/Toast";
 
 import type { DebateMode, DebateTemplate, DomainPack, HistoryItem } from "@/lib/types";
+
+const DEFAULT_AGENTS: AgentOption[] = [
+  { name: "Analyst",   icon: "📊", role: "Objective data analyst" },
+  { name: "Risk",      icon: "⚠️", role: "Adversarial risk assessor" },
+  { name: "Strategy",  icon: "🎯", role: "Actionable strategy proposer" },
+  { name: "Ethics",    icon: "⚖️", role: "Ethics and compliance guardian" },
+  { name: "Moderator", icon: "🏛️", role: "Neutral synthesizer" },
+];
+
+/** Fallback starter questions when no templates are available. */
+const FALLBACK_SAMPLES: SampleQuestion[] = [
+  { label: "4-day work week?", query: "Should our startup adopt a 4-day work week without cutting salaries?" },
+  { label: "Monolith → microservices?", query: "Is it worth migrating our monolith to microservices this year, given a team of 12 engineers?" },
+  { label: "Expand to Europe?", query: "Should we expand into the European market next quarter or double down on our home market?" },
+  { label: "AI for support?", query: "Should we replace tier-1 customer support with an AI agent while keeping humans for escalations?" },
+];
+
+/** Compact relative timestamp, e.g. "3h ago" — disambiguates similar debates. */
+function timeAgo(iso: string): string {
+  const then = new Date(iso).getTime();
+  if (Number.isNaN(then)) return "";
+  const s = Math.max(0, Math.floor((Date.now() - then) / 1000));
+  if (s < 60) return "just now";
+  const m = Math.floor(s / 60);
+  if (m < 60) return `${m}m ago`;
+  const h = Math.floor(m / 60);
+  if (h < 24) return `${h}h ago`;
+  const d = Math.floor(h / 24);
+  if (d < 30) return `${d}d ago`;
+  const mo = Math.floor(d / 30);
+  if (mo < 12) return `${mo}mo ago`;
+  return `${Math.floor(mo / 12)}y ago`;
+}
+
+/**
+ * Retry a fetch with exponential backoff before giving up.
+ * Covers the cold-start window where the Next.js dev proxy can't yet
+ * reach the FastAPI backend — a cold uvicorn process with heavy ML
+ * imports (langchain/langgraph), or a free-tier hosted backend, can take
+ * the better part of a minute to come up. A fixed ~10s window gave up too
+ * early, leaving the right-rail boxes hidden until a manual refresh.
+ *
+ * Delays grow 1s → 2s → 4s → 8s → 10s (capped), so 11 attempts span ~75s
+ * while making far fewer calls than polling once a second. Once the backend
+ * answers, the rail populates on its own — no refresh needed.
+ */
+function withRetry<T>(fn: () => Promise<T>, retries = 10, delayMs = 1000): Promise<T> {
+  return fn().catch((err) => {
+    if (retries <= 0) throw err;
+    return new Promise<T>((resolve, reject) => {
+      setTimeout(() => {
+        const nextDelay = Math.min(delayMs * 2, 10_000);
+        withRetry(fn, retries - 1, nextDelay).then(resolve, reject);
+      }, delayMs);
+    });
+  });
+}
 
 export default function HomePage() {
   const router = useRouter();
@@ -33,13 +97,56 @@ export default function HomePage() {
   const [templateSearch, setTemplateSearch] = useState("");
   const [activeCategory, setActiveCategory] = useState("All");
   const [recentDebates, setRecentDebates] = useState<HistoryItem[]>([]);
+  // Distinguishes "confirmed empty" from "fetch failed" — we only claim
+  // "no debates yet" when the backend actually said so.
+  const [recentLoaded, setRecentLoaded] = useState(false);
+
+  // Participating-agent roster — lifted here so the left config form and the
+  // right-rail AgentRoster share one source of truth.
+  const [agents, setAgents] = useState<AgentOption[]>(DEFAULT_AGENTS);
+  const [selectedAgents, setSelectedAgents] = useState<Set<string>>(
+    () => new Set(DEFAULT_AGENTS.map((a) => a.name)),
+  );
 
   useEffect(() => {
-    getTemplates().then(setTemplates).catch(() => {});
-    getDomainPacks().then(setDomainPacks).catch(() => {});
-    getHistory({ page: 1, limit: 3 }).then((r) => setRecentDebates(r.items)).catch(() => {});
+    // On first dev-server load the backend proxy may briefly fail while both
+    // servers are still warming up — retry a couple of times before giving up,
+    // so the right-rail boxes don't disappear until a manual refresh.
+    withRetry(() => getTemplates()).then(setTemplates).catch(() => {});
+    withRetry(() => getDomainPacks()).then(setDomainPacks).catch(() => {});
+    withRetry(() => getHistory({ page: 1, limit: 3 }))
+      .then((r) => {
+        setRecentDebates(r.items);
+        setRecentLoaded(true);
+      })
+      .catch(() => {});
+    withRetry(() => getAgents())
+      .then((res) => {
+        // Only the enabled core agents are individually selectable; domain
+        // experts are activated via a domain pack, not picked one-by-one.
+        const core = res.filter((a) => a.enabled);
+        if (core.length > 0) {
+          setAgents(core.map((a) => ({ name: a.name, icon: a.icon, role: a.role })));
+          setSelectedAgents(new Set(core.map((a) => a.name)));
+        }
+      })
+      .catch(() => {});
     return () => { abortRef.current?.abort(); };
   }, []);
+
+  function toggleAgent(name: string) {
+    if (name === "Moderator") return; // Moderator is always required
+    setSelectedAgents((prev) => {
+      const next = new Set(prev);
+      if (next.has(name)) {
+        if (next.size <= 2) return prev; // must keep at least 2 agents
+        next.delete(name);
+      } else {
+        next.add(name);
+      }
+      return next;
+    });
+  }
 
   // Derived: category list and filtered templates
   const templateCategories = ["All", ...Array.from(new Set(templates.map((t) => t.category)))];
@@ -61,6 +168,8 @@ export default function HomePage() {
         {
           query,
           mode: options.mode,
+          max_rounds: options.max_rounds,
+          consensus_threshold: options.consensus_threshold,
           agents: options.agents,
           use_knowledge_base: options.use_knowledge_base,
           enable_agent_memory: options.enable_agent_memory,
@@ -91,88 +200,66 @@ export default function HomePage() {
     setActiveCategory("All");
   }
 
+  // Starter chips: prefer real templates (title → query), fall back to built-ins.
+  const sampleQuestions: SampleQuestion[] =
+    templates.length >= 3
+      ? templates.slice(0, 4).map((t) => ({ label: t.title, query: t.query }))
+      : FALLBACK_SAMPLES;
+
   return (
-    <div className="max-w-2xl mx-auto">
-      {/* Hero */}
-      <section className="text-center mb-10 relative py-6 rounded-2xl overflow-hidden">
-        {/* Subtle gradient background */}
-        <div
-          className="absolute inset-0 -z-10 bg-gradient-to-br from-blue-50 via-violet-50/60 to-transparent dark:from-blue-950/20 dark:via-violet-950/10 dark:to-transparent rounded-2xl"
-          aria-hidden="true"
-        />
-        <h1 className="text-3xl sm:text-4xl font-bold mb-3 bg-gradient-to-r from-blue-600 via-violet-500 to-blue-500 dark:from-blue-400 dark:via-violet-400 dark:to-blue-300 bg-clip-text text-transparent">
-          Multi-Agent Decision Engine
-        </h1>
-        <p className="text-gray-500 dark:text-gray-400 leading-relaxed">
-          Submit a strategic question and let five specialised AI agents — an
-          Analyst, Risk Assessor, Strategist, Ethics Advisor, and Moderator —
-          debate and converge on a well-reasoned decision.
-        </p>
-      </section>
-
-      {/* Domain pack selector */}
-      {!isLoading && domainPacks.length > 0 && (
-        <div className="mb-5">
-          <p className="text-xs font-medium text-gray-500 dark:text-gray-400 mb-2 uppercase tracking-wide">Domain Pack (optional)</p>
-          <div className="flex flex-wrap gap-2">
-            {domainPacks.map((pack) => {
-              const active = selectedDomainPack === pack.id;
-              return (
-                <button
-                  key={pack.id}
-                  type="button"
-                  onClick={() => setSelectedDomainPack(active ? null : pack.id)}
-                  className={`flex items-center gap-1.5 px-3 py-1.5 rounded-full border text-sm transition ${
-                    active
-                      ? "border-blue-500 bg-blue-50 dark:bg-blue-900/30 text-blue-700 dark:text-blue-300"
-                      : "border-gray-200 dark:border-gray-700 text-gray-600 dark:text-gray-400 hover:border-gray-400 dark:hover:border-gray-500"
-                  }`}
-                >
-                  <span>{pack.icon}</span>
-                  <span>{pack.name}</span>
-                </button>
-              );
-            })}
-          </div>
-          {/* Inline description of selected domain pack */}
-          {selectedDomainPack && (() => {
-            const pack = domainPacks.find((p) => p.id === selectedDomainPack);
-            return pack ? (
-              <p className="mt-2 text-sm text-blue-700 dark:text-blue-300 line-clamp-1 sm:line-clamp-2 leading-relaxed">
-                {pack.description}
-              </p>
-            ) : null;
-          })()}
+    <div className="lg:h-[calc(100dvh-6rem)] lg:flex lg:flex-col lg:overflow-hidden">
+      {/* Compact header — templates toggle shares the row so the form stays above the fold */}
+      <header className="mb-3 lg:mb-2 lg:flex-none flex flex-wrap items-end justify-between gap-x-4 gap-y-2">
+        <div>
+          <h1 className="text-xl sm:text-2xl font-bold tracking-tight text-gray-900 dark:text-gray-50">
+            Five AI agents.{" "}
+            <span className="bg-gradient-to-r from-accent-600 via-violet-500 to-accent-500 dark:from-accent-400 dark:via-violet-400 dark:to-accent-300 bg-clip-text text-transparent">
+              One decision.
+            </span>
+          </h1>
+          <p className="mt-0.5 text-sm text-gray-500 dark:text-gray-400">
+            Ask anything consequential — the panel debates, critiques and converges
+            on a recommendation you can defend.
+          </p>
         </div>
-      )}
-
-      {/* Template picker toggle */}
-      {!isLoading && templates.length > 0 && (
-        <div className="mb-4">
+        {!isLoading && templates.length > 0 && (
           <button
             type="button"
             onClick={() => setShowTemplates((v) => !v)}
-            className="inline-flex items-center gap-2 text-sm font-medium text-blue-600 dark:text-blue-400
-                       hover:text-blue-700 dark:hover:text-blue-300 transition"
+            aria-expanded={showTemplates}
+            className="inline-flex items-center gap-1.5 text-sm font-medium text-accent-600 dark:text-accent-400
+                       hover:text-accent-700 dark:hover:text-accent-300 transition
+                       focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent-500 rounded px-1 py-0.5"
           >
-            <span>{showTemplates ? "▲" : "▼"}</span>
-            {showTemplates ? "Hide templates" : "Browse templates"}
-            <span className="text-xs bg-blue-100 dark:bg-blue-900/40 text-blue-700 dark:text-blue-300 px-1.5 py-0.5 rounded-full">
-              {templates.length}
-            </span>
+            <LayoutGrid className="w-4 h-4" aria-hidden="true" />
+            Templates
+            <Badge tone="info">{templates.length}</Badge>
+            <ChevronDown
+              className={`w-4 h-4 transition-transform duration-200 ${showTemplates ? "rotate-180" : ""}`}
+              aria-hidden="true"
+            />
           </button>
+        )}
+      </header>
 
-          {showTemplates && (
-            <div className="mt-3 space-y-3">
+      {/* Template gallery — animated slide-down panel */}
+      {!isLoading && templates.length > 0 && (
+        <div
+          className={`grid lg:flex-none transition-[grid-template-rows] duration-300 ease-out ${
+            showTemplates ? "grid-rows-[1fr]" : "grid-rows-[0fr]"
+          }`}
+        >
+          <div className="overflow-hidden min-h-0">
+            <div className="space-y-3 pb-4 lg:max-h-[40vh] lg:overflow-y-auto custom-scroll lg:pr-1">
               {/* Search bar */}
               <input
                 type="search"
                 placeholder="Search templates…"
                 value={templateSearch}
                 onChange={(e) => setTemplateSearch(e.target.value)}
-                className="w-full text-sm px-3 py-1.5 rounded-lg border border-gray-200 dark:border-gray-700
-                           bg-white dark:bg-gray-900 text-gray-700 dark:text-gray-300 placeholder:text-gray-400
-                           focus:outline-none focus:ring-2 focus:ring-blue-500"
+                className="w-full text-sm px-3 py-1.5 rounded-lg border border-line
+                           bg-surface-raised text-gray-700 dark:text-gray-300 placeholder:text-gray-400
+                           focus:outline-none focus:ring-2 focus:ring-accent-500"
               />
               {/* Category tabs */}
               <div className="flex flex-wrap gap-1.5">
@@ -183,8 +270,8 @@ export default function HomePage() {
                     onClick={() => setActiveCategory(cat)}
                     className={`text-xs px-2.5 py-1 rounded-full border transition ${
                       activeCategory === cat
-                        ? "border-blue-500 bg-blue-50 dark:bg-blue-900/30 text-blue-700 dark:text-blue-300"
-                        : "border-gray-200 dark:border-gray-700 text-gray-500 dark:text-gray-400 hover:border-gray-400 dark:hover:border-gray-500"
+                        ? "border-accent-500 bg-accent-50 dark:bg-accent-900/30 text-accent-700 dark:text-accent-300"
+                        : "border-line text-gray-500 dark:text-gray-400 hover:border-line-strong"
                     }`}
                   >
                     {cat}
@@ -204,86 +291,108 @@ export default function HomePage() {
                 )}
               </div>
             </div>
-          )}
+          </div>
         </div>
       )}
 
-      {/* Input / Loading */}
+      {/* Workspace */}
       {isLoading ? (
         <LoadingState />
       ) : (
-        <div className="bg-white dark:bg-gray-900 rounded-xl border dark:border-gray-800 shadow-sm p-6">
-          <DebateInput
-            key={prefillKey}
-            onSubmit={handleSubmit}
-            onCancel={handleCancel}
-            isLoading={isLoading}
-            prefillQuery={prefillQuery}
-            prefillMode={prefillMode}
-            selectedDomainPack={selectedDomainPack}
-          />
+        <div className="grid grid-cols-1 lg:grid-cols-[minmax(0,1fr)_380px] gap-6 items-start lg:items-stretch lg:min-h-0">
+          {/* LEFT — configuration (stretches to match the right rail; submit docks at the bottom) */}
+          <Card padded={false} className="p-5 lg:min-h-0 lg:overflow-y-auto custom-scroll lg:flex lg:flex-col">
+            <DebateInput
+              key={prefillKey}
+              onSubmit={handleSubmit}
+              onCancel={handleCancel}
+              isLoading={isLoading}
+              agents={agents}
+              selectedAgents={selectedAgents}
+              prefillQuery={prefillQuery}
+              prefillMode={prefillMode}
+              selectedDomainPack={selectedDomainPack}
+              samples={sampleQuestions}
+            />
+          </Card>
+
+          {/* RIGHT — context rail */}
+          <aside className="lg:overflow-y-auto custom-scroll lg:min-h-0 lg:pr-1 space-y-4">
+            {/* Agents (domain pack selector + roster in one card) */}
+            <AgentRoster
+              agents={agents}
+              selectedAgents={selectedAgents}
+              onToggle={toggleAgent}
+              selectedDomainPack={selectedDomainPack}
+              domainPacks={domainPacks}
+              onSelectDomainPack={setSelectedDomainPack}
+            />
+
+            {/* Recent debates quick-access — hidden entirely if the fetch failed */}
+            {(recentDebates.length > 0 || recentLoaded) && (
+              <Card padded={false} className="p-4">
+                <div className="flex items-center justify-between mb-2">
+                  <p className="text-xs font-semibold uppercase tracking-wide text-gray-500 dark:text-gray-400">
+                    Recent debates
+                  </p>
+                  {recentDebates.length > 0 && (
+                    <Link
+                      href="/history"
+                      className="text-xs font-medium text-accent-600 dark:text-accent-400
+                                 hover:text-accent-700 dark:hover:text-accent-300 transition"
+                    >
+                      View all →
+                    </Link>
+                  )}
+                </div>
+                {recentDebates.length > 0 ? (
+                  <div className="-mx-1.5 space-y-0.5">
+                    {recentDebates.map((item) => {
+                      const pct = Number.isFinite(item.agreement_score)
+                        ? Math.round(item.agreement_score * 100)
+                        : null;
+                      return (
+                        <Link
+                          key={item.thread_id}
+                          href={`/debate/${item.thread_id}`}
+                          title={item.user_query}
+                          className="flex items-center gap-2 px-1.5 py-1.5 rounded-md
+                                     hover:bg-surface transition group"
+                        >
+                          <span className="flex-1 min-w-0 truncate text-sm text-gray-700 dark:text-gray-300 group-hover:text-accent-600 dark:group-hover:text-accent-400 transition">
+                            {item.user_query}
+                          </span>
+                          <span className="shrink-0 text-[11px] text-gray-400 dark:text-gray-500 tabular-nums">
+                            {timeAgo(item.created_at)}
+                          </span>
+                          {pct !== null && (
+                            <span
+                              title={`${pct}% agreement`}
+                              className={`shrink-0 text-[11px] font-semibold tabular-nums ${
+                                pct >= 75
+                                  ? "text-green-600 dark:text-green-400"
+                                  : pct >= 50
+                                  ? "text-yellow-600 dark:text-yellow-400"
+                                  : "text-red-500 dark:text-red-400"
+                              }`}
+                            >
+                              {pct}%
+                            </span>
+                          )}
+                        </Link>
+                      );
+                    })}
+                  </div>
+                ) : (
+                  <p className="text-sm text-gray-500 dark:text-gray-400 leading-relaxed">
+                    No debates yet. Start your first debate to build history.
+                  </p>
+                )}
+              </Card>
+            )}
+          </aside>
         </div>
       )}
-
-      {/* Recent debates quick-access */}
-      {!isLoading && recentDebates.length > 0 && (
-        <div className="mt-5">
-          <p className="text-xs font-medium text-gray-400 dark:text-gray-500 mb-2 uppercase tracking-wide">Recent Debates</p>
-          <div className="space-y-2">
-            {recentDebates.map((item) => (
-              <a
-                key={item.thread_id}
-                href={`/debate/${item.thread_id}`}
-                className="flex items-center justify-between gap-3 px-4 py-2.5 rounded-lg border border-gray-200 dark:border-gray-800
-                           bg-white dark:bg-gray-900 hover:border-blue-400 dark:hover:border-blue-600 transition group"
-              >
-                <span className="text-sm text-gray-700 dark:text-gray-300 truncate group-hover:text-blue-600 dark:group-hover:text-blue-400 transition">
-                  {item.user_query}
-                </span>
-                <span className="shrink-0 text-xs text-gray-400 dark:text-gray-500">
-                  {Math.round(item.agreement_score * 100)}% agree
-                </span>
-              </a>
-            ))}
-          </div>
-        </div>
-      )}
-
-      {/* Feature cards */}
-      <section className="grid grid-cols-1 sm:grid-cols-3 gap-4 mt-12">
-        {[
-          {
-            icon: "🧠",
-            title: "5 Expert Agents",
-            desc: "Each agent brings a unique perspective — from market analysis to ethical review.",
-            gradient: "bg-gradient-to-br from-blue-50 to-violet-50 dark:from-blue-950/30 dark:to-violet-950/20",
-          },
-          {
-            icon: "⚡",
-            title: "Structured Debate",
-            desc: "Proposals → Cross-examination → Revisions → Consensus in multiple rounds.",
-            gradient: "bg-gradient-to-br from-amber-50 to-orange-50 dark:from-amber-950/30 dark:to-orange-950/20",
-          },
-          {
-            icon: "🎯",
-            title: "Converged Decisions",
-            desc: "A moderator synthesises perspectives into a single, justified decision.",
-            gradient: "bg-gradient-to-br from-green-50 to-emerald-50 dark:from-green-950/30 dark:to-emerald-950/20",
-          },
-        ].map((f) => (
-          <div
-            key={f.title}
-            className="group relative overflow-hidden bg-white dark:bg-gray-900 rounded-xl border border-gray-200 dark:border-gray-800 shadow-sm p-5 text-center transition-all duration-200 hover:-translate-y-0.5 hover:shadow-md cursor-default"
-          >
-            <div className={`absolute inset-0 opacity-0 group-hover:opacity-100 transition-opacity duration-200 ${f.gradient}`} aria-hidden="true" />
-            <span className="relative text-3xl">{f.icon}</span>
-            <h3 className="relative mt-2 font-semibold text-gray-800 dark:text-gray-200 text-sm">
-              {f.title}
-            </h3>
-            <p className="relative mt-1 text-xs text-gray-500 dark:text-gray-400">{f.desc}</p>
-          </div>
-        ))}
-      </section>
     </div>
   );
 }

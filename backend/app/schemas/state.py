@@ -5,7 +5,7 @@ DebateState is the **single source of truth** for an entire debate session.
 All agents, the orchestrator, and the API layer read and write this object.
 """
 
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from typing import Literal
 from uuid import uuid4
 
@@ -20,6 +20,7 @@ DebateStatus = Literal[
     "converged",
     "max_rounds_reached",
     "awaiting_approval",
+    "cancelled",  # user cancelled an in-flight async debate
     "error",
 ]
 
@@ -50,6 +51,10 @@ class DebateRound(BaseModel):
     critiques: list[CritiqueResponse] = Field(
         default_factory=list,
         description="All cross-examination critiques produced this round.",
+    )
+    tool_calls: list[dict] = Field(
+        default_factory=list,
+        description="Tool invocations made by agents this round (for the persisted trace).",
     )
 
     model_config = ConfigDict(
@@ -89,10 +94,24 @@ class DebateState(BaseModel):
         description="The round currently being processed (0 = not yet started).",
     )
     max_rounds: int = Field(
-        default=4,
+        default=2,
         ge=2,
         le=8,
         description="Maximum number of debate rounds allowed.",
+    )
+    min_rounds: int = Field(
+        default=1,
+        ge=1,
+        le=8,
+        description="Minimum rounds before consensus may be declared (caps at max_rounds).",
+    )
+    mode: str | None = Field(
+        default=None,
+        description=(
+            "Preset the debate was started with (quick/standard/thorough), persisted so "
+            "analytics can group by mode instead of inferring it from the round count. "
+            "None for legacy records and direct-graph runs."
+        ),
     )
     rounds: list[DebateRound] = Field(
         default_factory=list,
@@ -140,11 +159,11 @@ class DebateState(BaseModel):
         description="Optional human feedback injected during a HITL override.",
     )
     created_at: datetime = Field(
-        default_factory=lambda: datetime.now(timezone.utc),
+        default_factory=lambda: datetime.now(UTC),
         description="UTC timestamp when the debate was created.",
     )
     updated_at: datetime = Field(
-        default_factory=lambda: datetime.now(timezone.utc),
+        default_factory=lambda: datetime.now(UTC),
         description="UTC timestamp of the last state update.",
     )
 
@@ -173,7 +192,7 @@ class DebateState(BaseModel):
 
     def touch(self) -> None:
         """Update the updated_at timestamp to now (call after every mutation)."""
-        self.updated_at = datetime.now(timezone.utc)
+        self.updated_at = datetime.now(UTC)
 
     model_config = ConfigDict(
         json_schema_extra={

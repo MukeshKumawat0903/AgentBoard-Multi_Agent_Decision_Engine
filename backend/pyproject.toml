@@ -6,15 +6,58 @@ markers = [
     "integration: marks tests that call the real GROQ API (deselect with -m 'not integration')",
     "unit: marks tests that use mocked LLM clients only (default; no network)",
 ]
-# Default timeout (seconds). Override per-test with @pytest.mark.timeout(N).
-# Requires pytest-timeout: pip install pytest-timeout
-# timeout = 30
 filterwarnings = [
     "ignore::DeprecationWarning",
     "ignore::PendingDeprecationWarning",
-    # Fire-and-forget asyncio.create_task(_persist_debate) outlives the test's
-    # event loop scope; the aiosqlite background thread and the uncollected
-    # coroutine both raise benign warnings on teardown — suppress them.
     "ignore::pytest.PytestUnhandledThreadExceptionWarning",
     "ignore::pytest.PytestUnraisableExceptionWarning",
 ]
+
+# Phase 6.5 — coverage configuration
+[tool.coverage.run]
+source = ["app"]
+omit = ["app/__init__.py", "*/tests/*"]
+
+[tool.coverage.report]
+show_missing = true
+skip_covered = false
+fail_under = 60   # target 90 once full test expansion ships
+
+# Phase 6.5 — mypy configuration
+[tool.mypy]
+python_version = "3.11"
+ignore_missing_imports = true     # LangGraph/LangChain have no complete stubs
+warn_return_any = true
+warn_unused_ignores = false       # many type: ignore comments for untyped 3rd-party
+disallow_untyped_defs = false     # defer strict mode until stub coverage improves
+check_untyped_defs = true
+no_implicit_optional = true
+exclude = ["tests/", "alembic/"]
+
+# Ruff lint + format configuration. The codebase was already written as if ruff
+# runs (many `# noqa: BLE001` / `# noqa: PLC0415` suppressions) but had no config
+# or dependency; this makes the intended rule set explicit and locally enforceable.
+[tool.ruff]
+target-version = "py311"
+line-length = 100
+extend-exclude = ["alembic", "tests", "Notebooks"]
+
+[tool.ruff.lint]
+# Focused, low-churn rule set. BLE (blind-except) is kept because the codebase
+# already uses `# noqa: BLE001` deliberately — new blind excepts should be flagged.
+# PLC is intentionally NOT selected: lazy `import` inside functions (PLC0415) is a
+# deliberate pattern here for circular-import avoidance and import-cost deferral.
+select = ["E", "F", "W", "I", "B", "C4", "UP", "SIM", "BLE"]
+ignore = [
+    "E501",    # line length is handled by the formatter, not the linter
+    "B008",    # FastAPI uses `Depends(...)` as a default argument by design
+    "B905",    # zip(strict=...) — not worth retrofitting across existing call sites
+    "SIM105",  # `contextlib.suppress` is not always clearer than try/except/pass
+    "SIM108",  # ternary-over-if/else is a style preference, not a correctness issue
+    "UP035",   # deprecated-import rewrites need review; leave for a separate pass
+    "UP040",   # keep `TypeAlias`-style aliases readable for now
+]
+
+[tool.ruff.format]
+quote-style = "double"
+indent-style = "space"

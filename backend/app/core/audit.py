@@ -7,7 +7,6 @@ from typing import Any
 
 from fastapi import Request
 
-
 audit_logger = logging.getLogger("agentboard.audit")
 
 

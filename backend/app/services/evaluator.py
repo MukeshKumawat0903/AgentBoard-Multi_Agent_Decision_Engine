@@ -17,7 +17,7 @@ Usage::
 from __future__ import annotations
 
 import logging
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from typing import TYPE_CHECKING
 
 from pydantic import BaseModel, Field
@@ -33,7 +33,7 @@ logger = logging.getLogger("agentboard.evaluator")
 # Output schema
 # ---------------------------------------------------------------------------
 
-class EvaluationScores(BaseModel):
+class EvaluationLLMOutput(BaseModel):
     """LLM-generated quality scores for a decision."""
 
     completeness: float = Field(
@@ -109,7 +109,7 @@ async def evaluate_decision(
 
     try:
         scores = await llm_client.ainvoke_structured(
-            EvaluationScores,
+            EvaluationLLMOutput,
             system_prompt=_EVAL_SYSTEM_PROMPT,
             user_prompt=user_prompt,
         )
@@ -132,5 +132,5 @@ async def evaluate_decision(
         risk_awareness=round(scores.risk_awareness, 3),
         overall=overall,
         reasoning=scores.reasoning,
-        evaluated_at=datetime.now(timezone.utc).isoformat(),
+        evaluated_at=datetime.now(UTC).isoformat(),
     )

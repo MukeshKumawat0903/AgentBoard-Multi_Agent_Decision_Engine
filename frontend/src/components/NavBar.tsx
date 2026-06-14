@@ -12,43 +12,69 @@
 
 "use client";
 
-import { useState, useEffect } from "react";
+import { useState, useEffect, useRef } from "react";
+import Link from "next/link";
 import { usePathname } from "next/navigation";
+import { ChevronDown, Menu, Network, X } from "lucide-react";
 import LLMSettingsPanel from "@/components/LLMSettingsPanel";
 import ThemeToggle from "@/components/ThemeToggle";
 import KeyboardShortcutsHelp from "@/components/KeyboardShortcutsHelp";
 import { healthCheck } from "@/lib/api";
 
-const NAV_LINKS = [
-  { href: "/",          label: "New Debate" },
-  { href: "/history",   label: "History"    },
-  { href: "/compare",   label: "Compare"    },
-  { href: "/simulate",  label: "Simulate"   },
-  { href: "/knowledge", label: "Knowledge"  },
-  { href: "/memory",    label: "Memory"     },
-  { href: "/analytics", label: "Analytics"  },
+const PRIMARY_LINKS = [
+  { href: "/",        label: "New Debate" },
+  { href: "/history", label: "History"    },
 ] as const;
+
+const TOOL_LINKS = [
+  { href: "/compare",   label: "Compare"   },
+  { href: "/simulate",  label: "Simulate"  },
+  { href: "/knowledge", label: "Knowledge" },
+  { href: "/memory",    label: "Memory"    },
+  { href: "/analytics", label: "Analytics" },
+] as const;
+
+// Mobile menu keeps the flat list.
+const NAV_LINKS = [...PRIMARY_LINKS, ...TOOL_LINKS];
 
 export default function NavBar() {
   const pathname = usePathname();
   const [menuOpen, setMenuOpen] = useState(false);
+  const [toolsOpen, setToolsOpen] = useState(false);
+  const toolsRef = useRef<HTMLDivElement>(null);
   const [helpOpen, setHelpOpen] = useState(false);
   const [healthStatus, setHealthStatus] = useState<"loading" | "ok" | "error">("loading");
 
-  // Close mobile menu whenever the route changes
+  // Close menus whenever the route changes
   useEffect(() => {
     setMenuOpen(false);
+    setToolsOpen(false);
   }, [pathname]);
 
-  // Close mobile menu on Escape key
+  // Close the Tools dropdown on outside click
   useEffect(() => {
-    if (!menuOpen) return;
+    if (!toolsOpen) return;
+    function onPointerDown(e: PointerEvent) {
+      if (toolsRef.current && !toolsRef.current.contains(e.target as Node)) {
+        setToolsOpen(false);
+      }
+    }
+    document.addEventListener("pointerdown", onPointerDown);
+    return () => document.removeEventListener("pointerdown", onPointerDown);
+  }, [toolsOpen]);
+
+  // Close menus on Escape key
+  useEffect(() => {
+    if (!menuOpen && !toolsOpen) return;
     function onKey(e: KeyboardEvent) {
-      if (e.key === "Escape") setMenuOpen(false);
+      if (e.key === "Escape") {
+        setMenuOpen(false);
+        setToolsOpen(false);
+      }
     }
     document.addEventListener("keydown", onKey);
     return () => document.removeEventListener("keydown", onKey);
-  }, [menuOpen]);
+  }, [menuOpen, toolsOpen]);
 
   // `?` global shortcut — ignored when focus is inside an input/textarea/select
   useEffect(() => {
@@ -105,9 +131,9 @@ export default function NavBar() {
   }
 
   const linkBase =
-    "text-sm transition px-2 py-1 rounded focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-blue-500";
+    "text-sm transition px-2 py-1 rounded focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent-500";
   const activeClass =
-    "text-blue-600 dark:text-blue-400 font-medium underline underline-offset-4";
+    "text-accent-600 dark:text-accent-400 font-medium underline underline-offset-4";
   const inactiveClass =
     "text-gray-500 dark:text-gray-400 hover:text-gray-800 dark:hover:text-gray-100";
 
@@ -130,16 +156,21 @@ export default function NavBar() {
       {/* ---------------------------------------------------------------- */}
       {/* Sticky header                                                     */}
       {/* ---------------------------------------------------------------- */}
-      <header className="sticky top-0 z-50 bg-white/80 dark:bg-gray-900/80 backdrop-blur border-b border-gray-200 dark:border-gray-800">
-        <div className="max-w-5xl mx-auto px-4 h-14 flex items-center justify-between">
+      <header className="sticky top-0 z-50 bg-surface-raised/80 backdrop-blur border-b border-line">
+        <div className="max-w-6xl mx-auto px-4 h-12 flex items-center justify-between">
           {/* Logo + health dot */}
-          <a
+          <Link
             href="/"
             className="flex items-center gap-2 font-bold text-gray-800 dark:text-gray-100
-                       focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-blue-500 rounded"
+                       focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent-500 rounded"
           >
-            <span className="text-xl" aria-hidden="true">🎯</span>
-            <span>AgentBoard</span>
+            <span
+              aria-hidden="true"
+              className="w-7 h-7 rounded-lg bg-gradient-to-br from-accent-500 to-violet-600 flex items-center justify-center text-white shadow-sm"
+            >
+              <Network className="w-4 h-4" strokeWidth={2.25} />
+            </span>
+            <span className="tracking-tight">AgentBoard</span>
             {/* Backend connection indicator */}
             <span
               aria-label={
@@ -164,23 +195,64 @@ export default function NavBar() {
                   : "bg-gray-400 animate-pulse"
               }`}
             />
-          </a>
+          </Link>
 
           {/* Desktop nav */}
           <nav
             aria-label="Main navigation"
             className="hidden sm:flex items-center gap-1 sm:gap-2"
           >
-            {NAV_LINKS.map(({ href, label }) => (
-              <a
+            {PRIMARY_LINKS.map(({ href, label }) => (
+              <Link
                 key={href}
                 href={href}
                 aria-current={isActive(href) ? "page" : undefined}
                 className={`${linkBase} ${isActive(href) ? activeClass : inactiveClass}`}
               >
                 {label}
-              </a>
+              </Link>
             ))}
+            {/* Tools dropdown */}
+            <div className="relative" ref={toolsRef}>
+              <button
+                type="button"
+                onClick={() => setToolsOpen((v) => !v)}
+                aria-expanded={toolsOpen}
+                aria-haspopup="menu"
+                className={`${linkBase} inline-flex items-center gap-1 ${
+                  TOOL_LINKS.some(({ href }) => isActive(href)) ? activeClass : inactiveClass
+                }`}
+              >
+                Tools
+                <ChevronDown
+                  className={`w-3.5 h-3.5 transition-transform duration-200 ${toolsOpen ? "rotate-180" : ""}`}
+                  aria-hidden="true"
+                />
+              </button>
+              {toolsOpen && (
+                <div
+                  role="menu"
+                  className="absolute right-0 top-full mt-2 w-44 py-1.5 rounded-xl bg-surface-overlay
+                             ring-1 ring-black/5 dark:ring-white/10 shadow-card-hover animate-fadeIn"
+                >
+                  {TOOL_LINKS.map(({ href, label }) => (
+                    <Link
+                      key={href}
+                      href={href}
+                      role="menuitem"
+                      aria-current={isActive(href) ? "page" : undefined}
+                      className={`block px-4 py-2 text-sm transition ${
+                        isActive(href)
+                          ? "text-accent-600 dark:text-accent-400 font-medium bg-accent-50 dark:bg-accent-900/20"
+                          : "text-gray-600 dark:text-gray-300 hover:bg-gray-100 dark:hover:bg-gray-700"
+                      }`}
+                    >
+                      {label}
+                    </Link>
+                  ))}
+                </div>
+              )}
+            </div>
             <LLMSettingsPanel />
             <ThemeToggle />
             {/* Keyboard shortcuts hint button */}
@@ -217,23 +289,11 @@ export default function NavBar() {
                 transition
               "
             >
-              {/* Hamburger / close icon */}
-              <svg
-                className="w-5 h-5"
-                fill="none"
-                stroke="currentColor"
-                strokeWidth={2}
-                viewBox="0 0 24 24"
-                aria-hidden="true"
-              >
-                {menuOpen ? (
-                  // X icon
-                  <path strokeLinecap="round" strokeLinejoin="round" d="M6 18L18 6M6 6l12 12" />
-                ) : (
-                  // Hamburger icon
-                  <path strokeLinecap="round" strokeLinejoin="round" d="M4 6h16M4 12h16M4 18h16" />
-                )}
-              </svg>
+              {menuOpen ? (
+                <X className="w-5 h-5" aria-hidden="true" />
+              ) : (
+                <Menu className="w-5 h-5" aria-hidden="true" />
+              )}
             </button>
           </div>
         </div>
@@ -244,26 +304,26 @@ export default function NavBar() {
             id="mobile-menu"
             role="navigation"
             aria-label="Mobile navigation"
-            className="sm:hidden border-t border-gray-200 dark:border-gray-800 bg-white/95 dark:bg-gray-900/95 backdrop-blur"
+            className="sm:hidden border-t border-line bg-surface-raised/95 backdrop-blur"
           >
-            <nav className="max-w-5xl mx-auto px-4 py-3 flex flex-col gap-1">
+            <nav className="max-w-6xl mx-auto px-4 py-3 flex flex-col gap-1">
               {NAV_LINKS.map(({ href, label }) => (
-                <a
+                <Link
                   key={href}
                   href={href}
                   aria-current={isActive(href) ? "page" : undefined}
                   className={`
                     block px-3 py-2 rounded-lg text-sm font-medium transition
-                    focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-blue-500
+                    focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent-500
                     ${
                       isActive(href)
-                        ? "bg-blue-50 dark:bg-blue-900/30 text-blue-600 dark:text-blue-400"
+                        ? "bg-accent-50 dark:bg-accent-900/30 text-accent-600 dark:text-accent-400"
                         : "text-gray-600 dark:text-gray-300 hover:bg-gray-100 dark:hover:bg-gray-800"
                     }
                   `}
                 >
                   {label}
-                </a>
+                </Link>
               ))}
             </nav>
           </div>

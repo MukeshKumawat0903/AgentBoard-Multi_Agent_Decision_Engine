@@ -24,15 +24,54 @@ class Settings(BaseSettings):
 
     # --- Multi-Provider LLM Support (Phase 1) ---
     # Switch active provider via LLM_PROVIDER env var.
-    LLM_PROVIDER: Literal["groq", "openai", "anthropic"] = "groq"
+    LLM_PROVIDER: Literal["groq", "openai", "anthropic", "gemini"] = "groq"
     OPENAI_API_KEY: str = ""
-    OPENAI_MODEL: str = "gpt-4o"
+    OPENAI_MODEL: str = "gpt-5.5"
     ANTHROPIC_API_KEY: str = ""
-    ANTHROPIC_MODEL: str = "claude-sonnet-4-20250514"
+    ANTHROPIC_MODEL: str = "claude-opus-4-8"
+    GEMINI_API_KEY: str = ""
+    GEMINI_MODEL: str = "gemini-3.5-flash"
 
     # --- Debate Engine Configuration ---
+    # Orchestrator-level fallbacks used only when DebateGraph is driven directly
+    # without going through resolve_debate_config's mode presets (see
+    # debate_graph.py / nodes.py). Aligned with the "standard" mode preset so
+    # the two don't silently disagree.
     MAX_DEBATE_ROUNDS: int = 2
     CONSENSUS_THRESHOLD: float = 0.75
+    # Floor on debate rounds before consensus may be declared, so a single round
+    # can never end a multi-round debate. Aligned with the "standard" preset.
+    MIN_DEBATE_ROUNDS: int = 2
+
+    # Per-phase agent timeouts (seconds). Tunable so slower providers
+    # (OpenAI/Anthropic) or agents that run a web search plus an LLM call in the
+    # same window are not silently dropped. Tool-using agents get the multiplier.
+    AGENT_PROPOSAL_TIMEOUT: float = 45.0
+    AGENT_CRITIQUE_TIMEOUT: float = 45.0
+    AGENT_REVISION_TIMEOUT: float = 45.0
+    AGENT_TOOL_TIMEOUT_MULTIPLIER: float = 1.5
+
+    # Debate-tuning constants.
+    # Drift below this between consecutive rounds means agents have stopped moving.
+    DRIFT_EARLY_STOP_THRESHOLD: float = 0.05
+    # An agent whose final confidence is this far below the group mean is a dissenter.
+    MINORITY_REPORT_BAND: float = 0.20
+    # When the moderator says "stop" and every agent is at least this confident, stop.
+    ALL_CONFIDENT_THRESHOLD: float = 0.9
+    # Confidence has "converged" when the spread (max-min) across agents is within
+    # this band — they agree on how settled the question is.
+    CONFIDENCE_CONVERGENCE_SPREAD: float = 0.15
+    # Hybrid consensus gate: most dissenters / open high-severity disagreements a
+    # converged debate may still carry.
+    MAX_DISSENTERS_FOR_CONSENSUS: int = 1
+    MAX_OPEN_DISAGREEMENTS_FOR_CONSENSUS: int = 2
+    # Weight of confidence-weighted *position overlap* in the displayed/gated
+    # agreement score; the remainder is mean self-confidence. Kept modest because
+    # raw word-overlap runs low even when agents substantively agree — the other
+    # gate criteria (min rounds, dissent, open disagreements) carry the real load.
+    CONSENSUS_POSITION_WEIGHT: float = 0.3
+    # Max tool invocations an agent may make per proposal/revision call.
+    MAX_TOOL_CALLS_PER_ROUND: int = 3
 
     # --- Application Configuration ---
     LOG_LEVEL: str = "INFO"
@@ -67,8 +106,13 @@ class Settings(BaseSettings):
     SEMANTIC_CONSENSUS_WEIGHT: float = 0.5
 
     # --- Phase 3: Knowledge Base RAG ---
-    # Directory for persistent ChromaDB vector store.
     KNOWLEDGE_BASE_DIR: str = "knowledge_base"
+    KB_CHUNK_SIZE: int = 1000
+    KB_CHUNK_OVERLAP: int = 200
+    KB_SIMILARITY_THRESHOLD: float = 0.30
+    KB_TOP_K: int = 5
+    KB_EMBEDDING_MODEL: str = "all-MiniLM-L6-v2"
+    KB_MAX_FILE_MB: int = 10
 
     # --- Phase 4: Human-in-the-Loop ---
     # Set False to disable HITL even when supervised mode is requested.

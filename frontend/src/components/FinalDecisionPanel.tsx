@@ -1,18 +1,59 @@
 /**
  * FinalDecisionPanel – prominently displays the FinalDecision from a debate.
+ *
+ * Layout: verdict hero (decision + rationale + radial score gauges + run
+ * metrics), then an accordion group for the secondary sections, then a
+ * slim sticky export bar.
  */
 
 "use client";
 
 import { useState, useEffect, useCallback } from "react";
+import {
+  AlertTriangle,
+  BarChart3,
+  Check,
+  ChevronUp,
+  Coins,
+  Copy,
+  Download,
+  Flag,
+  Link2,
+  MessageSquareX,
+  Repeat,
+  Route,
+  Sparkles,
+  Swords,
+  Users,
+  X,
+} from "lucide-react";
 import type { FinalDecision, EvaluationResult } from "@/lib/types";
 import { evaluateDecision, exportDecision } from "@/lib/api";
-import ConfidenceMeter from "./ConfidenceMeter";
-import DebateTimeline from "./DebateTimeline";
+import Markdown from "./Markdown";
+import Badge, { type BadgeTone } from "./ui/Badge";
+import Button from "./ui/Button";
+import Card from "./ui/Card";
+import CollapsibleSection from "./ui/CollapsibleSection";
+import RadialGauge from "./ui/RadialGauge";
+import AgentAvatar from "./ui/AgentAvatar";
 import { useToast } from "./Toast";
 
 interface FinalDecisionPanelProps {
   decision: FinalDecision;
+}
+
+/** Build a clean Markdown summary for clipboard / sharing. */
+function buildMarkdownSummary(d: FinalDecision): string {
+  const lines: string[] = ["# Decision", "", d.decision, "", "## Rationale", "", d.rationale_summary, ""];
+  if (d.risk_flags.length) lines.push("## Risk Flags", "", ...d.risk_flags.map((f) => `- ${f}`), "");
+  if (d.alternatives.length) lines.push("## Alternatives Considered", "", ...d.alternatives.map((a) => `- ${a}`), "");
+  lines.push(
+    "---",
+    `Agreement ${Math.round(d.agreement_score * 100)}% · Confidence ${Math.round(
+      d.confidence_score * 100,
+    )}% · ${d.total_rounds} round${d.total_rounds > 1 ? "s" : ""} · ${d.termination_reason.replace(/_/g, " ")}`,
+  );
+  return lines.join("\n");
 }
 
 function useLocalBool(key: string, defaultValue = false): [boolean, (v: boolean) => void] {
@@ -28,13 +69,24 @@ function useLocalBool(key: string, defaultValue = false): [boolean, (v: boolean)
   return [value, set];
 }
 
+const TERMINATION_TONE: Record<string, BadgeTone> = {
+  consensus_reached: "success",
+  max_rounds_reached: "warning",
+  human_override: "violet",
+};
+
+/** Shared header styling for the accordion group sections. */
+const SECTION_HEADER = "px-5 py-3.5 hover:bg-surface transition-colors";
+const SECTION_BODY = "px-5 pb-4";
+const SECTION_TITLE = "text-sm font-semibold text-gray-700 dark:text-gray-300";
+
 export default function FinalDecisionPanel({ decision }: FinalDecisionPanelProps) {
   const { showToast } = useToast();
-  const [showTrace, setShowTrace] = useLocalBool("fdp:showTrace", false);
   const [showMinority, setShowMinority] = useLocalBool("fdp:showMinority", false);
   const [showDisagreements, setShowDisagreements] = useLocalBool("fdp:showDisagreements", false);
   const [showDissenting, setShowDissenting] = useLocalBool("fdp:showDissenting", false);
-  const [exportLoading, setExportLoading] = useState<null | "markdown" | "pdf">(null);
+  const [exportLoading, setExportLoading] = useState<null | "markdown" | "pdf" | "json">(null);
+  const [exportMenuOpen, setExportMenuOpen] = useState(false);
   const [evalResult, setEvalResult] = useState<EvaluationResult | null>(null);
   const [evalLoading, setEvalLoading] = useState(false);
   const [evalError, setEvalError] = useState<string | null>(null);
@@ -54,6 +106,7 @@ export default function FinalDecisionPanel({ decision }: FinalDecisionPanelProps
 
   async function handleExport(format: "markdown" | "pdf") {
     setExportLoading(format);
+    setExportMenuOpen(false);
     try {
       const blob = await exportDecision(decision.thread_id, format);
       const url = URL.createObjectURL(blob);
@@ -70,6 +123,7 @@ export default function FinalDecisionPanel({ decision }: FinalDecisionPanelProps
   }
 
   function handleDownloadJSON() {
+    setExportMenuOpen(false);
     const blob = new Blob([JSON.stringify(decision, null, 2)], {
       type: "application/json",
     });
@@ -81,289 +135,454 @@ export default function FinalDecisionPanel({ decision }: FinalDecisionPanelProps
     URL.revokeObjectURL(url);
   }
 
+  // Copy a Markdown summary of the decision to the clipboard.
+  async function handleCopyDecision() {
+    try {
+      await navigator.clipboard.writeText(buildMarkdownSummary(decision));
+      showToast("Decision copied to clipboard", "success");
+    } catch {
+      showToast("Could not copy to clipboard.", "error");
+    }
+  }
+
+  // Copy a permalink to this debate.
+  async function handleCopyLink() {
+    try {
+      await navigator.clipboard.writeText(window.location.href);
+      showToast("Link copied to clipboard", "success");
+    } catch {
+      showToast("Could not copy link.", "error");
+    }
+  }
+
   const hasMinorityReport = (decision.minority_report?.length ?? 0) > 0;
-  const hasKeyDisagreements = (decision.key_disagreements?.length ?? 0) > 0;
+  const structuredDisagreements = decision.structured_disagreements ?? [];
+  const hasStructuredDisagreements = structuredDisagreements.length > 0;
+  const hasKeyDisagreements =
+    (decision.key_disagreements?.length ?? 0) > 0 || hasStructuredDisagreements;
+  const disagreementCount = hasStructuredDisagreements
+    ? structuredDisagreements.length
+    : decision.key_disagreements?.length ?? 0;
   const hasContributions = Object.keys(decision.agent_contribution_scores ?? {}).length > 0;
+  // Final-round agent stances, surfaced so the debate is verifiable at a glance.
+  const finalRound = decision.debate_trace?.[decision.debate_trace.length - 1];
+  const agentPositions = finalRound?.agent_outputs ?? [];
+  const hasAgentPositions = agentPositions.length > 0;
+  const hasSecondarySections =
+    decision.risk_flags.length > 0 ||
+    decision.alternatives.length > 0 ||
+    decision.dissenting_opinions.length > 0 ||
+    hasKeyDisagreements ||
+    hasMinorityReport ||
+    hasContributions ||
+    hasAgentPositions;
+
+  const exportButtons = (
+    <>
+      <Button size="sm" variant="outline" onClick={() => handleExport("markdown")}
+              disabled={exportLoading !== null} loading={exportLoading === "markdown"}>
+        {exportLoading !== "markdown" && <Download className="w-3.5 h-3.5" aria-hidden="true" />}
+        Markdown
+      </Button>
+      <Button size="sm" variant="outline" onClick={() => handleExport("pdf")}
+              disabled={exportLoading !== null} loading={exportLoading === "pdf"}>
+        {exportLoading !== "pdf" && <Download className="w-3.5 h-3.5" aria-hidden="true" />}
+        PDF
+      </Button>
+      <Button size="sm" variant="outline" onClick={handleDownloadJSON} disabled={exportLoading !== null}>
+        <Download className="w-3.5 h-3.5" aria-hidden="true" />
+        JSON
+      </Button>
+    </>
+  );
 
   return (
-    <div className="space-y-6 pb-20">
-      {/* Decision */}
-      <section className="bg-white dark:bg-gray-900 rounded-xl border dark:border-gray-800 shadow-sm p-6">
-        <h2 className="text-2xl font-bold text-gray-800 dark:text-gray-100 mb-2">Decision</h2>
-        <p className="text-lg text-gray-700 dark:text-gray-300 leading-relaxed">
-          {decision.decision}
-        </p>
-      </section>
+    <div className="space-y-5 pb-24">
+      {/* Degraded-run warning: decision rested on fewer agents than expected */}
+      {decision.degraded && (
+        <div className="flex items-start gap-3 rounded-2xl ring-1 ring-amber-300 dark:ring-amber-700 bg-amber-50 dark:bg-amber-900/20 p-4">
+          <AlertTriangle className="w-5 h-5 text-amber-600 dark:text-amber-400 shrink-0 mt-0.5" aria-hidden="true" />
+          <p className="text-sm text-amber-800 dark:text-amber-300 leading-relaxed">
+            This decision was made with reduced input — the following agent
+            {(decision.missing_agents?.length ?? 0) > 1 ? "s" : ""} did not contribute to the
+            final round:{" "}
+            <span className="font-semibold">{(decision.missing_agents ?? []).join(", ")}</span>.
+            Treat it with extra caution.
+          </p>
+        </div>
+      )}
 
-      {/* Rationale */}
-      <section className="bg-white dark:bg-gray-900 rounded-xl border dark:border-gray-800 shadow-sm p-6">
-        <h3 className="font-semibold text-gray-700 dark:text-gray-300 mb-2">Rationale</h3>
-        <p className="text-gray-600 dark:text-gray-400">{decision.rationale_summary}</p>
-      </section>
+      {/* Verdict hero — decision, rationale and the numbers in one card */}
+      <section className="relative overflow-hidden rounded-2xl bg-surface-raised ring-1 ring-black/5 dark:ring-white/10 shadow-card">
+        <span
+          aria-hidden="true"
+          className="absolute inset-x-0 top-0 h-1 bg-gradient-to-r from-accent-500 via-violet-500 to-accent-400"
+        />
+        <div className="p-6 grid grid-cols-1 md:grid-cols-[minmax(0,1fr)_200px] gap-6">
+          {/* Decision + rationale */}
+          <div className="min-w-0">
+            <div className="flex flex-wrap items-center gap-2 mb-3">
+              <p className="text-xs font-bold uppercase tracking-wider text-accent-600 dark:text-accent-400">
+                Decision
+              </p>
+              <Badge tone={TERMINATION_TONE[decision.termination_reason] ?? "neutral"} className="capitalize">
+                {decision.termination_reason.replace(/_/g, " ")}
+              </Badge>
+            </div>
+            <Markdown className="text-xl font-medium text-gray-800 dark:text-gray-100 leading-snug">
+              {decision.decision}
+            </Markdown>
+            <hr className="my-4 border-line" />
+            <h3 className="text-sm font-semibold text-gray-700 dark:text-gray-300 mb-1.5">Rationale</h3>
+            <Markdown className="text-sm text-gray-600 dark:text-gray-400">
+              {decision.rationale_summary}
+            </Markdown>
+          </div>
 
-      {/* Scores */}
-      <section className="bg-white dark:bg-gray-900 rounded-xl border dark:border-gray-800 shadow-sm p-6 grid grid-cols-1 sm:grid-cols-2 gap-6">
-        <ConfidenceMeter score={decision.confidence_score} label="Confidence" />
-        <ConfidenceMeter score={decision.agreement_score} label="Agreement" />
-      </section>
-
-      {/* Agent Contribution Scores */}
-      {hasContributions && (
-        <section className="bg-white dark:bg-gray-900 rounded-xl border dark:border-gray-800 shadow-sm p-6">
-          <h3 className="font-semibold text-gray-700 dark:text-gray-300 mb-3">Agent Contributions</h3>
-          <div className="space-y-2">
-            {Object.entries(decision.agent_contribution_scores!).map(([agent, score]) => (
-              <div key={agent} className="flex items-center gap-3">
-                <span className="text-sm text-gray-600 dark:text-gray-400 w-20">{agent}</span>
-                <div className="flex-1 h-2 bg-gray-100 dark:bg-gray-700 rounded-full overflow-hidden">
-                  <div
-                    className="h-full bg-blue-500 rounded-full"
-                    style={{ width: `${Math.round(score * 100)}%` }}
-                  />
-                </div>
-                <span className="text-xs text-gray-500 tabular-nums w-10 text-right">
-                  {Math.round(score * 100)}%
+          {/* Stat column */}
+          <div className="flex md:flex-col items-center justify-around md:justify-start gap-4 md:gap-5 md:border-l md:border-line md:pl-6">
+            <div className="flex gap-4">
+              <RadialGauge score={decision.agreement_score} label="Agreement" />
+              <RadialGauge score={decision.confidence_score} label="Confidence" />
+            </div>
+            <div className="space-y-1.5 text-xs text-gray-500 dark:text-gray-400">
+              <p className="flex items-center gap-1.5">
+                <Repeat className="w-3.5 h-3.5 shrink-0" aria-hidden="true" />
+                <span className="tabular-nums">
+                  {decision.total_rounds} round{decision.total_rounds > 1 ? "s" : ""}
                 </span>
+              </p>
+              {decision.token_usage && decision.token_usage.total_tokens > 0 && (
+                <p
+                  className="flex items-center gap-1.5"
+                  title={`${decision.token_usage.input_tokens.toLocaleString()} in · ${decision.token_usage.output_tokens.toLocaleString()} out`}
+                >
+                  <Coins className="w-3.5 h-3.5 shrink-0" aria-hidden="true" />
+                  <span className="tabular-nums">
+                    {decision.token_usage.total_tokens.toLocaleString()} tokens
+                    {typeof decision.estimated_cost_usd === "number"
+                      ? ` · ~$${decision.estimated_cost_usd.toFixed(4)}`
+                      : ""}
+                  </span>
+                </p>
+              )}
+            </div>
+          </div>
+        </div>
+      </section>
+
+      {/* Secondary sections — one accordion group */}
+      {hasSecondarySections && (
+        <Card padded={false} className="divide-y divide-line overflow-hidden">
+          {hasAgentPositions && (
+            <CollapsibleSection
+              defaultOpen
+              headerClassName={SECTION_HEADER}
+              bodyClassName={SECTION_BODY}
+              title={
+                <span className={`flex items-center gap-2 ${SECTION_TITLE}`}>
+                  <Users className="w-4 h-4 text-accent-500" aria-hidden="true" />
+                  Agent Positions
+                </span>
+              }
+              meta={<Badge tone="neutral">{agentPositions.length}</Badge>}
+            >
+              <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+                {agentPositions.map((output) => (
+                  <div
+                    key={output.agent_name}
+                    className="rounded-lg bg-surface ring-1 ring-black/5 dark:ring-white/10 p-3"
+                  >
+                    <div className="flex items-center justify-between gap-2 mb-1.5">
+                      <span className="flex items-center gap-1.5 text-sm font-semibold text-gray-700 dark:text-gray-300">
+                        <AgentAvatar name={output.agent_name} size="sm" />
+                        {output.agent_name}
+                      </span>
+                      <span className="text-xs text-gray-500 tabular-nums shrink-0">
+                        {Math.round(output.confidence_score * 100)}%
+                      </span>
+                    </div>
+                    <Markdown className="text-sm text-gray-600 dark:text-gray-400">
+                      {output.position}
+                    </Markdown>
+                  </div>
+                ))}
               </div>
-            ))}
-          </div>
-        </section>
-      )}
-
-      {/* Meta badges */}
-      <div className="flex flex-wrap gap-3 text-sm">
-        <span className="px-3 py-1 rounded-full bg-blue-100 dark:bg-blue-900/40 text-blue-700 dark:text-blue-300 font-medium">
-          {decision.total_rounds} round{decision.total_rounds > 1 ? "s" : ""}
-        </span>
-        <span className="px-3 py-1 rounded-full bg-gray-100 dark:bg-gray-700 text-gray-700 dark:text-gray-300 font-medium capitalize">
-          {decision.termination_reason.replace(/_/g, " ")}
-        </span>
-      </div>
-
-      {/* Risk Flags */}
-      {decision.risk_flags.length > 0 && (
-        <section className="bg-white dark:bg-gray-900 rounded-xl border dark:border-gray-800 shadow-sm p-6">
-          <h3 className="font-semibold text-gray-700 dark:text-gray-300 mb-2">Risk Flags</h3>
-          <div className="flex flex-wrap gap-2">
-            {decision.risk_flags.map((flag, i) => (
-              <span
-                key={i}
-                className="px-3 py-1 rounded-full bg-red-100 dark:bg-red-900/40 text-red-700 dark:text-red-300 text-sm font-medium"
-              >
-                {flag}
-              </span>
-            ))}
-          </div>
-        </section>
-      )}
-
-      {/* Alternatives */}
-      {decision.alternatives.length > 0 && (
-        <section className="bg-white dark:bg-gray-900 rounded-xl border dark:border-gray-800 shadow-sm p-6">
-          <h3 className="font-semibold text-gray-700 dark:text-gray-300 mb-2">Alternatives Considered</h3>
-          <ul className="list-disc list-inside text-gray-600 dark:text-gray-400 space-y-1">
-            {decision.alternatives.map((alt, i) => (
-              <li key={i}>{alt}</li>
-            ))}
-          </ul>
-        </section>
-      )}
-
-      {/* Dissenting Opinions */}
-      {decision.dissenting_opinions.length > 0 && (
-        <section className="bg-white dark:bg-gray-900 rounded-xl border dark:border-gray-800 shadow-sm p-6">
-          <button
-            onClick={() => setShowDissenting(!showDissenting)}
-            className="w-full flex justify-between items-center"
-          >
-            <h3 className="font-semibold text-gray-700 dark:text-gray-300">
-              Dissenting Opinions ({decision.dissenting_opinions.length})
-            </h3>
-            <span className="text-gray-400 text-sm">{showDissenting ? "▲" : "▼"}</span>
-          </button>
-          {showDissenting && (
-            <ul className="list-disc list-inside text-gray-600 dark:text-gray-400 space-y-1 mt-3">
-              {decision.dissenting_opinions.map((op, i) => (
-                <li key={i}>{op}</li>
-              ))}
-            </ul>
+            </CollapsibleSection>
           )}
-        </section>
-      )}
 
-      {/* Key Disagreements (P1.5) */}
-      {hasKeyDisagreements && (
-        <section className="bg-white dark:bg-gray-900 rounded-xl border dark:border-gray-800 shadow-sm p-6">
-          <button
-            onClick={() => setShowDisagreements(!showDisagreements)}
-            className="w-full flex justify-between items-center"
-          >
-            <h3 className="font-semibold text-gray-700 dark:text-gray-300">
-              Key Disagreements ({decision.key_disagreements!.length})
-            </h3>
-            <span className="text-gray-400 text-sm">{showDisagreements ? "▲" : "▼"}</span>
-          </button>
-          {showDisagreements && (
-            <ul className="list-disc list-inside text-gray-600 dark:text-gray-400 space-y-1 mt-3">
-              {decision.key_disagreements!.map((d, i) => (
-                <li key={i} className="text-sm">{d}</li>
-              ))}
-            </ul>
+          {decision.risk_flags.length > 0 && (
+            <CollapsibleSection
+              defaultOpen
+              headerClassName={SECTION_HEADER}
+              bodyClassName={SECTION_BODY}
+              title={
+                <span className={`flex items-center gap-2 ${SECTION_TITLE}`}>
+                  <AlertTriangle className="w-4 h-4 text-red-500" aria-hidden="true" />
+                  Risk Flags
+                </span>
+              }
+              meta={<Badge tone="danger">{decision.risk_flags.length}</Badge>}
+            >
+              <div className="flex flex-wrap gap-2">
+                {decision.risk_flags.map((flag, i) => (
+                  <Badge key={i} tone="danger" className="!text-sm !px-3 !py-1">
+                    {flag}
+                  </Badge>
+                ))}
+              </div>
+            </CollapsibleSection>
           )}
-        </section>
-      )}
 
-      {/* Minority Report (P1.5) */}
-      {hasMinorityReport && (
-        <section className="bg-white dark:bg-gray-900 rounded-xl border dark:border-gray-800 shadow-sm p-6">
-          <button
-            onClick={() => setShowMinority(!showMinority)}
-            className="w-full flex justify-between items-center"
-          >
-            <h3 className="font-semibold text-amber-700 dark:text-amber-400">
-              Minority Report ({decision.minority_report!.length})
-            </h3>
-            <span className="text-gray-400 text-sm">{showMinority ? "▲" : "▼"}</span>
-          </button>
-          {showMinority && (
-            <div className="mt-3 space-y-3">
-              {decision.minority_report!.map((entry, i) => (
-                <div key={i} className="rounded-lg bg-amber-50 dark:bg-amber-900/20 border border-amber-200 dark:border-amber-700 p-4">
-                  <div className="flex items-center gap-2 mb-1">
-                    <span className="font-semibold text-sm text-amber-800 dark:text-amber-300">
-                      {entry.agent_name}
-                    </span>
-                    <span className="text-xs text-gray-500 tabular-nums">
-                      {Math.round(entry.confidence_score * 100)}% confidence
+          {hasContributions && (
+            <CollapsibleSection
+              defaultOpen
+              headerClassName={SECTION_HEADER}
+              bodyClassName={SECTION_BODY}
+              title={
+                <span className={`flex items-center gap-2 ${SECTION_TITLE}`}>
+                  <BarChart3 className="w-4 h-4 text-accent-500" aria-hidden="true" />
+                  Agent Contributions
+                </span>
+              }
+            >
+              <div className="space-y-2">
+                {Object.entries(decision.agent_contribution_scores!).map(([agent, score]) => (
+                  <div key={agent} className="flex items-center gap-3">
+                    <span className="text-sm text-gray-600 dark:text-gray-400 w-24 truncate">{agent}</span>
+                    <div className="flex-1 h-2 bg-gray-100 dark:bg-gray-700 rounded-full overflow-hidden">
+                      <div
+                        className="h-full bg-accent-500 rounded-full transition-all duration-500"
+                        style={{ width: `${Math.round(score * 100)}%` }}
+                      />
+                    </div>
+                    <span className="text-xs text-gray-500 tabular-nums w-10 text-right">
+                      {Math.round(score * 100)}%
                     </span>
                   </div>
-                  <p className="text-sm text-gray-700 dark:text-gray-300 mb-1">{entry.final_position}</p>
-                  <p className="text-xs text-amber-700 dark:text-amber-400 italic">{entry.dissent_reason}</p>
-                </div>
-              ))}
-            </div>
+                ))}
+              </div>
+            </CollapsibleSection>
           )}
-        </section>
-      )}
 
-      {/* Actions */}
-      <div className="flex flex-wrap gap-3">
-        <button
-          onClick={handleDownloadJSON}
-          className="px-4 py-2 rounded-lg bg-gray-800 text-white text-sm font-medium hover:bg-gray-700 transition"
-        >
-          ⬇ JSON
-        </button>
-        {decision.debate_trace.length > 0 && (
-          <button
-            onClick={() => setShowTrace(!showTrace)}
-            className="px-4 py-2 rounded-lg border border-gray-300 dark:border-gray-600 text-sm font-medium text-gray-700 dark:text-gray-300 hover:bg-gray-50 dark:hover:bg-gray-800 transition"
-          >
-            {showTrace ? "Hide" : "View"} Full Debate Trace
-          </button>
-        )}
-      </div>
-
-      {/* Debate trace */}
-      {showTrace && decision.debate_trace.length > 0 && (
-        <section className="bg-gray-50 rounded-xl border p-6">
-          <h3 className="font-semibold text-gray-700 mb-4">Debate Trace</h3>
-          <DebateTimeline rounds={decision.debate_trace} />
-        </section>
-      )}
-
-      {/* Sticky export action bar */}
-      <div className="fixed bottom-0 left-0 right-0 z-20 bg-white/90 dark:bg-gray-900/95 backdrop-blur-md border-t border-gray-200 dark:border-gray-800 shadow-lg">
-        <div className="max-w-4xl mx-auto px-4 py-2.5 flex flex-wrap items-center gap-2">
-          <span className="text-xs text-gray-400 font-medium mr-1 hidden sm:block">Export:</span>
-          <button
-            onClick={() => handleExport("markdown")}
-            disabled={exportLoading !== null}
-            className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg bg-gray-800 text-white text-xs font-medium hover:bg-gray-700 disabled:opacity-50 transition"
-          >
-            {exportLoading === "markdown" ? (
-              <span className="w-3 h-3 border-2 border-white border-t-transparent rounded-full animate-spin" />
-            ) : "⬇"}
-            Markdown
-          </button>
-          <button
-            onClick={() => handleExport("pdf")}
-            disabled={exportLoading !== null}
-            className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg bg-red-700 text-white text-xs font-medium hover:bg-red-800 disabled:opacity-50 transition"
-          >
-            {exportLoading === "pdf" ? (
-              <span className="w-3 h-3 border-2 border-white border-t-transparent rounded-full animate-spin" />
-            ) : "⬇"}
-            PDF
-          </button>
-          <span className="text-gray-200 dark:text-gray-700 select-none">|</span>
-          <button
-            onClick={handleDownloadJSON}
-            className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg border border-gray-300 dark:border-gray-600 text-xs font-medium text-gray-700 dark:text-gray-300 hover:bg-gray-50 dark:hover:bg-gray-800 transition"
-          >
-            ⬇ JSON
-          </button>
-          {decision.debate_trace.length > 0 && (
-            <button
-              onClick={() => setShowTrace(!showTrace)}
-              className="ml-auto px-3 py-1.5 rounded-lg border border-gray-300 dark:border-gray-600 text-xs font-medium text-gray-700 dark:text-gray-300 hover:bg-gray-50 dark:hover:bg-gray-800 transition"
+          {decision.alternatives.length > 0 && (
+            <CollapsibleSection
+              defaultOpen
+              headerClassName={SECTION_HEADER}
+              bodyClassName={SECTION_BODY}
+              title={
+                <span className={`flex items-center gap-2 ${SECTION_TITLE}`}>
+                  <Route className="w-4 h-4 text-gray-400" aria-hidden="true" />
+                  Alternatives Considered
+                </span>
+              }
+              meta={<Badge tone="neutral">{decision.alternatives.length}</Badge>}
             >
-              {showTrace ? "▲ Hide" : "▼ Full Trace"}
-            </button>
+              <ul className="list-disc list-inside text-sm text-gray-600 dark:text-gray-400 space-y-1">
+                {decision.alternatives.map((alt, i) => (
+                  <li key={i}>{alt}</li>
+                ))}
+              </ul>
+            </CollapsibleSection>
           )}
-          <button
-            onClick={handleEvaluate}
-            disabled={evalLoading}
-            className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg bg-purple-600 text-white text-xs font-medium hover:bg-purple-700 disabled:opacity-50 transition"
-          >
-            {evalLoading ? (
-              <span className="w-3 h-3 border-2 border-white border-t-transparent rounded-full animate-spin" />
-            ) : "✦"}
-            Evaluate Quality
-          </button>
-        </div>
-      </div>
 
-      {/* P4.3 – Evaluation result panel */}
+          {decision.dissenting_opinions.length > 0 && (
+            <CollapsibleSection
+              open={showDissenting}
+              onToggle={setShowDissenting}
+              headerClassName={SECTION_HEADER}
+              bodyClassName={SECTION_BODY}
+              title={
+                <span className={`flex items-center gap-2 ${SECTION_TITLE}`}>
+                  <MessageSquareX className="w-4 h-4 text-gray-400" aria-hidden="true" />
+                  Dissenting Opinions
+                </span>
+              }
+              meta={<Badge tone="neutral">{decision.dissenting_opinions.length}</Badge>}
+            >
+              <ul className="list-disc list-inside text-sm text-gray-600 dark:text-gray-400 space-y-1">
+                {decision.dissenting_opinions.map((op, i) => (
+                  <li key={i}>{op}</li>
+                ))}
+              </ul>
+            </CollapsibleSection>
+          )}
+
+          {hasKeyDisagreements && (
+            <CollapsibleSection
+              open={showDisagreements}
+              onToggle={setShowDisagreements}
+              headerClassName={SECTION_HEADER}
+              bodyClassName={SECTION_BODY}
+              title={
+                <span className={`flex items-center gap-2 ${SECTION_TITLE}`}>
+                  <Swords className="w-4 h-4 text-gray-400" aria-hidden="true" />
+                  Key Disagreements
+                </span>
+              }
+              meta={<Badge tone="neutral">{disagreementCount}</Badge>}
+            >
+              {hasStructuredDisagreements ? (
+                <div className="space-y-2.5">
+                  {structuredDisagreements.map((d, i) => (
+                    <div
+                      key={i}
+                      className="rounded-lg bg-surface ring-1 ring-black/5 dark:ring-white/10 p-3"
+                    >
+                      <p className="text-sm font-semibold text-gray-700 dark:text-gray-300 mb-1.5">
+                        {d.topic}
+                      </p>
+                      <div className="space-y-1">
+                        {d.positions.map((p, j) => (
+                          <p key={j} className="text-sm text-gray-600 dark:text-gray-400 flex gap-2">
+                            <span className="flex items-center gap-1 font-medium text-gray-700 dark:text-gray-300 shrink-0">
+                              <AgentAvatar name={p.agent} size="sm" />
+                              {p.agent}:
+                            </span>
+                            <span>{p.stance}</span>
+                          </p>
+                        ))}
+                      </div>
+                    </div>
+                  ))}
+                </div>
+              ) : (
+                <ul className="list-disc list-inside text-sm text-gray-600 dark:text-gray-400 space-y-1">
+                  {decision.key_disagreements!.map((d, i) => (
+                    <li key={i}>{d}</li>
+                  ))}
+                </ul>
+              )}
+            </CollapsibleSection>
+          )}
+
+          {hasMinorityReport && (
+            <CollapsibleSection
+              open={showMinority}
+              onToggle={setShowMinority}
+              headerClassName={SECTION_HEADER}
+              bodyClassName={SECTION_BODY}
+              title={
+                <span className="flex items-center gap-2 text-sm font-semibold text-amber-700 dark:text-amber-400">
+                  <Flag className="w-4 h-4" aria-hidden="true" />
+                  Minority Report
+                </span>
+              }
+              meta={<Badge tone="warning">{decision.minority_report!.length}</Badge>}
+            >
+              <div className="space-y-3">
+                {decision.minority_report!.map((entry, i) => (
+                  <div key={i} className="rounded-lg bg-amber-50 dark:bg-amber-900/20 ring-1 ring-amber-200 dark:ring-amber-700 p-4">
+                    <div className="flex items-center gap-2 mb-1">
+                      <span className="font-semibold text-sm text-amber-800 dark:text-amber-300">
+                        {entry.agent_name}
+                      </span>
+                      <span className="text-xs text-gray-500 tabular-nums">
+                        {Math.round(entry.confidence_score * 100)}% confidence
+                      </span>
+                    </div>
+                    <Markdown className="text-sm text-gray-700 dark:text-gray-300 mb-1">{entry.final_position}</Markdown>
+                    <p className="text-xs text-amber-700 dark:text-amber-400 italic">{entry.dissent_reason}</p>
+                  </div>
+                ))}
+              </div>
+            </CollapsibleSection>
+          )}
+        </Card>
+      )}
+
+      {/* Evaluation result / error — inline, above the sticky bar */}
       {evalError && (
-        <div className="fixed bottom-14 left-0 right-0 z-20 max-w-4xl mx-auto px-4">
-          <div className="bg-red-50 dark:bg-red-900/20 border border-red-300 dark:border-red-700 rounded-lg px-4 py-2 text-xs text-red-700 dark:text-red-300">
-            {evalError}
-          </div>
+        <div className="bg-red-50 dark:bg-red-900/20 ring-1 ring-red-300 dark:ring-red-700 rounded-lg px-4 py-2 text-xs text-red-700 dark:text-red-300">
+          {evalError}
         </div>
       )}
       {evalResult && (
-        <div className="fixed bottom-14 left-0 right-0 z-20 max-w-4xl mx-auto px-4 pb-2">
-          <div className="bg-white dark:bg-gray-900 border border-purple-200 dark:border-purple-700 rounded-xl shadow-lg p-4">
-            <div className="flex items-center justify-between mb-3">
-              <h4 className="text-sm font-semibold text-purple-700 dark:text-purple-300">
-                Decision Quality — Overall {Math.round(evalResult.overall * 100)}%
-              </h4>
-              <button onClick={() => setEvalResult(null)} className="text-gray-400 hover:text-gray-600 text-sm">✕</button>
-            </div>
-            <div className="grid grid-cols-2 sm:grid-cols-4 gap-3 mb-3">
-              {(["completeness", "consistency", "actionability", "risk_awareness"] as const).map((dim) => {
-                const pct = Math.round(evalResult[dim] * 100);
-                const color = pct >= 80 ? "bg-green-500" : pct >= 55 ? "bg-yellow-500" : "bg-red-500";
-                return (
-                  <div key={dim} className="space-y-1">
-                    <div className="flex justify-between text-xs">
-                      <span className="text-gray-500 dark:text-gray-400 capitalize">{dim.replace("_", " ")}</span>
-                      <span className="font-semibold tabular-nums">{pct}%</span>
-                    </div>
-                    <div className="h-1.5 bg-gray-100 dark:bg-gray-700 rounded-full overflow-hidden">
-                      <div className={`h-full rounded-full ${color}`} style={{ width: `${pct}%` }} />
-                    </div>
+        <Card padded={false} className="p-4 !ring-purple-200 dark:!ring-purple-700 animate-slideUpIn">
+          <div className="flex items-center justify-between mb-3">
+            <h4 className="text-sm font-semibold text-purple-700 dark:text-purple-300">
+              Decision Quality — Overall {Math.round(evalResult.overall * 100)}%
+            </h4>
+            <button
+              onClick={() => setEvalResult(null)}
+              aria-label="Dismiss evaluation"
+              className="text-gray-400 hover:text-gray-600 dark:hover:text-gray-300 transition"
+            >
+              <X className="w-4 h-4" aria-hidden="true" />
+            </button>
+          </div>
+          <div className="grid grid-cols-2 sm:grid-cols-4 gap-3 mb-3">
+            {(["completeness", "consistency", "actionability", "risk_awareness"] as const).map((dim) => {
+              const pct = Math.round(evalResult[dim] * 100);
+              const color = pct >= 80 ? "bg-green-500" : pct >= 55 ? "bg-yellow-500" : "bg-red-500";
+              return (
+                <div key={dim} className="space-y-1">
+                  <div className="flex justify-between text-xs">
+                    <span className="text-gray-500 dark:text-gray-400 capitalize">{dim.replace("_", " ")}</span>
+                    <span className="font-semibold tabular-nums">{pct}%</span>
                   </div>
-                );
-              })}
-            </div>
-            {evalResult.reasoning && (
-              <p className="text-xs text-gray-500 dark:text-gray-400 italic leading-snug">{evalResult.reasoning}</p>
+                  <div className="h-1.5 bg-gray-100 dark:bg-gray-700 rounded-full overflow-hidden">
+                    <div className={`h-full rounded-full ${color}`} style={{ width: `${pct}%` }} />
+                  </div>
+                </div>
+              );
+            })}
+          </div>
+          {evalResult.reasoning && (
+            <p className="text-xs text-gray-500 dark:text-gray-400 italic leading-snug">{evalResult.reasoning}</p>
+          )}
+        </Card>
+      )}
+
+      {/* Sticky export action bar */}
+      <div className="fixed bottom-0 left-0 right-0 z-20 bg-surface-overlay/90 backdrop-blur-md border-t border-line shadow-lg">
+        <div className="max-w-6xl mx-auto px-4 py-2.5 flex flex-wrap items-center gap-2">
+          {/* Mobile: single Export menu */}
+          <div className="relative sm:hidden">
+            <Button size="sm" variant="outline" onClick={() => setExportMenuOpen((v) => !v)}
+                    aria-expanded={exportMenuOpen} aria-haspopup="menu">
+              <Download className="w-3.5 h-3.5" aria-hidden="true" />
+              Export
+              <ChevronUp
+                className={`w-3.5 h-3.5 transition-transform ${exportMenuOpen ? "" : "rotate-180"}`}
+                aria-hidden="true"
+              />
+            </Button>
+            {exportMenuOpen && (
+              <div className="absolute bottom-full mb-2 left-0 flex flex-col gap-1 p-2 rounded-xl bg-surface-overlay ring-1 ring-black/5 dark:ring-white/10 shadow-card-hover">
+                {exportButtons}
+              </div>
             )}
           </div>
+          {/* Desktop: inline export buttons */}
+          <span className="text-xs text-gray-400 font-medium mr-1 hidden sm:block">Export:</span>
+          <div className="hidden sm:flex items-center gap-2">{exportButtons}</div>
+
+          <span className="text-line-strong select-none hidden sm:inline">|</span>
+          <Button size="sm" variant="outline" onClick={handleCopyDecision}>
+            <Copy className="w-3.5 h-3.5" aria-hidden="true" />
+            Copy
+          </Button>
+          <Button size="sm" variant="outline" onClick={handleCopyLink}>
+            <Link2 className="w-3.5 h-3.5" aria-hidden="true" />
+            Link
+          </Button>
+          <Button
+            size="sm"
+            variant="primary"
+            onClick={handleEvaluate}
+            disabled={evalLoading || evalResult !== null}
+            loading={evalLoading}
+            title={evalResult !== null ? "Evaluation already loaded (backend cached)" : undefined}
+            className="ml-auto"
+          >
+            {!evalLoading && (evalResult !== null
+              ? <Check className="w-3.5 h-3.5" aria-hidden="true" />
+              : <Sparkles className="w-3.5 h-3.5" aria-hidden="true" />)}
+            {evalResult !== null ? "Evaluated" : "Evaluate Quality"}
+          </Button>
         </div>
-      )}
+      </div>
     </div>
   );
 }
