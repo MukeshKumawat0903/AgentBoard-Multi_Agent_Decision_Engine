@@ -94,7 +94,7 @@ class DebateState(BaseModel):
         description="The round currently being processed (0 = not yet started).",
     )
     max_rounds: int = Field(
-        default=4,
+        default=2,
         ge=2,
         le=8,
         description="Maximum number of debate rounds allowed.",

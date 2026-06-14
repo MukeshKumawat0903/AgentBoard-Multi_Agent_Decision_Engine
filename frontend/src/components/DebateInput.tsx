@@ -13,12 +13,14 @@
 "use client";
 
 import { useState, useEffect, useRef, type FormEvent, type ChangeEvent } from "react";
-import { Check, Microscope, SlidersHorizontal, Sparkles, Zap, type LucideIcon } from "lucide-react";
+import { Check, Microscope, Settings2, SlidersHorizontal, Sparkles, Zap, type LucideIcon } from "lucide-react";
 import type { AgentOption } from "./AgentRoster";
 import Toggle from "./Toggle";
 import Button from "./ui/Button";
 
 type DebateMode = "quick" | "standard" | "thorough";
+/** UI-level mode selection: the three presets plus a "custom" rounds option. */
+type ModeSelection = DebateMode | "custom";
 
 const MODE_OPTIONS: {
   value: DebateMode;
@@ -28,9 +30,25 @@ const MODE_OPTIONS: {
   description: string;
 }[] = [
   { value: "quick",    label: "Quick",    Icon: Zap,               duration: "~30 s",    description: "2 rounds · No critiques · Threshold 0.60" },
-  { value: "standard", label: "Standard", Icon: SlidersHorizontal, duration: "~1–2 min", description: "4 rounds · Full critique · Threshold 0.75" },
+  { value: "standard", label: "Standard", Icon: SlidersHorizontal, duration: "~1–2 min", description: "2 rounds · Full critique · Threshold 0.75" },
   { value: "thorough", label: "Thorough", Icon: Microscope,        duration: "~3 min",   description: "6 rounds · Full critique · Threshold 0.85" },
 ];
+
+// "Custom" runs Standard's full-critique config with a round count and
+// consensus threshold the user picks. The backend enforces a 2-round minimum
+// and a 0.1–0.95 threshold; the UI keeps threshold to a sensible 0.5–0.95.
+const CUSTOM_MIN_ROUNDS = 2;
+const CUSTOM_MAX_ROUNDS = 6;
+const CUSTOM_DEFAULT_ROUNDS = 4;
+const CUSTOM_MIN_THRESHOLD = 0.5;
+const CUSTOM_MAX_THRESHOLD = 0.95;
+const CUSTOM_THRESHOLD_STEP = 0.05;
+const CUSTOM_DEFAULT_THRESHOLD = 0.75;
+
+/** Round to 2 decimals so stepping the threshold doesn't drift (e.g. 0.7500001). */
+function roundThreshold(v: number): number {
+  return Math.round(v * 100) / 100;
+}
 
 /** One-click starter questions shown under the textarea for first-time users. */
 export interface SampleQuestion {
@@ -40,6 +58,8 @@ export interface SampleQuestion {
 
 export interface DebateOptions {
   mode: DebateMode;
+  max_rounds?: number;
+  consensus_threshold?: number;
   agents?: string[];
   use_knowledge_base?: boolean;
   enable_agent_memory?: boolean;
@@ -71,7 +91,10 @@ export default function DebateInput({
   samples,
 }: DebateInputProps) {
   const [query, setQuery] = useState(prefillQuery ?? "");
-  const [mode, setMode] = useState<DebateMode>(prefillMode ?? "standard");
+  const [selection, setSelection] = useState<ModeSelection>(prefillMode ?? "standard");
+  // Round count + consensus threshold for the "custom" option; ignored for presets.
+  const [customRounds, setCustomRounds] = useState<number>(CUSTOM_DEFAULT_ROUNDS);
+  const [customThreshold, setCustomThreshold] = useState<number>(CUSTOM_DEFAULT_THRESHOLD);
   const [touched, setTouched] = useState(false);
   const [showErrorState, setShowErrorState] = useState(false);
   const [isShaking, setIsShaking] = useState(false);
@@ -99,8 +122,13 @@ export default function DebateInput({
       return;
     }
     const allSelected = selectedAgents.size === agents.length;
+    const isCustom = selection === "custom";
     onSubmit(query.trim(), {
-      mode,
+      // "Custom" maps to Standard's config with an explicit round override;
+      // the presets resolve their own round count on the backend.
+      mode: isCustom ? "standard" : selection,
+      max_rounds: isCustom ? customRounds : undefined,
+      consensus_threshold: isCustom ? customThreshold : undefined,
       agents: allSelected ? undefined : [...selectedAgents],
       use_knowledge_base: useKnowledgeBase,
       enable_agent_memory: enableAgentMemory,
@@ -191,14 +219,14 @@ export default function DebateInput({
         <label className="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-2">
           Debate mode
         </label>
-        <div className="grid grid-cols-1 sm:grid-cols-3 gap-2">
+        <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-2">
           {MODE_OPTIONS.map(({ value, label, Icon, duration, description }) => {
-            const selected = mode === value;
+            const selected = selection === value;
             return (
               <button
                 key={value}
                 type="button"
-                onClick={() => setMode(value)}
+                onClick={() => setSelection(value)}
                 disabled={isLoading}
                 aria-pressed={selected}
                 title={description}
@@ -229,7 +257,107 @@ export default function DebateInput({
               </button>
             );
           })}
+
+          {/* 4th option — Custom: Standard's config with a user-chosen round count */}
+          {(() => {
+            const selected = selection === "custom";
+            return (
+              <button
+                type="button"
+                onClick={() => setSelection("custom")}
+                disabled={isLoading}
+                aria-pressed={selected}
+                title="Full critique with a round count you choose"
+                className={`rounded-xl border px-3 py-2 text-left text-xs transition
+                  ${selected
+                    ? "border-accent-500 ring-1 ring-accent-500 bg-accent-50 dark:bg-accent-900/20 text-accent-700 dark:text-accent-300"
+                    : "border-line bg-surface-raised text-gray-600 dark:text-gray-400 hover:border-line-strong"
+                  }
+                  disabled:opacity-50 disabled:cursor-not-allowed`}
+              >
+                <span className="flex items-center gap-1.5">
+                  <Settings2
+                    className={`w-4 h-4 shrink-0 ${selected ? "text-accent-600 dark:text-accent-400" : "text-gray-400"}`}
+                    aria-hidden="true"
+                  />
+                  <span className="font-semibold text-sm">Custom</span>
+                  <span className="ml-auto text-[10px] font-medium uppercase tracking-wide opacity-70 tabular-nums">{customRounds} rds</span>
+                  {selected && (
+                    <span
+                      aria-hidden="true"
+                      className="w-4 h-4 rounded-full bg-accent-600 text-white flex items-center justify-center shrink-0"
+                    >
+                      <Check className="w-2.5 h-2.5" strokeWidth={3} />
+                    </span>
+                  )}
+                </span>
+                <span className="block opacity-75 leading-snug mt-1">Pick rounds · Full critique</span>
+              </button>
+            );
+          })()}
         </div>
+
+        {/* Custom controls — shown only when Custom is selected, so the form stays compact */}
+        {selection === "custom" && (
+          <div className="mt-2 rounded-xl border border-line bg-surface-raised px-3 py-2.5 space-y-2">
+            {/* Rounds */}
+            <div className="flex items-center gap-3">
+              <span className="w-20 text-xs font-medium text-gray-700 dark:text-gray-300">Rounds</span>
+              <div className="flex items-center gap-2">
+                <button
+                  type="button"
+                  onClick={() => setCustomRounds((r) => Math.max(CUSTOM_MIN_ROUNDS, r - 1))}
+                  disabled={isLoading || customRounds <= CUSTOM_MIN_ROUNDS}
+                  aria-label="Fewer rounds"
+                  className="w-7 h-7 rounded-lg border border-line-strong text-gray-700 dark:text-gray-300 flex items-center justify-center text-base leading-none hover:border-accent-400 disabled:opacity-40 disabled:cursor-not-allowed transition"
+                >
+                  −
+                </button>
+                <span className="w-9 text-center text-sm font-semibold tabular-nums" aria-live="polite">{customRounds}</span>
+                <button
+                  type="button"
+                  onClick={() => setCustomRounds((r) => Math.min(CUSTOM_MAX_ROUNDS, r + 1))}
+                  disabled={isLoading || customRounds >= CUSTOM_MAX_ROUNDS}
+                  aria-label="More rounds"
+                  className="w-7 h-7 rounded-lg border border-line-strong text-gray-700 dark:text-gray-300 flex items-center justify-center text-base leading-none hover:border-accent-400 disabled:opacity-40 disabled:cursor-not-allowed transition"
+                >
+                  +
+                </button>
+              </div>
+              <span className="ml-auto text-[11px] text-gray-500 dark:text-gray-400">
+                {CUSTOM_MIN_ROUNDS}–{CUSTOM_MAX_ROUNDS} · full critique
+              </span>
+            </div>
+            {/* Consensus threshold */}
+            <div className="flex items-center gap-3">
+              <span className="w-20 text-xs font-medium text-gray-700 dark:text-gray-300">Threshold</span>
+              <div className="flex items-center gap-2">
+                <button
+                  type="button"
+                  onClick={() => setCustomThreshold((t) => roundThreshold(Math.max(CUSTOM_MIN_THRESHOLD, t - CUSTOM_THRESHOLD_STEP)))}
+                  disabled={isLoading || customThreshold <= CUSTOM_MIN_THRESHOLD}
+                  aria-label="Lower consensus threshold"
+                  className="w-7 h-7 rounded-lg border border-line-strong text-gray-700 dark:text-gray-300 flex items-center justify-center text-base leading-none hover:border-accent-400 disabled:opacity-40 disabled:cursor-not-allowed transition"
+                >
+                  −
+                </button>
+                <span className="w-9 text-center text-sm font-semibold tabular-nums" aria-live="polite">{customThreshold.toFixed(2)}</span>
+                <button
+                  type="button"
+                  onClick={() => setCustomThreshold((t) => roundThreshold(Math.min(CUSTOM_MAX_THRESHOLD, t + CUSTOM_THRESHOLD_STEP)))}
+                  disabled={isLoading || customThreshold >= CUSTOM_MAX_THRESHOLD}
+                  aria-label="Raise consensus threshold"
+                  className="w-7 h-7 rounded-lg border border-line-strong text-gray-700 dark:text-gray-300 flex items-center justify-center text-base leading-none hover:border-accent-400 disabled:opacity-40 disabled:cursor-not-allowed transition"
+                >
+                  +
+                </button>
+              </div>
+              <span className="ml-auto text-[11px] text-gray-500 dark:text-gray-400">
+                agreement to stop early
+              </span>
+            </div>
+          </div>
+        )}
       </div>
 
       {/* P3 Intelligence toggles */}

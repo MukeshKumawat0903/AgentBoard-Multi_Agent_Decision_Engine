@@ -10,6 +10,7 @@ import {
   initialStreamState,
   type StreamState,
 } from "@/lib/debateStreamReducer";
+import type { DebateRound } from "@/lib/types";
 
 // ── helpers ────────────────────────────────────────────────────────────────
 
@@ -319,7 +320,7 @@ describe("final_decision", () => {
   it("seeds rounds from debate_trace when no live rounds were streamed", () => {
     // Opening a completed debate from History delivers only this terminal frame,
     // so the transcript/drift chart must come from the decision's debate_trace.
-    const trace = [
+    const trace: DebateRound[] = [
       { round_number: 1, phase: "convergence", agent_outputs: [
         { agent_name: "Analyst", round_number: 1, position: "p", reasoning: "r", assumptions: [], confidence_score: 0.7, timestamp: "" },
       ], critiques: [] },

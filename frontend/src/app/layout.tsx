@@ -39,7 +39,7 @@ export default function RootLayout({
           <footer className="border-t border-line mt-12">
             <div className="max-w-6xl mx-auto px-4 py-6 text-center text-xs text-gray-400 dark:text-gray-600">
               AgentBoard &copy; {new Date().getFullYear()} &mdash; Powered by
-              Groq, OpenAI &amp; Anthropic via LangChain
+              Groq, OpenAI, Anthropic &amp; Gemini via LangChain
             </div>
           </footer>
         </ToastProvider>

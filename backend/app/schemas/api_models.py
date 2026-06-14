@@ -28,7 +28,7 @@ DebateMode = Literal["quick", "standard", "thorough"]
 
 _MODE_PRESETS: dict[str, dict] = {
     "quick":    {"max_rounds": 2, "consensus_threshold": 0.60, "skip_critique_phase": True,  "min_rounds": 1},
-    "standard": {"max_rounds": 4, "consensus_threshold": 0.75, "skip_critique_phase": False, "min_rounds": 2},
+    "standard": {"max_rounds": 2, "consensus_threshold": 0.75, "skip_critique_phase": False, "min_rounds": 2},
     "thorough": {"max_rounds": 6, "consensus_threshold": 0.85, "skip_critique_phase": False, "min_rounds": 3},
 }
 
@@ -75,7 +75,7 @@ class DebateStartRequest(BaseModel):
         default=None,
         description=(
             "Preset debate mode: 'quick' (2 rounds, no critiques), "
-            "'standard' (4 rounds), 'thorough' (6 rounds). "
+            "'standard' (2 rounds), 'thorough' (6 rounds). "
             "Explicit max_rounds/consensus_threshold override the preset."
         ),
     )

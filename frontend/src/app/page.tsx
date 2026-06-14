@@ -168,6 +168,8 @@ export default function HomePage() {
         {
           query,
           mode: options.mode,
+          max_rounds: options.max_rounds,
+          consensus_threshold: options.consensus_threshold,
           agents: options.agents,
           use_knowledge_base: options.use_knowledge_base,
           enable_agent_memory: options.enable_agent_memory,

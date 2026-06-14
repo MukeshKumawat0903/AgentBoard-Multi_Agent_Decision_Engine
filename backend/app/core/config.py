@@ -37,7 +37,7 @@ class Settings(BaseSettings):
     # without going through resolve_debate_config's mode presets (see
     # debate_graph.py / nodes.py). Aligned with the "standard" mode preset so
     # the two don't silently disagree.
-    MAX_DEBATE_ROUNDS: int = 4
+    MAX_DEBATE_ROUNDS: int = 2
     CONSENSUS_THRESHOLD: float = 0.75
     # Floor on debate rounds before consensus may be declared, so a single round
     # can never end a multi-round debate. Aligned with the "standard" preset.

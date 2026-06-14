@@ -2,7 +2,23 @@
 
 A full-stack **multi-agent AI debate system** where specialised AI agents collaboratively analyse strategic questions, cross-examine each other's positions, and converge on a well-reasoned consensus decision — with knowledge-base RAG, agent memory, human-in-the-loop approval, scenario simulation, decision evaluation, and a full analytics dashboard.
 
-Built with **FastAPI**, **LangGraph**, **Next.js 15**, **React 18**, **Tailwind CSS**, **recharts**, and multi-provider LLM support (**GROQ** / **OpenAI** / **Anthropic**).
+Built with **FastAPI**, **LangGraph**, **Next.js 15**, **React 18**, **Tailwind CSS**, **recharts**, and multi-provider LLM support (**GROQ** / **OpenAI** / **Anthropic** / **Gemini**).
+
+---
+
+## Screenshots
+
+> _UI screenshots placeholder — add images here._
+>
+> | Home / New Debate | Live Debate Stream | Final Decision |
+> |---|---|---|
+> | _`docs/assets/screenshot-home.png`_ | _`docs/assets/screenshot-stream.png`_ | _`docs/assets/screenshot-decision.png`_ |
+>
+> | Analytics Dashboard | History | Compare |
+> |---|---|---|
+> | _`docs/assets/screenshot-analytics.png`_ | _`docs/assets/screenshot-history.png`_ | _`docs/assets/screenshot-compare.png`_ |
+>
+> _Replace each placeholder with `![Caption](docs/assets/<file>.png)` once captured._
 
 ---
 
@@ -27,17 +43,20 @@ User submits a strategic question
 │    Agents refine positions based on critiques           │
 │                                                         │
 │  Round N: Convergence                                   │
-│    🏛️ Moderator synthesises a final decision             │
+│    🏛️ Moderator synthesises; a 5-signal hybrid gate      │
+│    decides converge vs. keep debating                   │
 │                                                         │
 │  (Supervised mode: HITL approval before finalisation)   │
 │                                                         │
-│  Termination: consensus reached / max rounds / veto     │
+│  Termination: consensus reached / max rounds /          │
+│               human override                            │
 └─────────────────────────────────────────────────────────┘
          │
          ▼
-Final Decision with confidence scores,
-risk flags, alternatives, minority report,
-key disagreements, agent contributions,
+Final Decision with confidence scores, risk flags,
+alternatives, minority report, key disagreements,
+structured (agent-vs-agent) disagreements,
+agent contributions, token usage + estimated cost,
 and full debate trace
 (persisted to SQLite for history, comparison & analytics)
 ```
@@ -71,19 +90,22 @@ and full debate trace
 
 | Feature | Phase | Description |
 |---|---|---|
-| **Debate Modes** | P1 | Quick (2 rounds) · Standard (4 rounds) · Thorough (6 rounds) |
+| **Debate Modes** | P1 | Quick (2 rounds) · Standard (2 rounds) · Thorough (6 rounds), each with a `min_rounds` floor; round count is adjustable (2–6) per debate |
+| **Hybrid Consensus Gate** | P1 | Converges only when 5 signals agree (position overlap, min rounds, dissent, open disagreements, confidence converged) — confidence alone can't end a debate |
 | **Agent Registry** | P1 | Dynamic agent discovery, per-agent LLM overrides, enable/disable at runtime |
-| **Per-Agent Model Routing** | P1 | Each agent can use a different provider/model (e.g. Moderator on GPT-4o, others on Groq) |
-| **Richer Final Output** | P1 | Minority report, key disagreements, agent contribution scores |
-| **Debate Templates** | P2 | 12 built-in templates across Business, Technology, Strategy, Personal, Finance |
-| **Export** | P2 | Markdown and PDF export of final decisions |
+| **Per-Agent Model Routing** | P1 | Each agent can use a different provider/model (e.g. Moderator on GPT-5.5, others on Groq) |
+| **Richer Final Output** | P1 | Minority report, key disagreements, structured (agent-vs-agent) disagreements, agent contribution scores |
+| **Token & Cost Tracking** | P1 | Each decision reports aggregate `token_usage` and a best-effort `estimated_cost_usd` |
+| **Debate Templates** | P2 | 16 built-in templates across Business, Technology, Strategy, Personal, Finance |
+| **Export** | P2 | Markdown, PDF, and JSON export of final decisions |
 | **Confidence Drift Chart** | P2 | Per-agent confidence line chart over debate rounds |
 | **Knowledge Base RAG** | P3 | Upload PDF/TXT/MD → ChromaDB vector store → agents retrieve relevant context |
 | **Controlled Tool Use** | P3 | DuckDuckGo web search, safe calculator, date tool — per-agent allow-list |
 | **Agent Memory** | P3 | Agents remember lessons from past debates; injectable into new debates |
 | **Domain Agent Packs** | P3 | Pre-configured agent sets for Finance, Engineering, Legal, Healthcare |
-| **Human-in-the-Loop** | P4 | Supervised mode: approve, override, or add rounds before finalisation |
-| **Scenario Simulation** | P4 | Run 2–5 parallel debates to test decision consistency |
+| **Human-in-the-Loop** | P4 | Supervised mode: approve, override, or add rounds before finalisation (dedicated `hitl` node) |
+| **Cancellable Debates** | P4 | Cancel an in-flight async debate; the runner stops making LLM calls and emits a terminal `cancelled` event |
+| **Scenario Simulation** | P4 | Run 2–5 parallel debates to test decision consistency (reports `runs_completed`) |
 | **Decision Evaluation** | P4 | LLM-as-judge scores: completeness, consistency, actionability, risk awareness |
 | **Analytics Dashboard** | P5 | KPI cards, debates/day trend, convergence curve, agent heatmap, quality scores |
 | **LangSmith Tracing** | P5 | Full LLM call tracing via LangSmith (optional) |
@@ -100,7 +122,7 @@ and full debate trace
 | Framework | FastAPI 0.115 |
 | Language | Python 3.11+ |
 | Orchestration | LangGraph ≥ 0.2 (state-machine debate graph) |
-| LLM Providers | GROQ, OpenAI, Anthropic (via LangChain) |
+| LLM Providers | GROQ, OpenAI, Anthropic, Gemini (via LangChain) |
 | Default Model | LLaMA 3.3 70B Versatile (GROQ) |
 | Persistence | SQLite via aiosqlite (debates, decisions, SSE events, agent memory) |
 | Migrations | Alembic (auto-applied on startup) |
@@ -109,7 +131,7 @@ and full debate trace
 | Rate Limiting | slowapi (per-IP) |
 | Validation | Pydantic v2 |
 | Configuration | pydantic-settings + `.env` |
-| Testing | pytest + pytest-asyncio (179 tests) |
+| Testing | pytest + pytest-asyncio (~293 tests across 18 files) |
 
 ### Frontend
 
@@ -118,8 +140,11 @@ and full debate trace
 | Framework | Next.js 15.1.7 (App Router) |
 | UI Library | React 18.3.1 |
 | Language | TypeScript 5.5.4 |
-| Styling | Tailwind CSS 3.4.4 |
-| Charts | recharts 3.8.0 |
+| Styling | Tailwind CSS 3.4.4 (semantic surface/line tokens) |
+| Charts | recharts ^3.8.0 |
+| Icons | lucide-react |
+| Markdown | react-markdown + remark-gfm |
+| Testing | Vitest + Testing Library (unit), Playwright (E2E) |
 | Theme | Dark / Light mode with localStorage persistence |
 
 ---
@@ -163,7 +188,7 @@ AgentBoard-Multi_Agent_Decision_Engine/
 │   │   ├── utils/                 # Custom exceptions
 │   │   └── main.py                # FastAPI app entry point & lifespan
 │   ├── alembic/                   # Database migration scripts
-│   ├── tests/                     # 179 unit & integration tests
+│   ├── tests/                     # ~293 unit & integration tests (18 files)
 │   └── Notebooks/                 # 9 learning/exploration notebooks
 ├── frontend/
 │   └── src/
@@ -175,8 +200,8 @@ AgentBoard-Multi_Agent_Decision_Engine/
 │       │   ├── knowledge/         #   Knowledge base management (P3)
 │       │   ├── memory/            #   Agent memory browser (P3)
 │       │   └── analytics/         #   Analytics dashboard (P5)
-│       ├── components/            # 14 React components
-│       ├── lib/                   # API client & TypeScript types
+│       ├── components/            # 20 components + ui/ design-system primitives + __tests__/
+│       ├── lib/                   # API client, types, SSE reducer, hooks
 │       └── types/                 # Fallback type stubs
 ├── docs/
 │   ├── backend/                   # 7 backend documentation files
@@ -240,10 +265,11 @@ Navigate to **http://localhost:3000**, type a strategic question, and start a de
 | `GET` | `/debate/{thread_id}/stream` | SSE stream of live debate events |
 | `GET` | `/debate/{thread_id}` | Get debate status and round history |
 | `POST` | `/debate/{thread_id}/resume` | Resume from the last LangGraph checkpoint |
-| `POST` | `/debate/{thread_id}/approve` | Human-in-the-loop: approve / override / add round |
+| `POST` | `/debate/{thread_id}/cancel` | Cancel an in-flight async debate |
+| `POST` | `/debate/{thread_id}/approve` | Human-in-the-loop: approve / override / add round (JSON body) |
 | `POST` | `/debate/simulate` | Run 2–5 parallel debates for consistency testing |
 | `GET` | `/decision/{thread_id}` | Retrieve the final decision |
-| `GET` | `/decision/{thread_id}/export` | Export as Markdown or PDF |
+| `GET` | `/decision/{thread_id}/export` | Export as Markdown, PDF, or JSON |
 | `POST` | `/decision/{thread_id}/evaluate` | LLM-as-judge quality evaluation |
 
 ### Discovery & Configuration
@@ -251,11 +277,13 @@ Navigate to **http://localhost:3000**, type a strategic question, and start a de
 | Method | Path | Description |
 |---|---|---|
 | `GET` | `/health` | Health check — status, version, provider configured |
+| `GET` | `/metrics` | Application metrics snapshot (requests, routes, business events) |
 | `GET` | `/agents` | List all registered agents with config |
 | `GET` | `/templates` | Browse debate templates (filterable by category) |
 | `GET` | `/domain-packs` | List available domain agent packs |
 | `GET` | `/history` | Paginated debate history (search, sort, filter) |
 | `GET` | `/history/{thread_id}` | Retrieve a single history item |
+| `GET` / `POST` | `/llm-settings` | View / switch the active LLM provider & model at runtime |
 
 ### Intelligence (Phase 3)
 
@@ -295,14 +323,17 @@ All backend settings are configured via `backend/.env`:
 | Variable | Required | Default | Description |
 |---|---|---|---|
 | `GROQ_API_KEY` | **Yes** | — | Your GROQ API key |
-| `LLM_PROVIDER` | No | `groq` | Active provider: `groq` / `openai` / `anthropic` |
+| `LLM_PROVIDER` | No | `groq` | Active provider: `groq` / `openai` / `anthropic` / `gemini` |
 | `GROQ_MODEL` | No | `llama-3.3-70b-versatile` | Model for GROQ provider |
 | `OPENAI_API_KEY` | No | — | Required if `LLM_PROVIDER=openai` |
-| `OPENAI_MODEL` | No | `gpt-4o` | Model for OpenAI provider |
+| `OPENAI_MODEL` | No | `gpt-5.5` | Model for OpenAI provider |
 | `ANTHROPIC_API_KEY` | No | — | Required if `LLM_PROVIDER=anthropic` |
-| `ANTHROPIC_MODEL` | No | `claude-sonnet-4-20250514` | Model for Anthropic provider |
-| `MAX_DEBATE_ROUNDS` | No | `4` | Max rounds per debate |
-| `CONSENSUS_THRESHOLD` | No | `0.75` | Agreement score to stop early (0.0–1.0) |
+| `ANTHROPIC_MODEL` | No | `claude-opus-4-8` | Model for Anthropic provider |
+| `GEMINI_API_KEY` | No | — | Required if `LLM_PROVIDER=gemini` |
+| `GEMINI_MODEL` | No | `gemini-3.5-flash` | Model for Gemini provider |
+| `MAX_DEBATE_ROUNDS` | No | `2` | Orchestrator-level max rounds (fallback when not API-resolved) |
+| `MIN_DEBATE_ROUNDS` | No | `2` | Floor on rounds before consensus may be declared |
+| `CONSENSUS_THRESHOLD` | No | `0.75` | Position-agreement score to stop early (0.0–1.0) |
 | `LOG_LEVEL` | No | `INFO` | Logging level |
 | `CORS_ORIGINS` | No | `["http://localhost:3000"]` | Allowed frontend origins |
 | `DATABASE_URL` | No | `agentboard.db` | SQLite database path |
@@ -326,7 +357,7 @@ Frontend: `frontend/.env.local` contains `NEXT_PUBLIC_API_URL=http://localhost:8
 ```bash
 cd backend
 
-# Run all 179 tests (fast, mocked — no API calls)
+# Run all ~293 tests (fast, mocked — no API calls)
 pytest -v --tb=short
 
 # Skip integration tests (that need a real API key)
@@ -335,40 +366,45 @@ pytest -m "not integration" -v
 # Run a specific test file
 pytest tests/test_consensus.py -v
 
-# Frontend typecheck
+# Frontend: typecheck + unit tests + lint
 cd ../frontend
-npx tsc --noEmit
+npm run verify          # lint + tsc --noEmit + vitest
+npm run e2e             # Playwright end-to-end (needs the app running)
 ```
 
-**Test coverage:**
+**Test coverage (backend, 18 files):**
 
 | Area | File | Focus |
 |---|---|---|
 | Schemas | `test_schemas.py` | Pydantic model validation, bounds, defaults |
-| Base Agent | `test_base_agent.py` | LLM calling, structured output, error handling |
+| Base Agent | `test_base_agent.py` | LLM calling, structured output, KB/memory/tool hooks |
 | Agents | `test_agents.py` | All 5 core agents — prompt construction, context-awareness |
-| LLM Client | `test_llm_client.py` | Retry logic, rate limits, JSON parsing |
-| Consensus | `test_consensus.py` | Agreement scoring (V1 + V2), drift detection |
-| Orchestrator | `test_orchestrator.py` | State machine, termination, graceful degradation |
-| API | `test_api.py` | All endpoints, status codes, validation errors |
-| Analytics | `test_analytics.py` | Analytics endpoints, caching, quality evaluation |
-| Observability | `test_observability.py` | Metrics, Request-ID, rate limiting |
+| LLM Client | `test_llm_client.py` | Provider factory, retry, sampling guard |
+| Consensus | `test_consensus.py` | Agreement scoring (V1/V1.5/V2), drift, hybrid gate signals |
+| Orchestrator | `test_orchestrator.py` | State machine, termination, contribution, graceful degradation |
+| HITL | `test_hitl.py` | Supervised interrupt + approve/override/add_round |
+| Simulation / Evaluation | `test_simulation_service.py`, `test_evaluation_service.py` | Stability metrics; LLM-as-judge + caching |
+| Retriever / Memory | `test_retriever.py`, `test_agent_memory.py` | RAG chunking/retrieval; memory store |
+| Registry / Contracts | `test_registry_extended.py`, `test_contracts.py` | Overrides + tool validation; API contracts |
+| API / Cleanup | `test_api.py`, `test_db_cleanup.py`, `test_sse_cleanup.py` | Endpoints; TTL purge; SSE lifecycle |
+| Analytics / Observability | `test_analytics.py`, `test_observability.py` | Analytics + caching; metrics, Request-ID, audit |
 
 ---
 
 ## Frontend Features
 
-- **Debate Templates** — 12 built-in templates across 5 categories with one-click start
+- **Debate Templates** — 16 built-in templates across 5 categories with one-click start
 - **Domain Pack Selector** — Finance, Engineering, Legal, Healthcare agent configurations
 - **Debate Mode Selector** — Quick / Standard / Thorough with preset descriptions
 - **Agent Chips** — Toggle agents on/off; Moderator always required
 - **Intelligence Toggles** — Knowledge Base, Agent Memory, Supervised mode
-- **Live SSE Streaming** — Real-time agent outputs, critiques, syntheses as they are produced
-- **Connection Status** — ● Connected / ↺ Reconnecting / ✕ Disconnected with auto-reconnect
+- **Live SSE Streaming** — Real-time agent outputs, tool calls, critiques, syntheses as they are produced
+- **Connection Status** — ● Connected / ↺ Reconnecting / ✕ Disconnected with auto-reconnect, plus REST-polling fallback if SSE keeps failing
+- **Cancel** — Stop an in-flight debate so the backend stops making LLM calls
 - **HITL Approval Panel** — Approve, override, or extend the debate in supervised mode
 - **Confidence Drift Chart** — Per-agent confidence line chart (recharts) over rounds
-- **Decision Panel** — Expandable: decision, rationale, risk flags, minority report, key disagreements, contribution scores, dissenting opinions, full trace
-- **Export** — Markdown, PDF, or JSON download of decisions
+- **Decision Panel** — Markdown-rendered decision & rationale, risk flags, minority report, key disagreements, structured (agent-vs-agent) disagreements, contribution scores, token usage + estimated cost, full trace
+- **Export & Copy** — Markdown, PDF, or JSON download; one-click copy of the decision text
 - **Decision Evaluation** — LLM-as-judge quality scores (completeness, consistency, actionability, risk awareness)
 - **Scenario Simulation** — Run 2–5 parallel debates; stability rating, variance, stable risk flags
 - **History Browser** — Search, filter (termination reason), sort (newest/oldest/highest agreement), paginate
@@ -409,12 +445,12 @@ Detailed documentation is available in the `docs/` folder:
 | File | Topic |
 |---|---|
 | `01-architecture-overview.md` | Tech stack, directory structure, request lifecycle, design principles |
-| `02-api-reference.md` | All 25+ endpoints, schemas, 12 SSE event types, error codes |
+| `02-api-reference.md` | All 25+ endpoints, schemas, 13 SSE event types, error codes |
 | `03-agent-system.md` | 9 agents, BaseAgent ABC, registry, tools, domain agents |
-| `04-debate-engine.md` | LangGraph graph, 5 phases, HITL interrupt, modes, checkpointing |
-| `05-consensus-and-llm-client.md` | Scoring formulas, multi-provider LLM client, semantic consensus |
+| `04-debate-engine.md` | LangGraph graph, 6 nodes, hybrid gate, HITL node, modes, checkpointing |
+| `05-consensus-and-llm-client.md` | Hybrid consensus gate, scoring formulas, multi-provider LLM client, cost estimation |
 | `06-configuration-and-logging.md` | All settings, env vars, structured logging, metrics, LangSmith |
-| `07-testing-strategy.md` | 179 tests, 10 test files, fixtures, pytest config |
+| `07-testing-strategy.md` | ~293 tests, 18 test files, fixtures, pytest config |
 
 ### Frontend (`docs/frontend/`)
 
@@ -422,9 +458,9 @@ Detailed documentation is available in the `docs/` folder:
 |---|---|
 | `01-architecture-overview.md` | Tech stack, directory structure, SSE flow, state management |
 | `02-pages-and-routing.md` | 8 routes, error boundaries, layout, all pages |
-| `03-component-library.md` | 14 components — props, state, features |
-| `04-api-integration-and-types.md` | 25+ API functions, SSE connection, 30+ TypeScript interfaces |
-| `05-styling-and-dark-mode.md` | Tailwind config, dark mode, agent colour system |
+| `03-component-library.md` | 20 components + 6 ui/ primitives — props, state, features |
+| `04-api-integration-and-types.md` | 27 API functions, SSE connection, TypeScript interfaces, 13 SSE event types |
+| `05-styling-and-dark-mode.md` | Tailwind config, semantic surface/line tokens, dark mode, agent colour system |
 | `06-configuration-and-setup.md` | Next.js config, TypeScript, dependencies, build output |
 
 See also: [command.md](command.md) for the complete step-by-step setup guide.
