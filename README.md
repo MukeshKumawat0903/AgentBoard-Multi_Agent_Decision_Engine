@@ -8,17 +8,15 @@ Built with **FastAPI**, **LangGraph**, **Next.js 15**, **React 18**, **Tailwind 
 
 ## Screenshots
 
-> _UI screenshots placeholder — add images here._
->
-> | Home / New Debate | Live Debate Stream | Final Decision |
-> |---|---|---|
-> | _`docs/assets/screenshot-home.png`_ | _`docs/assets/screenshot-stream.png`_ | _`docs/assets/screenshot-decision.png`_ |
->
-> | Analytics Dashboard | History | Compare |
-> |---|---|---|
-> | _`docs/assets/screenshot-analytics.png`_ | _`docs/assets/screenshot-history.png`_ | _`docs/assets/screenshot-compare.png`_ |
->
-> _Replace each placeholder with `![Caption](docs/assets/<file>.png)` once captured._
+### New Debate workspace
+
+| Light | Dark |
+|---|---|
+| ![AgentBoard — New Debate workspace (light)](assets/screenshots/01-home-light.png) | ![AgentBoard — New Debate workspace (dark)](assets/screenshots/01-home-dark.png) |
+
+The landing page **is** the New Debate workspace: type a question, pick a debate **mode** — `Quick` (2 rounds, no critiques), `Standard` (2 rounds, full critique), `Thorough` (6 rounds), or `Custom` (pick your own round count + consensus threshold) — choose which of the five core agents (Analyst · Risk · Strategy · Ethics · Moderator) take part, toggle intelligence options (Knowledge Base RAG, Agent Memory, Supervised HITL), and start. Agents then debate live and converge on a decision you can defend.
+
+> **More views:** the live debate stream, final-decision panel, analytics dashboard, history, and compare pages render against live data. To capture them, start the backend (`uvicorn app.main:app`) with a valid `GROQ_API_KEY`, run the frontend, open each page, and drop the PNGs into `assets/screenshots/` — then embed them here with `![Caption](assets/screenshots/<file>.png)`.
 
 ---
 
@@ -200,7 +198,7 @@ AgentBoard-Multi_Agent_Decision_Engine/
 │       │   ├── knowledge/         #   Knowledge base management (P3)
 │       │   ├── memory/            #   Agent memory browser (P3)
 │       │   └── analytics/         #   Analytics dashboard (P5)
-│       ├── components/            # 20 components + ui/ design-system primitives + __tests__/
+│       ├── components/            # 21 components + ui/ design-system primitives + __tests__/
 │       ├── lib/                   # API client, types, SSE reducer, hooks
 │       └── types/                 # Fallback type stubs
 ├── docs/
@@ -395,7 +393,7 @@ npm run e2e             # Playwright end-to-end (needs the app running)
 
 - **Debate Templates** — 16 built-in templates across 5 categories with one-click start
 - **Domain Pack Selector** — Finance, Engineering, Legal, Healthcare agent configurations
-- **Debate Mode Selector** — Quick / Standard / Thorough with preset descriptions
+- **Debate Mode Selector** — Quick / Standard / Thorough presets plus a Custom option (pick round count 2–6 and consensus threshold)
 - **Agent Chips** — Toggle agents on/off; Moderator always required
 - **Intelligence Toggles** — Knowledge Base, Agent Memory, Supervised mode
 - **Live SSE Streaming** — Real-time agent outputs, tool calls, critiques, syntheses as they are produced
@@ -458,7 +456,7 @@ Detailed documentation is available in the `docs/` folder:
 |---|---|
 | `01-architecture-overview.md` | Tech stack, directory structure, SSE flow, state management |
 | `02-pages-and-routing.md` | 8 routes, error boundaries, layout, all pages |
-| `03-component-library.md` | 20 components + 6 ui/ primitives — props, state, features |
+| `03-component-library.md` | 21 components + 6 ui/ primitives — props, state, features |
 | `04-api-integration-and-types.md` | 27 API functions, SSE connection, TypeScript interfaces, 13 SSE event types |
 | `05-styling-and-dark-mode.md` | Tailwind config, semantic surface/line tokens, dark mode, agent colour system |
 | `06-configuration-and-setup.md` | Next.js config, TypeScript, dependencies, build output |
