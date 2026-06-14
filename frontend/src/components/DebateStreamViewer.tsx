@@ -9,7 +9,7 @@
 
 "use client";
 
-import { useEffect, useReducer, useRef, useState, useCallback } from "react";
+import { useEffect, useReducer, useRef, useState, useCallback, type ReactNode } from "react";
 import { useRouter } from "next/navigation";
 import {
   AlertTriangle,
@@ -142,6 +142,72 @@ function ResultBanner({ decision }: { decision: FinalDecision }) {
           <span className="block text-xl font-bold leading-tight">{Math.round(confidence)}%</span>
           <span className="block text-[10px] uppercase tracking-wide opacity-70">Confidence</span>
         </span>
+      </div>
+    </div>
+  );
+}
+
+/* ------------------------------------------------------------------ */
+/* DebateRoomWarmup – the "connecting" moment, staged as the panel       */
+/* taking their seats. Replaces a bare spinner so the wait previews the  */
+/* live debate that's about to begin rather than feeling stalled.        */
+/* ------------------------------------------------------------------ */
+
+const WARMUP_AGENTS = ["Analyst", "Risk", "Strategy", "Ethics", "Moderator"] as const;
+
+const WARMUP_MESSAGES = [
+  "Briefing the panel on your question…",
+  "Gathering context and prior knowledge…",
+  "Agents are taking their seats…",
+  "Opening the floor for round one…",
+];
+
+function DebateRoomWarmup({ statusBadge }: { statusBadge: ReactNode }) {
+  const [msgIdx, setMsgIdx] = useState(0);
+  // Cycle the status line so the wait reads as active, not stalled. The real
+  // presence strip takes over the instant the first debate_started event lands.
+  useEffect(() => {
+    const id = setInterval(
+      () => setMsgIdx((i) => (i + 1) % WARMUP_MESSAGES.length),
+      2200,
+    );
+    return () => clearInterval(id);
+  }, []);
+
+  return (
+    <div className="max-w-xl mx-auto py-16 px-4">
+      <div className="rounded-2xl bg-surface-raised ring-1 ring-black/5 dark:ring-white/10 shadow-card p-8 flex flex-col items-center gap-7 text-center">
+        {/* The panel taking their seats */}
+        <div className="flex items-start justify-center gap-4 sm:gap-5">
+          {WARMUP_AGENTS.map((name, i) => (
+            <span
+              key={name}
+              className="flex flex-col items-center gap-1.5 animate-slideUpIn"
+              style={{ animationDelay: `${i * 120}ms` }}
+            >
+              <AgentAvatar name={name} size="lg" status="working" />
+              <span className="text-[11px] font-medium text-gray-600 dark:text-gray-400">
+                {name}
+              </span>
+            </span>
+          ))}
+        </div>
+
+        <div className="space-y-1.5">
+          <h2 className="text-lg font-semibold text-gray-800 dark:text-gray-100">
+            Assembling the debate room…
+          </h2>
+          {/* key on msgIdx so each message cross-fades in */}
+          <p
+            key={msgIdx}
+            aria-live="polite"
+            className="text-sm text-gray-500 dark:text-gray-400 min-h-[1.25rem] animate-fadeIn"
+          >
+            {WARMUP_MESSAGES[msgIdx]}
+          </p>
+        </div>
+
+        {statusBadge}
       </div>
     </div>
   );
@@ -350,14 +416,9 @@ export default function DebateStreamViewer({ threadId, onQuery }: Props) {
     );
   }
 
-  /* ---- Connecting ---- */
+  /* ---- Connecting — the panel taking their seats ---- */
   if (state.status === "connecting") {
-    return (
-      <div className="flex flex-col items-center justify-center py-20 gap-4 text-gray-500">
-        <Loader2 className="w-8 h-8 text-accent-500 animate-spin" aria-hidden="true" />
-        <p className="text-sm">Connecting to debate stream…</p>
-      </div>
-    );
+    return <DebateRoomWarmup statusBadge={statusBadge} />;
   }
 
   const isDone = state.status === "done" && !!state.finalDecision;
