@@ -1,0 +1,43 @@
+# ── Python cache & compiled files ──────────────────────────
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+
+# ── Virtual environments ────────────────────────────────────
+venv/
+.venv/
+env/
+
+# ── Secrets & local config ──────────────────────────────────
+.env
+*.env
+
+# ── Databases (never bake SQLite files into the image) ──────
+*.db
+*.db-shm
+*.db-wal
+
+# ── Logs ────────────────────────────────────────────────────
+logs/
+*.log
+
+# ── Test & dev tooling ─────────────────────────────────────
+tests/
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+htmlcov/
+.coverage
+coverage.xml
+
+# ── IDE / OS artifacts ──────────────────────────────────────
+.vscode/
+.idea/
+*.swp
+*.swo
+.DS_Store
+Thumbs.db
+
+# ── Notebooks (not needed at runtime) ──────────────────────
+Notebooks/
