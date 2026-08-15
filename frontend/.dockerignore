@@ -1,0 +1,32 @@
+# ── Node modules (resolved at runtime from node_modules inside standalone) ──
+node_modules/
+
+# ── Next.js build output (built fresh inside Docker) ───────
+.next/
+out/
+
+# ── Secrets & local config ──────────────────────────────────
+.env
+.env.local
+.env.*.local
+
+# ── Test & e2e tooling ──────────────────────────────────────
+e2e/
+playwright-report/
+playwright/.cache/
+coverage/
+
+# ── IDE / OS artifacts ──────────────────────────────────────
+.vscode/
+.idea/
+*.swp
+*.swo
+.DS_Store
+Thumbs.db
+
+# ── Logs ────────────────────────────────────────────────────
+*.log
+npm-debug.log*
+
+# ── TypeScript build info (generated at build time) ────────
+*.tsbuildinfo

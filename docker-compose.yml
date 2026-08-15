@@ -1,0 +1,63 @@
+# ============================================================
+# docker-compose.yml — local orchestration for AgentBoard
+#
+# Usage:
+#   docker compose up            # start both services
+#   docker compose up --build    # rebuild images locally first
+#   docker compose down -v       # stop and remove volumes
+# ============================================================
+version: "3.9"
+
+services:
+
+  # ── Backend (FastAPI / Python) ───────────────────────────
+  backend:
+    image: ghcr.io/mukeshkumawat0903/agentboard-backend:latest
+    build:
+      context: ./backend
+      dockerfile: Dockerfile
+    container_name: agentboard-backend
+    restart: unless-stopped
+    ports:
+      - "8000:8000"
+    env_file:
+      - ./backend/.env           # secrets injected at runtime, never baked in
+    environment:
+      - DATABASE_URL=/data/agentboard.db
+      - KNOWLEDGE_BASE_DIR=/data/kb
+    volumes:
+      - agentboard-data:/data    # persists SQLite DB + knowledge base between restarts
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8000/health')"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 15s
+
+  # ── Frontend (Next.js) ───────────────────────────────────
+  frontend:
+    image: ghcr.io/mukeshkumawat0903/agentboard-frontend:latest
+    build:
+      context: ./frontend
+      dockerfile: Dockerfile
+    container_name: agentboard-frontend
+    restart: unless-stopped
+    ports:
+      - "3000:3000"
+    environment:
+      - BACKEND_URL=http://backend:8000   # internal Docker network name
+      - NODE_ENV=production
+    depends_on:
+      backend:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "wget", "-qO-", "http://localhost:3000/"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 20s
+
+# ── Named volumes ────────────────────────────────────────────
+volumes:
+  agentboard-data:
+    driver: local
