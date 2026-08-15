@@ -1,18 +1,16 @@
 /** @type {import('next').NextConfig} */
 const nextConfig = {
   output: "standalone",
-  async rewrites() {
-    // Proxy all /backend/* requests to the FastAPI server.
-    // This means the browser only ever calls the Next.js server (same host/port),
-    // so it works from any IP with no CORS issues and no hardcoded backend URL.
-    const backendUrl = process.env.BACKEND_URL ?? "http://localhost:8000";
-    return [
-      {
-        source: "/backend/:path*",
-        destination: `${backendUrl}/:path*`,
-      },
-    ];
-  },
+  // NOTE: We do NOT use rewrites() here because rewrites() are evaluated at
+  // BUILD TIME — BACKEND_URL would get baked into the image.
+  //
+  // Instead, all /backend/* requests are handled at RUNTIME by the Route Handler
+  // at src/app/backend/[...path]/route.ts, which reads process.env.BACKEND_URL
+  // on every request. This makes the same Docker image work on:
+  //   - Local Docker:  BACKEND_URL=http://agentboard-backend:8000
+  //   - Render:        BACKEND_URL=https://my-backend.onrender.com
+  //   - AWS ECS:       BACKEND_URL=http://backend-service:8000
+  //   - Any VM:        BACKEND_URL=http://<private-ip>:8000
 };
 
 module.exports = nextConfig;

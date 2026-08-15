@@ -327,6 +327,8 @@ class BaseAgent(ABC):
                 "round": round_number,
                 "action": action,
                 "prompt_chars": prompt_chars,
+                "provider": self.llm_client.provider,
+                "model": self.llm_client.model,
             },
         )
         started = time.monotonic()
@@ -366,3 +368,4 @@ class BaseAgent(ABC):
 
     def __repr__(self) -> str:
         return f"<{self.__class__.__name__} name={self.name!r} role={self.role!r}>"
+
