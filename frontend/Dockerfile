@@ -42,6 +42,7 @@ WORKDIR /app
 
 ENV NODE_ENV=production
 ENV NEXT_TELEMETRY_DISABLED=1
+ENV HOSTNAME=0.0.0.0
 
 # Backend URL used by Next.js rewrites proxy (overrideable at runtime)
 ENV BACKEND_URL=http://backend:8000
@@ -61,7 +62,7 @@ EXPOSE 3000
 
 # Health check — Next.js returns 200 on "/"
 HEALTHCHECK --interval=30s --timeout=10s --start-period=20s --retries=3 \
-    CMD wget -qO- http://localhost:3000/ > /dev/null || exit 1
+    CMD wget -qO- http://127.0.0.1:3000/ > /dev/null || exit 1
 
 # Next.js standalone outputs a self-contained server.js
 CMD ["node", "server.js"]
