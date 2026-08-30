@@ -91,7 +91,7 @@ export default function DebateInput({
   samples,
 }: DebateInputProps) {
   const [query, setQuery] = useState(prefillQuery ?? "");
-  const [selection, setSelection] = useState<ModeSelection>(prefillMode ?? "standard");
+  const [selection, setSelection] = useState<ModeSelection>(prefillMode ?? "quick");
   // Round count + consensus threshold for the "custom" option; ignored for presets.
   const [customRounds, setCustomRounds] = useState<number>(CUSTOM_DEFAULT_ROUNDS);
   const [customThreshold, setCustomThreshold] = useState<number>(CUSTOM_DEFAULT_THRESHOLD);
