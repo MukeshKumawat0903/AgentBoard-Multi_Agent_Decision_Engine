@@ -1,7 +1,8 @@
 # ============================================================
 # Stage 1 — deps: install node_modules
 # ============================================================
-FROM node:20-alpine AS deps
+# Security: pin to a specific digest-stable tag — never use :latest or floating :20-alpine.
+FROM node:20.19-alpine3.21 AS deps
 
 WORKDIR /app
 
@@ -15,7 +16,7 @@ RUN npm ci --legacy-peer-deps
 # ============================================================
 # Stage 2 — builder: compile the Next.js app
 # ============================================================
-FROM node:20-alpine AS builder
+FROM node:20.19-alpine3.21 AS builder
 
 WORKDIR /app
 
@@ -36,7 +37,7 @@ RUN npm run build
 # ============================================================
 # Stage 3 — runner: lean production image
 # ============================================================
-FROM node:20-alpine AS runner
+FROM node:20.19-alpine3.21 AS runner
 
 WORKDIR /app
 
@@ -54,6 +55,8 @@ RUN addgroup --system --gid 1001 nodejs \
 # Copy only the standalone output (no node_modules bulk)
 COPY --from=builder --chown=nextjs:nodejs /app/.next/standalone ./
 COPY --from=builder --chown=nextjs:nodejs /app/.next/static     ./.next/static
+# public/ assets are not included in standalone — must be copied explicitly
+COPY --from=builder --chown=nextjs:nodejs /app/public          ./public
 
 
 USER nextjs
