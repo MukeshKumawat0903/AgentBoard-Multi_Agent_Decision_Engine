@@ -19,10 +19,12 @@ class DemoSchema(BaseModel):
     confidence: float
 
 
-def _make_provider(fake_llm: MagicMock | None = None) -> tuple[LangChainProvider, MagicMock]:
+def _make_provider(
+    fake_llm: MagicMock | None = None, model: str = _DUMMY_MODEL
+) -> tuple[LangChainProvider, MagicMock]:
     llm = fake_llm or MagicMock()
     with patch.object(LangChainProvider, "_build_llm", return_value=llm):
-        provider = LangChainProvider(api_key=_DUMMY_KEY, model=_DUMMY_MODEL)
+        provider = LangChainProvider(api_key=_DUMMY_KEY, model=model)
     return provider, llm
 
 
@@ -116,7 +118,7 @@ async def test_ainvoke_structured_clamps_max_retries_zero_to_one_attempt():
 
 
 @pytest.mark.anyio
-async def test_ainvoke_structured_passes_through_positive_max_retries():
+async def test_ainvoke_structured_max_retries_counts_retries_after_first_attempt():
     provider, llm = _make_provider()
     bound = MagicMock()
     structured = MagicMock()
@@ -130,7 +132,8 @@ async def test_ainvoke_structured_passes_through_positive_max_retries():
         DemoSchema, system_prompt="sys", user_prompt="user", max_retries=3
     )
 
-    structured.with_retry.assert_called_once_with(stop_after_attempt=3, wait_exponential_jitter=True)
+    # 1 initial attempt + 3 retries
+    structured.with_retry.assert_called_once_with(stop_after_attempt=4, wait_exponential_jitter=True)
 
 
 @pytest.mark.anyio
@@ -166,3 +169,50 @@ def test_get_llm_client_returns_same_instance():
 
     assert first is second
     llm_module._llm_client_instance = None
+
+
+def _structured_chain_mock(llm: MagicMock) -> MagicMock:
+    """Wire llm.bind(...) → with_structured_output → with_retry → ainvoke for one call."""
+    bound = MagicMock()
+    structured = MagicMock()
+    retried = MagicMock()
+    retried.ainvoke = AsyncMock(return_value=DemoSchema(answer="ok", confidence=0.5))
+    structured.with_retry.return_value = retried
+    bound.with_structured_output.return_value = structured
+    llm.bind.return_value = bound
+    llm.with_structured_output.return_value = structured
+    return structured
+
+
+@pytest.mark.anyio
+@pytest.mark.parametrize("model", ["gpt-5.5", "gpt-5.4-mini", "claude-opus-4-8", "claude-fable-5"])
+async def test_structured_calls_never_send_temperature_to_models_that_reject_it(model):
+    provider, llm = _make_provider(model=model)
+    _structured_chain_mock(llm)
+
+    await provider.ainvoke_structured(DemoSchema, system_prompt="sys", user_prompt="user", temperature=0.3)
+
+    for call in llm.bind.call_args_list:
+        assert "temperature" not in call.kwargs
+
+
+@pytest.mark.anyio
+async def test_structured_calls_still_send_temperature_to_models_that_support_it():
+    provider, llm = _make_provider(model="claude-sonnet-4-6")
+    _structured_chain_mock(llm)
+
+    await provider.ainvoke_structured(DemoSchema, system_prompt="sys", user_prompt="user", temperature=0.3)
+
+    llm.bind.assert_called_once_with(temperature=0.3)
+
+
+@pytest.mark.anyio
+async def test_chat_keeps_max_tokens_but_drops_temperature_for_reasoning_models():
+    provider, llm = _make_provider(model="gpt-5.5")
+    bound = MagicMock()
+    bound.ainvoke = AsyncMock(return_value=MagicMock(content="ok"))
+    llm.bind.return_value = bound
+
+    await provider.chat("sys", "user", temperature=0.7, max_tokens=256)
+
+    llm.bind.assert_called_once_with(max_tokens=256)

@@ -8,8 +8,9 @@ Role in the debate:
 """
 
 from langchain_core.prompts import PromptTemplate
+from pydantic import Field
 
-from app.agents.base_agent import BaseAgent
+from app.agents.base_agent import AgentLLMOutput, BaseAgent
 from app.schemas.agent_response import AgentResponse, CritiqueResponse
 from app.schemas.state import DebateState
 from app.services.llm_client import GroqClient
@@ -22,7 +23,9 @@ Your role:
 - Identify fairness, bias, and integrity concerns
 - Check for regulatory, legal, or policy violations
 - Assess societal impact and stakeholder effects
-- You have VETO power — flag if a proposal is fundamentally unethical
+- You have VETO power: set veto=true (and explain it in veto_reason) only when a
+  proposal is fundamentally unethical. While your veto stands the debate cannot
+  reach consensus, and the final decision lists it.
 
 Rules:
 - Be the conscience of the group — raise concerns others may avoid
@@ -42,9 +45,10 @@ _PROPOSAL_TEMPLATE = PromptTemplate.from_template(
     "{strategy_context}"
     "Assess the ethical landscape of this problem and any proposed "
     "strategies. Identify fairness, bias, regulatory, and societal "
-    "concerns. Issue a VETO (clearly marked in your position) if any "
-    "aspect is fundamentally unethical. Reference specific ethical "
-    "principles where applicable."
+    "concerns. If any aspect is fundamentally unethical, set veto=true and "
+    "give the principle violated and what would lift the veto in veto_reason; "
+    "otherwise leave veto false. Reference specific ethical principles where "
+    "applicable."
 )
 
 _CRITIQUE_TEMPLATE = PromptTemplate.from_template(
@@ -66,8 +70,25 @@ _REVISION_TEMPLATE = PromptTemplate.from_template(
     "Revise your ethical assessment in light of the debate. "
     "If other agents have addressed your concerns, you may withdraw or "
     "downgrade them. If new ethical issues have emerged from the debate, "
-    "add them. Maintain or strengthen any VETO that remains justified."
+    "add them. Keep veto=true only while the veto is still justified, and set it "
+    "to false once your concerns have been addressed."
 )
+
+
+class EthicsLLMOutput(AgentLLMOutput):
+    """Proposal/revision schema for Ethics-class agents: adds a structured veto."""
+
+    veto: bool = Field(
+        default=False,
+        description=(
+            "True only if a proposal on the table is fundamentally unethical and must not "
+            "go ahead as proposed. Leave false for concerns that can be mitigated."
+        ),
+    )
+    veto_reason: str | None = Field(
+        default=None,
+        description="When veto is true: the principle violated and what would lift the veto.",
+    )
 
 
 class EthicsAgent(BaseAgent):
@@ -78,6 +99,8 @@ class EthicsAgent(BaseAgent):
     every position for fairness, bias, regulatory compliance, and
     societal impact.
     """
+
+    output_schema = EthicsLLMOutput
 
     def __init__(self, llm_client: GroqClient) -> None:
         super().__init__(

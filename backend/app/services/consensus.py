@@ -204,31 +204,43 @@ def count_open_disagreements(
     critiques: list[CritiqueResponse],
     severities: frozenset[str] = HIGH_SEVERITIES,
 ) -> int:
-    """Number of distinct unresolved high-severity critique points.
+    """Number of high-severity objections still on the table.
 
-    Counts unique ``critique_points`` drawn from critiques whose severity is in
-    ``severities``. An agent can only be confident the debate is settled when
-    few high-severity objections remain open.
+    Counts distinct critic→target critiques whose severity is in ``severities``.
+    A critique is one objection regardless of how many bullet points it lists,
+    so the count no longer explodes just because a critic was verbose.
     """
-    seen: set[str] = set()
-    for critique in critiques:
-        if critique.severity not in severities:
-            continue
-        for point in critique.critique_points:
-            if point:
-                seen.add(point)
-    return len(seen)
+    return len({
+        (critique.critic_agent, critique.target_agent)
+        for critique in critiques
+        if critique.severity in severities
+    })
+
+
+def normalize_position_overlap(raw_overlap: float, floor: float, ceiling: float) -> float:
+    """Map raw word-overlap onto a 0–1 agreement scale.
+
+    Agents write in deliberately different roles, so their raw Jaccard overlap
+    stays low even when they agree. ``floor`` is the overlap of unrelated
+    positions (scores 0) and ``ceiling`` the overlap of one agent restating the
+    same stance (scores 1); values in between scale linearly. Without this the
+    blended agreement score cannot reach the mode thresholds.
+    """
+    if ceiling <= floor:
+        return max(0.0, min(1.0, raw_overlap))
+    return max(0.0, min(1.0, (raw_overlap - floor) / (ceiling - floor)))
 
 
 @dataclass(frozen=True)
 class ConsensusSignals:
-    """The five signals the hybrid consensus gate evaluates."""
+    """The signals the hybrid consensus gate evaluates."""
 
     position_agreement: float       # confidence-weighted position overlap [0,1]
     rounds_completed: int           # ds.current_round
     dissenting_agents: int          # count_dissenting_agents(...)
     open_disagreements: int         # count_open_disagreements(...)
     confidence_converged: bool      # agents stopped moving or are uniformly confident
+    active_vetoes: int = 0          # Ethics-class vetoes standing this round
 
 
 def is_consensus_reached(
@@ -244,10 +256,12 @@ def is_consensus_reached(
     Replaces the single mean-confidence gate: a debate only converges when the
     agents genuinely overlap on position, have debated a minimum number of
     rounds, carry at most a little dissent and unresolved high-severity
-    disagreement, and have either stopped moving or are uniformly confident.
+    disagreement, have either stopped moving or are uniformly confident, and
+    no ethics veto stands.
     """
     return (
-        signals.position_agreement >= threshold
+        signals.active_vetoes == 0
+        and signals.position_agreement >= threshold
         and signals.rounds_completed >= min_rounds
         and signals.dissenting_agents <= max_dissent
         and signals.open_disagreements <= max_open_disagreements
@@ -381,4 +395,5 @@ class SemanticConsensusEngine(ConsensusEngine):
     def _load_model(self) -> _ST:
         # R5: reuse the module-level shared embedder to avoid loading weights twice
         from app.services.retriever import get_shared_embedder  # noqa: PLC0415
-        return get_shared_embedder(self._model_name)  # type: ignore[return-value]
+        model: _ST = get_shared_embedder(self._model_name)
+        return model

@@ -63,14 +63,13 @@ source venv/bin/activate
 
 ```bash
 cd backend
-pip install -r requirements.txt
+pip install -r requirements-dev.lock
 ```
 
-> Install dev tools (pytest etc.) as well if you want to run tests:
->
-> ```bash
-> pip install -r backend/requirements-dev.txt
-> ```
+> `requirements-dev.lock` pins every package (runtime and test tools) to the versions
+> CI tests against; `requirements.lock` is the runtime-only set Docker installs. Use
+> Python 3.11, like the image. If the venv breaks (e.g. `langchain_openai` won't import),
+> delete it and recreate it from the lock.
 
 ### 2.3 Create the environment file
 
@@ -290,7 +289,7 @@ Terminal 1 – Backend
 python -m venv venv
 .\venv\Scripts\Activate.ps1      # Windows
 # source venv/bin/activate       # macOS/Linux
-pip install -r backend/requirements.txt
+pip install -r backend/requirements-dev.lock
 copy backend\.env.example backend\.env   # then add GROQ_API_KEY
 cd backend
 uvicorn app.main:app --reload --port 8000

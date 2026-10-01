@@ -77,9 +77,7 @@ test.describe("History page", () => {
     await mockHistory(page);
     await page.goto("/history");
     const compareLinks = page.getByRole("link", { name: /Compare/i });
-    if (await compareLinks.count() > 0) {
-      const href = await compareLinks.first().getAttribute("href");
-      expect(href).toContain("/compare");
-    }
+    const href = await compareLinks.first().getAttribute("href");
+    expect(href).toContain(`/compare?a=${THREAD_A}`);
   });
 });

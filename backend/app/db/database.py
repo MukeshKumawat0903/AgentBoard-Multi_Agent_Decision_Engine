@@ -151,6 +151,8 @@ def run_migrations() -> None:
         "script_location",
         os.path.join(backend_root, "alembic"),
     )
+    # The app configures logging itself; stop env.py from re-running fileConfig.
+    alembic_cfg.attributes["configure_logger"] = False
 
     legacy_revision = _prepare_legacy_sqlite_migration_state(settings.DATABASE_URL)
     if legacy_revision is not None:
@@ -161,7 +163,21 @@ def run_migrations() -> None:
         )
 
     command.upgrade(alembic_cfg, "head")
+    _enable_wal(settings.DATABASE_URL)
     logger.info("Database migrations applied")
+
+
+def _enable_wal(database_url: str) -> None:
+    """Switch a file database to write-ahead logging (persists in the file).
+
+    Each running debate writes events and state snapshots while other requests
+    read; with the default rollback journal every write blocks all readers.
+    """
+    db_path = _resolve_sqlite_db_path(database_url)
+    if db_path is None:
+        return
+    with sqlite3.connect(db_path) as conn:
+        conn.execute("PRAGMA journal_mode=WAL")
 
 
 async def get_db():

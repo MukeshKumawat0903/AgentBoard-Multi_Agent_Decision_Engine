@@ -11,6 +11,7 @@ import { test, expect } from "@playwright/test";
 import {
   mockStaticRoutes, THREAD_A,
   buildSSEBody, makeDebateSSEEvents,
+  serveOpenStream, makeInProgressSSEEvents,
 } from "./fixtures/mock-api";
 
 // Split events into "before disconnect" and "after reconnect" sets
@@ -59,38 +60,45 @@ test.describe("SSE reconnect — no duplicate critiques (B1 fix)", () => {
     expect(count).toBeLessThanOrEqual(1);
   });
 
-  test("connection status badge shows 'Connected' on successful stream", async ({ page }) => {
+  test("connection status badge shows 'Connected' on a live stream", async ({ page }) => {
     await mockStaticRoutes(page);
-    await page.route(`**/backend/debate/${THREAD_A}/stream*`, (route) =>
-      route.fulfill({
+    await serveOpenStream(page, makeInProgressSSEEvents(THREAD_A));
+
+    await page.goto(`/debate/${THREAD_A}`);
+    await expect(page.getByText("Round 1 of 2")).toBeVisible({ timeout: 10_000 });
+    await expect(page.getByText("Connected", { exact: true })).toBeVisible();
+  });
+
+  test("connection lost view and Reconnect appear when the stream keeps failing", async ({ page }) => {
+    await mockStaticRoutes(page);
+    // The client backs off 1 s, 2 s, 4 s … 30 s over 10 retries; a fake clock skips the waits.
+    await page.clock.install();
+
+    let failing = true;
+    let calls = 0;
+    await page.route(`**/backend/debate/${THREAD_A}/stream*`, (route) => {
+      calls++;
+      if (failing) return route.abort("failed");
+      return route.fulfill({
         status: 200,
         headers: { "Content-Type": "text/event-stream", "Cache-Control": "no-cache" },
         body: buildSSEBody(makeDebateSSEEvents(THREAD_A)),
-      })
-    );
-
-    await page.goto(`/debate/${THREAD_A}`);
-    // Connected badge should appear while streaming
-    const connectedBadge = page.getByText("● Connected");
-    await expect(connectedBadge).toBeVisible({ timeout: 10_000 });
-  });
-
-  test("disconnected badge + reconnect button appear when stream fails", async ({ page }) => {
-    await mockStaticRoutes(page);
-
-    let callCount = 0;
-    await page.route(`**/backend/debate/${THREAD_A}/stream*`, (route) => {
-      callCount++;
-      if (callCount <= 10) {
-        // Simulate repeated connection failures to exhaust the 10-attempt limit
-        return route.abort("failed");
-      }
-      return route.fulfill({ status: 200, headers: { "Content-Type": "text/event-stream" }, body: "" });
+      });
     });
 
     await page.goto(`/debate/${THREAD_A}`);
-    // After max reconnects, "Connection lost" + Reconnect button should appear
-    await expect(page.getByText(/Connection lost|Disconnected/i)).toBeVisible({ timeout: 30_000 });
-    await expect(page.getByRole("button", { name: /Reconnect/i })).toBeVisible();
+    // 1 initial attempt + 10 retries.
+    for (let attempt = 1; attempt <= 11; attempt++) {
+      await expect.poll(() => calls).toBeGreaterThanOrEqual(attempt);
+      await page.clock.runFor(30_000);
+    }
+
+    await expect(page.getByRole("heading", { name: "Connection lost" })).toBeVisible();
+    await expect(page.getByText(/may still be running on the server/)).toBeVisible();
+
+    // Reconnecting picks the debate up again without reloading the page.
+    failing = false;
+    await page.getByRole("button", { name: "Reconnect" }).click();
+    await expect(page.getByText("Proceed with a phased expansion into South-East Asia.")).toBeVisible({ timeout: 15_000 });
   });
 });

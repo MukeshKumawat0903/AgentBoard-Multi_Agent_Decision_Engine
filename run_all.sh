@@ -17,13 +17,21 @@ echo "--- Starting Multi-Agent Decision Engine ---"
 
 # 1. Start Backend (FastAPI)
 echo "Starting Backend (FastAPI)..."
-cd backend
-# Use the virtual environment python to run the application
-# Assuming main.py is the entry point
-# Change to the absolute path or relative path from project root
-./venv/Scripts/python -m uvicorn app.main:app --reload --host 0.0.0.0 --port 8000 &
+ROOT_DIR="$(cd "$(dirname "$0")" && pwd)"
+# The project venv lives at the repo root; Windows (Git Bash) uses Scripts/,
+# Linux/macOS use bin/.
+if [ -x "$ROOT_DIR/venv/Scripts/python" ] || [ -x "$ROOT_DIR/venv/Scripts/python.exe" ]; then
+    PYTHON="$ROOT_DIR/venv/Scripts/python"
+elif [ -x "$ROOT_DIR/venv/bin/python" ]; then
+    PYTHON="$ROOT_DIR/venv/bin/python"
+else
+    echo "No virtual environment found at $ROOT_DIR/venv - create it and install backend/requirements.txt first."
+    exit 1
+fi
+cd "$ROOT_DIR/backend"
+"$PYTHON" -m uvicorn app.main:app --reload --host 0.0.0.0 --port 8000 &
 BACKEND_PID=$!
-cd ..
+cd "$ROOT_DIR"
 
 # 2. Start Frontend (Next.js)
 echo "Starting Frontend (Next.js)..."

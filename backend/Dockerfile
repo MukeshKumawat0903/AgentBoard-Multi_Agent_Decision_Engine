@@ -25,10 +25,12 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
 RUN python -m venv /opt/venv
 ENV PATH="/opt/venv/bin:$PATH"
 
-# Install dependencies first (cached layer — only invalidated when requirements.txt changes)
-COPY requirements.txt .
+# Install dependencies first (cached layer — only invalidated when the lock changes).
+# requirements.lock pins every package to the tested versions and takes torch from
+# the CPU-only index, so no CUDA libraries end up in the image.
+COPY requirements.lock .
 RUN pip install --upgrade pip \
-    && pip install --no-cache-dir -r requirements.txt
+    && pip install --no-cache-dir -r requirements.lock
 
 
 # ============================================================
@@ -57,11 +59,18 @@ COPY app/       ./app/
 COPY alembic/   ./alembic/
 COPY alembic.ini .
 
-# Persistent data directory (SQLite DB + knowledge base)
+# Persistent data directory (SQLite DB + LangGraph checkpoints + knowledge base)
 # Mount a named volume here in production: -v agentboard-data:/data
 RUN mkdir -p /data/kb
 ENV DATABASE_URL=/data/agentboard.db
+ENV CHECKPOINT_DATABASE_URL=/data/agentboard_checkpoints.db
 ENV KNOWLEDGE_BASE_DIR=/data/kb
+# The non-root user below has no home directory (HOME=/nonexistent), so point
+# the Hugging Face / sentence-transformers model cache at the data volume —
+# otherwise the embedding model can't be downloaded and the knowledge base
+# and semantic consensus silently stay unavailable.
+ENV HF_HOME=/data/hf-cache
+ENV XDG_CACHE_HOME=/data/.cache
 
 # Security: run as non-root
 RUN addgroup --system appgroup \

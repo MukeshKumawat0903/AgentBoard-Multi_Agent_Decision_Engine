@@ -24,9 +24,14 @@ services:
       - ./backend/.env           # secrets injected at runtime, never baked in
     environment:
       - DATABASE_URL=/data/agentboard.db
+      - CHECKPOINT_DATABASE_URL=/data/agentboard_checkpoints.db
       - KNOWLEDGE_BASE_DIR=/data/kb
+      # The frontend container proxies browser traffic over the compose network,
+      # so trust its X-Forwarded-For for per-client rate limits. In production,
+      # don't publish port 8000 publicly (clients could then spoof the header).
+      - TRUSTED_PROXY_IPS=127.0.0.1,::1,172.16.0.0/12
     volumes:
-      - agentboard-data:/data    # persists SQLite DB + knowledge base between restarts
+      - agentboard-data:/data    # persists SQLite DB, LangGraph checkpoints + knowledge base
     healthcheck:
       test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8000/health')"]
       interval: 30s

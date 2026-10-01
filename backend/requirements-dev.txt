@@ -1,7 +1,21 @@
+# Test and lint tools on top of the runtime dependencies. CI installs the
+# pinned requirements-dev.lock.
+#
+# Regenerating the locks (from backend/, with uv: https://docs.astral.sh/uv/):
+#   uv pip compile requirements.txt -o requirements.lock --universal --python-version 3.11 \
+#     --emit-index-url --extra-index-url https://download.pytorch.org/whl/cpu \
+#     --index-strategy unsafe-best-match --annotation-style line
+#   uv pip compile requirements-dev.txt -c requirements.lock -o requirements-dev.lock \
+#     (same options as above)
+# --universal keeps platform markers, so the same lock installs on Linux (Docker, CI),
+# Windows and macOS. The extra index gives CPU-only torch, which keeps the image free
+# of CUDA libraries. Then run the test suite against a fresh install of the new lock
+# (Python 3.11, as in the image) before committing it.
+
 -r requirements.txt
-pytest==8.3.0
-pytest-asyncio==0.24.0
-anyio==4.4.0
+pytest>=8.3
+pytest-asyncio>=0.24
+anyio>=4.4
 # Phase 6.4 — parallel test execution + coverage
 pytest-cov>=5.0.0
 pytest-xdist>=3.0.0

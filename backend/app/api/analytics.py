@@ -9,7 +9,8 @@ GET /analytics/convergence  — convergence curves and breakdowns
 GET /analytics/quality      — decision quality scores (when evaluations exist)
 
 All four responses are cached for 5 minutes to keep SQLite load low.
-The cache can be cleared via ``invalidate_analytics_cache()`` (used in tests).
+``invalidate_analytics_cache()`` clears the cache whenever a debate is stored
+or a decision is evaluated, so new results show up immediately.
 """
 
 from __future__ import annotations
@@ -37,22 +38,22 @@ logger = logging.getLogger("agentboard.analytics")
 # ---------------------------------------------------------------------------
 
 _CACHE_TTL: float = 300.0  # seconds
-_cache: dict[str, tuple[float, Any]] = {}
+_cache: dict[str, tuple[float, dict[str, Any]]] = {}
 
 
-def _get(key: str) -> Any | None:
+def _get(key: str) -> dict[str, Any] | None:
     entry = _cache.get(key)
     if entry is not None and time.monotonic() - entry[0] < _CACHE_TTL:
         return entry[1]
     return None
 
 
-def _set(key: str, value: Any) -> None:
+def _set(key: str, value: dict[str, Any]) -> None:
     _cache[key] = (time.monotonic(), value)
 
 
 def invalidate_analytics_cache() -> None:
-    """Clear all cached analytics responses.  Called from tests and startup."""
+    """Clear all cached analytics responses (new debate stored, decision evaluated, tests)."""
     _cache.clear()
 
 
@@ -73,10 +74,13 @@ async def analytics_overview(
     """
     Returns:
     - ``total_debates`` — count of completed debates in range
-    - ``avg_rounds_to_consensus`` — mean round count across completed debates
+    - ``avg_rounds`` — mean rounds run across completed debates
+    - ``avg_rounds_to_consensus`` — mean rounds run by debates that reached consensus
+      (``None`` when none did)
     - ``avg_agreement_score`` — mean final agreement score
     - ``debates_by_termination`` — count grouped by termination_reason
-    - ``debates_per_day`` — list of ``{date, count}``
+    - ``debates_per_day`` — list of ``{date, count}`` of completed debates over
+      ``trend_days`` (the selected range, or 30 days for all time)
     """
     key = f"overview:{days}"
     cached = _get(key)
@@ -101,7 +105,8 @@ async def analytics_agents(
     Returns:
     - ``agents`` — dict keyed by agent name with avg_confidence,
       avg_critique_severity_given, avg_contribution_score
-    - ``agreement_matrix`` — pairwise co-high-confidence frequency
+    - ``agreement_matrix`` — symmetric 0–1 similarity of each pair's final positions
+      (``None`` for pairs that never debated together)
     """
     key = f"agents:{days}"
     cached = _get(key)
@@ -125,7 +130,7 @@ async def analytics_convergence(
     """
     Returns:
     - ``avg_agreement_by_round`` — list of mean agreement scores per round
-    - ``mode_breakdown`` — count by debate mode (quick/standard/thorough)
+    - ``mode_breakdown`` — count by debate mode (quick/standard/thorough/custom)
     - ``domain_pack_breakdown`` — count by domain pack
     """
     key = f"convergence:{days}"
@@ -154,7 +159,8 @@ async def analytics_quality(
     Returns:
     - ``evaluated_count`` — number of evaluated decisions
     - ``avg_quality_score`` — overall mean quality score
-    - ``scores_by_template`` / ``scores_by_mode`` / ``scores_by_domain_pack``
+    - ``scores_by_template`` (debates started from a built-in template, by title)
+      / ``scores_by_mode`` / ``scores_by_domain_pack``
     - ``best_performing_templates`` / ``worst_performing_templates``
     """
     key = f"quality:{days}"

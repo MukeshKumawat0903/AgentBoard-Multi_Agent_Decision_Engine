@@ -35,6 +35,13 @@ const SIZE_CLASSES: Record<ButtonSize, string> = {
   md: "text-sm px-4 py-2.5 gap-2",
 };
 
+/** Button styling for elements that aren't buttons, e.g. a Next.js Link that navigates. */
+export function buttonClasses(variant: ButtonVariant = "secondary", size: ButtonSize = "md"): string {
+  return `inline-flex items-center justify-center font-medium rounded-lg transition
+          active:scale-[0.98] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent-500
+          ${VARIANT_CLASSES[variant]} ${SIZE_CLASSES[size]}`;
+}
+
 export interface ButtonProps extends ButtonHTMLAttributes<HTMLButtonElement> {
   variant?: ButtonVariant;
   size?: ButtonSize;

@@ -28,7 +28,7 @@ from typing import TYPE_CHECKING
 
 from pydantic import BaseModel, Field
 
-from app.orchestrator.debate_graph import DebateGraph
+from app.orchestrator.debate_graph import DebateGraph, require_decision
 
 if TYPE_CHECKING:
     from app.core.config import Settings
@@ -52,14 +52,17 @@ class SimulationResult(BaseModel):
     decisions: list[dict] = Field(description="Serialised FinalDecision objects for each run.")
     consistency_score: float = Field(
         ge=0.0, le=1.0,
-        description="Mean pairwise Jaccard similarity of decision texts (0 = no overlap, 1 = identical).",
+        description=(
+            "How alike the runs' decisions are: mean pairwise word overlap, rescaled so "
+            "0 = as different as decisions to unrelated questions, 1 = the same decision reworded."
+        ),
     )
     confidence_variance: float = Field(
         description="Standard deviation of agreement_score across runs.",
     )
     avg_agreement_score: float = Field(description="Mean agreement_score across all runs.")
     stable_risk_flags: list[str] = Field(
-        description="Risk flags that appear in at least 70 % of runs.",
+        description="Risk flags raised (in any wording) in at least 70 % of runs.",
     )
     stability_rating: str = Field(description="'High', 'Medium', or 'Low'.")
 
@@ -79,13 +82,78 @@ def _jaccard(a: str, b: str) -> float:
     return len(set_a & set_b) / len(set_a | set_b)
 
 
-def _pairwise_mean_jaccard(texts: list[str]) -> float:
-    """Mean Jaccard similarity over all unique pairs."""
+def _decision_consistency(texts: list[str]) -> float:
+    """Mean pairwise agreement of decision texts on a calibrated 0–1 scale.
+
+    Raw word overlap between two independently written decisions is low even
+    when they agree (measured on stored debates: repeat runs of one question
+    ~0.20, decisions to unrelated questions ~0.08), so each pair is rescaled with
+    the same anchors the consensus gate uses before averaging.
+    """
     if len(texts) <= 1:
         return 1.0
-    pairs = [(texts[i], texts[j]) for i in range(len(texts)) for j in range(i + 1, len(texts))]
-    scores = [_jaccard(a, b) for a, b in pairs]
+    from app.core.config import settings as app_settings
+    from app.services.consensus import normalize_position_overlap
+
+    scores = [
+        normalize_position_overlap(
+            _jaccard(texts[i], texts[j]),
+            app_settings.POSITION_OVERLAP_FLOOR,
+            app_settings.POSITION_OVERLAP_CEILING,
+        )
+        for i in range(len(texts))
+        for j in range(i + 1, len(texts))
+    ]
     return sum(scores) / len(scores)
+
+
+_FLAG_STOPWORDS = frozenset({
+    "a", "an", "the", "and", "or", "of", "to", "in", "on", "for", "with", "by", "as", "is",
+    "are", "be", "may", "can", "could", "will", "would", "its", "it", "this", "that", "from",
+    "into", "over", "under", "about", "potential", "possible", "risk", "risks",
+})
+
+
+def _flag_tokens(flag: str) -> frozenset[str]:
+    """Content words of a risk flag, lightly stemmed so wording variants match."""
+    tokens = set()
+    for raw in flag.lower().replace("-", " ").split():
+        word = "".join(ch for ch in raw if ch.isalnum())
+        if len(word) < 3 or word in _FLAG_STOPWORDS:
+            continue
+        for suffix in ("ing", "ies", "es", "ed", "s"):
+            if word.endswith(suffix) and len(word) - len(suffix) >= 4:
+                word = word[: -len(suffix)]
+                break
+        tokens.add(word)
+    return frozenset(tokens)
+
+
+def _flags_match(a: frozenset[str], b: frozenset[str]) -> bool:
+    """Same risk in different words: most of the shorter flag's words recur."""
+    shared = a & b
+    if not shared:
+        return False
+    shorter = min(len(a), len(b))
+    return len(shared) / shorter >= 0.6 and (len(shared) >= 2 or shorter == 1)
+
+
+def _stable_risk_flags(flag_lists: list[list[str]], min_share: float = 0.7) -> list[str]:
+    """Flags raised — in any wording — by at least ``min_share`` of the runs.
+
+    Each stable risk is reported once, in the wording where it first appeared.
+    """
+    needed = math.ceil(min_share * len(flag_lists))
+    runs = [[(flag, _flag_tokens(flag)) for flag in flags] for flags in flag_lists]
+    stable: list[tuple[str, frozenset[str]]] = []
+    for flags in runs:
+        for flag, tokens in flags:
+            if not tokens or any(_flags_match(tokens, kept) for _, kept in stable):
+                continue
+            hits = sum(any(_flags_match(tokens, other) for _, other in run) for run in runs)
+            if hits >= needed:
+                stable.append((flag, tokens))
+    return [flag for flag, _ in stable]
 
 
 def _stability_rating(score: float) -> str:
@@ -103,7 +171,7 @@ def _stability_rating(score: float) -> str:
 async def run_simulation(
     query: str,
     runs: int,
-    max_rounds: int,
+    max_rounds: int | None,
     mode: DebateMode,
     llm_client: LangChainProvider,
     settings: Settings,
@@ -167,10 +235,16 @@ async def run_simulation(
                     consensus_threshold=resolved_threshold,
                     skip_critique_phase=resolved_skip,
                 )
+            decision = require_decision(decision)
             logger.info(
                 "simulation_run_complete",
                 extra={"run": _run_idx, "agreement_score": decision.agreement_score},
             )
+            # Simulation runs are never resumed — don't let their checkpoints pile up.
+            try:
+                await graph.delete_checkpoints(_state.thread_id)
+            except Exception as exc:  # noqa: BLE001
+                logger.warning("simulation_checkpoint_cleanup_failed", extra={"error": str(exc)})
             return decision
         except Exception as exc:  # noqa: BLE001
             logger.warning(
@@ -197,19 +271,14 @@ async def run_simulation(
 
     # Compute metrics
     decision_texts = [d.decision for d in decisions]
-    consistency = _pairwise_mean_jaccard(decision_texts)
+    consistency = _decision_consistency(decision_texts)
 
     agreement_scores = [d.agreement_score for d in decisions]
     avg_agreement = sum(agreement_scores) / len(agreement_scores)
     confidence_variance = statistics.stdev(agreement_scores) if len(agreement_scores) > 1 else 0.0
 
-    # Stable risk flags: appear in >= 70 % of runs
-    threshold_count = math.ceil(0.7 * len(decisions))
-    all_flags: dict[str, int] = {}
-    for d in decisions:
-        for flag in d.risk_flags:
-            all_flags[flag] = all_flags.get(flag, 0) + 1
-    stable_flags = [flag for flag, cnt in all_flags.items() if cnt >= threshold_count]
+    # Stable risk flags: the same risk (in any wording) in >= 70 % of runs
+    stable_flags = _stable_risk_flags([d.risk_flags for d in decisions])
 
     return SimulationResult(
         query=query,

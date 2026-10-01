@@ -68,6 +68,21 @@ describe("meta actions", () => {
     expect(next.approvalRequired).toBeNull();
   });
 
+  it("clear_approval for the answered round clears it", () => {
+    const state = stateWith({ approvalRequired: { type: "approval_required", round_number: 1, agreement_score: 0.7, termination_reason: "consensus_reached", synthesis_summary: "", options: [] } });
+    const next = debateStreamReducer(state, { type: "clear_approval", roundNumber: 1 });
+    expect(next.approvalRequired).toBeNull();
+  });
+
+  it("a stale clear_approval keeps a newer approval request (add-round race)", () => {
+    // Round 1 was answered with "add round"; round 2 already paused for review
+    // before the round-1 response came back. The newer request must stay.
+    let state = stateWith({ approvalRequired: { type: "approval_required", round_number: 1, agreement_score: 0.7, termination_reason: "consensus_reached", synthesis_summary: "", options: [] } });
+    state = debateStreamReducer(state, { event: { type: "approval_required", round_number: 2, agreement_score: 0.8, termination_reason: "max_rounds_reached", synthesis_summary: "", options: ["approve"] } as never });
+    const next = debateStreamReducer(state, { type: "clear_approval", roundNumber: 1 });
+    expect(next.approvalRequired?.round_number).toBe(2);
+  });
+
   it("stream_error does not override a finished (done) debate", () => {
     // A late socket close after the REST fallback already delivered the decision
     // must not flip a completed debate into an error.
@@ -190,6 +205,16 @@ describe("agent_output", () => {
     expect(next.rounds[0].agent_outputs[0].confidence_score).toBe(0.9);
   });
 
+  it("keeps an agent's veto and its reason", () => {
+    const state = stateWith({
+      rounds: [{ round_number: 1, phase: "proposal", agent_outputs: [], critiques: [] }],
+    });
+    const event = { ...agentOutputEvent("Ethics"), veto: true, veto_reason: "No user consent." };
+    const next = debateStreamReducer(state, { event });
+    expect(next.rounds[0].agent_outputs[0].veto).toBe(true);
+    expect(next.rounds[0].agent_outputs[0].veto_reason).toBe("No user consent.");
+  });
+
   it("handles domain-pack agents (FinancialEthics, Security) without crashing", () => {
     const state = stateWith({
       rounds: [{ round_number: 1, phase: "proposal", agent_outputs: [], critiques: [] }],
@@ -281,7 +306,6 @@ describe("synthesis", () => {
         type: "synthesis",
         round_number: 1,
         agreement_score: 0.75,
-        should_continue: false,
         summary: "Good progress",
         agreement_areas: ["Timing"],
         disagreement_areas: [],

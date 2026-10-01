@@ -54,9 +54,19 @@ class AgentMemoryStore:
     The ``agent_memory`` table must already exist (created by Alembic migration).
     """
 
-    def __init__(self, database_url: str, llm_client: LangChainProvider) -> None:
+    def __init__(self, database_url: str, llm_client: LangChainProvider | None = None) -> None:
         self._db_url = database_url
+        # None: use whichever provider is active when a memory is saved, so a
+        # provider switched at runtime (/llm-settings) also applies here.
         self._llm_client = llm_client
+
+    @property
+    def llm_client(self) -> LangChainProvider:
+        if self._llm_client is not None:
+            return self._llm_client
+        from app.services.llm_client import get_llm_client
+
+        return get_llm_client()
 
     async def save_memory(
         self,
@@ -71,7 +81,7 @@ class AgentMemoryStore:
         Failures are logged as warnings and do not propagate.
         """
         try:
-            summary_obj = await self._llm_client.ainvoke_structured(
+            summary_obj = await self.llm_client.ainvoke_structured(
                 _MemorySummaryOutput,
                 system_prompt=(
                     "You are a concise summariser.  Given a debate agent's final position text, "

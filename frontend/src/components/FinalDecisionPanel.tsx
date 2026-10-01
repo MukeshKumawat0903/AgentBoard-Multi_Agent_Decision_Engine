@@ -44,7 +44,11 @@ interface FinalDecisionPanelProps {
 
 /** Build a clean Markdown summary for clipboard / sharing. */
 function buildMarkdownSummary(d: FinalDecision): string {
-  const lines: string[] = ["# Decision", "", d.decision, "", "## Rationale", "", d.rationale_summary, ""];
+  const lines: string[] = ["# Decision", "", d.decision, ""];
+  if (d.human_feedback) lines.push("## Human Reviewer Direction", "", d.human_feedback, "");
+  if (d.vetoes?.length)
+    lines.push("## Standing Vetoes", "", ...d.vetoes.map((v) => `- ${v.agent_name}: ${v.reason}`), "");
+  lines.push("## Rationale", "", d.rationale_summary, "");
   if (d.risk_flags.length) lines.push("## Risk Flags", "", ...d.risk_flags.map((f) => `- ${f}`), "");
   if (d.alternatives.length) lines.push("## Alternatives Considered", "", ...d.alternatives.map((a) => `- ${a}`), "");
   lines.push(
@@ -232,6 +236,30 @@ export default function FinalDecisionPanel({ decision }: FinalDecisionPanelProps
             <Markdown className="text-xl font-medium text-gray-800 dark:text-gray-100 leading-snug">
               {decision.decision}
             </Markdown>
+            {decision.human_feedback && (
+              <div className="mt-4 rounded-xl bg-violet-50 dark:bg-violet-900/20 ring-1 ring-violet-200 dark:ring-violet-800 px-4 py-3">
+                <p className="text-xs font-semibold uppercase tracking-wide text-violet-700 dark:text-violet-300 mb-1">
+                  Human reviewer direction
+                </p>
+                <p className="text-sm text-gray-700 dark:text-gray-300 whitespace-pre-wrap">
+                  {decision.human_feedback}
+                </p>
+              </div>
+            )}
+            {decision.vetoes && decision.vetoes.length > 0 && (
+              <div className="mt-4 rounded-xl bg-red-50 dark:bg-red-900/20 ring-1 ring-red-200 dark:ring-red-800 px-4 py-3">
+                <p className="text-xs font-semibold uppercase tracking-wide text-red-700 dark:text-red-300 mb-1">
+                  Standing {decision.vetoes.length === 1 ? "veto" : "vetoes"}
+                </p>
+                <ul className="space-y-1">
+                  {decision.vetoes.map((v) => (
+                    <li key={`${v.agent_name}-${v.round_number}`} className="text-sm text-gray-700 dark:text-gray-300">
+                      <span className="font-semibold">{v.agent_name}</span>: {v.reason}
+                    </li>
+                  ))}
+                </ul>
+              </div>
+            )}
             <hr className="my-4 border-line" />
             <h3 className="text-sm font-semibold text-gray-700 dark:text-gray-300 mb-1.5">Rationale</h3>
             <Markdown className="text-sm text-gray-600 dark:text-gray-400">

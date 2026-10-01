@@ -34,6 +34,7 @@ from app.services.consensus import (
     count_dissenting_agents,
     count_open_disagreements,
     is_consensus_reached,
+    normalize_position_overlap,
     select_dissenting_agents,
 )
 
@@ -388,10 +389,16 @@ class TestPhase10AcceptanceCriteria:
 # Hybrid consensus gate helpers
 # ---------------------------------------------------------------------------
 
-def _critique(severity: str, points: list[str], round_number: int = 1) -> CritiqueResponse:
+def _critique(
+    severity: str,
+    points: list[str],
+    round_number: int = 1,
+    critic: str = "Risk",
+    target: str = "Strategy",
+) -> CritiqueResponse:
     return CritiqueResponse(
-        critic_agent="Risk",
-        target_agent="Strategy",
+        critic_agent=critic,
+        target_agent=target,
         round_number=round_number,
         critique_points=points,
         severity=severity,  # type: ignore[arg-type]
@@ -422,22 +429,42 @@ class TestCountDissentingAgents:
 class TestCountOpenDisagreements:
     def test_only_high_severity_counts(self):
         critiques = [
-            _critique("low", ["minor nit"]),
-            _critique("medium", ["meh"]),
-            _critique("high", ["serious gap"]),
-            _critique("critical", ["dealbreaker"]),
+            _critique("low", ["minor nit"], critic="Analyst"),
+            _critique("medium", ["meh"], critic="Ethics"),
+            _critique("high", ["serious gap"], critic="Risk"),
+            _critique("critical", ["dealbreaker"], critic="Strategy", target="Risk"),
         ]
         assert count_open_disagreements(critiques) == 2
 
-    def test_distinct_points_deduplicated(self):
+    def test_counts_critiques_not_bullet_points(self):
+        critiques = [_critique("high", ["gap one", "gap two", "gap three", "gap four"])]
+        assert count_open_disagreements(critiques) == 1
+
+    def test_same_critic_target_pair_counted_once(self):
         critiques = [
-            _critique("high", ["same point", "same point", "other point"]),
-            _critique("critical", ["other point"]),
+            _critique("high", ["first pass"]),
+            _critique("critical", ["replayed duplicate"]),
         ]
-        assert count_open_disagreements(critiques) == 2
+        assert count_open_disagreements(critiques) == 1
 
     def test_empty_returns_zero(self):
         assert count_open_disagreements([]) == 0
+
+
+class TestNormalizePositionOverlap:
+    def test_floor_maps_to_zero_and_ceiling_to_one(self):
+        assert normalize_position_overlap(0.08, 0.08, 0.19) == pytest.approx(0.0)
+        assert normalize_position_overlap(0.19, 0.08, 0.19) == pytest.approx(1.0)
+
+    def test_linear_between_anchors(self):
+        assert normalize_position_overlap(0.135, 0.08, 0.19) == pytest.approx(0.5)
+
+    def test_clamped_outside_anchors(self):
+        assert normalize_position_overlap(0.01, 0.08, 0.19) == 0.0
+        assert normalize_position_overlap(0.9, 0.08, 0.19) == 1.0
+
+    def test_degenerate_anchors_fall_back_to_raw_value(self):
+        assert normalize_position_overlap(0.4, 0.2, 0.2) == pytest.approx(0.4)
 
 
 class TestIsConsensusReached:

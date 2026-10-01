@@ -22,6 +22,7 @@ from app.orchestrator.nodes import (
 from app.schemas.agent_response import AgentResponse, CritiqueResponse
 from app.schemas.final_decision import FinalDecision
 from app.schemas.state import DebateRound, DebateState
+from app.services.consensus import ConsensusEngine
 
 
 def _mock_settings(
@@ -40,6 +41,8 @@ def _mock_settings(
     settings.CHECKPOINT_DATABASE_URL = ":memory:"
     # Hybrid consensus gate knobs (real numbers so the gate uses real comparisons).
     settings.CONSENSUS_POSITION_WEIGHT = 0.3
+    settings.POSITION_OVERLAP_FLOOR = 0.08
+    settings.POSITION_OVERLAP_CEILING = 0.19
     settings.MINORITY_REPORT_BAND = 0.20
     settings.ALL_CONFIDENT_THRESHOLD = 0.9
     settings.CONFIDENCE_CONVERGENCE_SPREAD = 0.15
@@ -145,7 +148,7 @@ class TestDebateGraph:
             }
         )
 
-        with patch("app.orchestrator.debate_graph.AsyncSqliteSaver.from_conn_string", return_value=_fake_saver_context()):
+        with patch("app.orchestrator.debate_graph._open_checkpointer", return_value=_fake_saver_context()):
             with patch.object(DebateGraph, "_build", return_value=compiled):
                 final_state, final_decision = await graph.run(
                     "Should we expand internationally in Q3?",
@@ -168,7 +171,7 @@ class TestDebateGraph:
             return_value={"debate_state": state, "final_decision": decision}
         )
 
-        with patch("app.orchestrator.debate_graph.AsyncSqliteSaver.from_conn_string", return_value=_fake_saver_context()):
+        with patch("app.orchestrator.debate_graph._open_checkpointer", return_value=_fake_saver_context()):
             with patch.object(DebateGraph, "_build", return_value=compiled):
                 await graph.run(state.user_query, initial_state=state)
 
@@ -190,7 +193,7 @@ class TestDebateGraph:
             return_value={"debate_state": state, "final_decision": decision}
         )
 
-        with patch("app.orchestrator.debate_graph.AsyncSqliteSaver.from_conn_string", return_value=_fake_saver_with_checkpoint()):
+        with patch("app.orchestrator.debate_graph._open_checkpointer", return_value=_fake_saver_with_checkpoint()):
             with patch.object(DebateGraph, "_build", return_value=compiled):
                 final_state, final_decision = await graph.resume(state.thread_id)
 
@@ -205,7 +208,7 @@ class TestDebateGraph:
         settings = _mock_settings()
         graph = DebateGraph(llm_client=_mock_llm(), settings=settings)
 
-        with patch("app.orchestrator.debate_graph.AsyncSqliteSaver.from_conn_string", return_value=_fake_saver_no_checkpoint()):
+        with patch("app.orchestrator.debate_graph._open_checkpointer", return_value=_fake_saver_no_checkpoint()):
             with pytest.raises(ValueError, match="No checkpoint found"):
                 await graph.resume("nonexistent-thread-id")
 
@@ -372,10 +375,11 @@ class TestNodeFactories:
             agent_outputs=[_agent_response("Analyst"), _agent_response("Risk")],
             critiques=[
                 CritiqueResponse(
-                    critic_agent="Risk", target_agent="Analyst", round_number=1,
-                    critique_points=["gap one", "gap two", "gap three"],
+                    critic_agent=critic, target_agent="Analyst", round_number=1,
+                    critique_points=[f"{critic} sees a serious gap"],
                     severity="high", confidence_score=0.8,
-                ),
+                )
+                for critic in ("Risk", "Strategy", "Ethics")
             ],
         )
         debate_state = DebateState(
@@ -392,7 +396,7 @@ class TestNodeFactories:
         node = make_convergence_node(moderator, settings, emit, persist_state)
         result = await node(graph_state)
 
-        # 3 open high-severity points > cap of 2 → keep debating.
+        # 3 open high-severity critiques > cap of 2 → keep debating.
         assert result["should_continue"] is True
         assert debate_state.termination_reason != "consensus_reached"
 
@@ -432,6 +436,117 @@ class TestNodeFactories:
         assert debate_state.termination_reason == "consensus_reached"
 
     @pytest.mark.anyio
+    async def test_single_verbose_critique_does_not_block_consensus(self):
+        """One high-severity critique is one objection, however many bullets it has."""
+        moderator = MagicMock()
+        moderator.synthesize = AsyncMock(return_value=_synthesis(agreement_score=0.9, should_continue=False))
+        shared = "We should proceed with a phased expansion in Q3."
+        round_data = DebateRound(
+            round_number=2,
+            agent_outputs=[
+                AgentResponse(agent_name=n, round_number=2, position=shared,
+                              reasoning="r", confidence_score=0.85)
+                for n in ("Analyst", "Risk")
+            ],
+            critiques=[
+                CritiqueResponse(
+                    critic_agent="Risk", target_agent="Analyst", round_number=2,
+                    critique_points=["gap one", "gap two", "gap three", "gap four"],
+                    severity="high", confidence_score=0.8,
+                ),
+            ],
+        )
+        debate_state = DebateState(
+            user_query="Should we expand internationally in Q3?",
+            current_round=2,
+            rounds=[DebateRound(round_number=1), round_data],
+        )
+        graph_state: DebateGraphState = {
+            "debate_state": debate_state,
+            "should_continue": True,
+            "final_decision": None,
+        }
+
+        node = make_convergence_node(moderator, _mock_settings(), MagicMock(), AsyncMock())
+        result = await node(graph_state)
+
+        assert result["should_continue"] is False
+        assert debate_state.termination_reason == "consensus_reached"
+
+
+def _positions_with_overlap(shared_words: int, unique_words: int) -> list[str]:
+    """Three positions whose pairwise word-Jaccard is shared / (shared + 2 * unique)."""
+    shared = [f"core{i}" for i in range(shared_words)]
+    return [
+        " ".join(shared + [f"{role}{i}" for i in range(unique_words)])
+        for role in ("analyst", "risk", "strategy")
+    ]
+
+
+class TestCalibratedConsensusGate:
+    """The gate must be reachable with the real default settings: role-differentiated
+    agents that agree only share a modest fraction of their wording."""
+
+    @staticmethod
+    async def _run_gate(positions: list[str], confidence: float) -> dict:
+        from app.core.config import Settings
+
+        real_settings = Settings(_env_file=None, GROQ_API_KEY="test")  # type: ignore[call-arg]
+        moderator = MagicMock()
+        moderator.synthesize = AsyncMock(return_value=_synthesis(agreement_score=0.8, should_continue=False))
+        outputs = [
+            AgentResponse(agent_name=n, round_number=2, position=p, reasoning="r",
+                          confidence_score=confidence)
+            for n, p in zip(("Analyst", "Risk", "Strategy"), positions)
+        ]
+        debate_state = DebateState(
+            user_query="Should we expand into Singapore in Q3?",
+            current_round=2,
+            max_rounds=2,
+            min_rounds=2,
+            rounds=[DebateRound(round_number=1), DebateRound(round_number=2, agent_outputs=outputs)],
+        )
+        node = make_convergence_node(moderator, real_settings, MagicMock(), AsyncMock())
+        return await node({
+            "debate_state": debate_state,
+            "should_continue": True,
+            "final_decision": None,
+            "consensus_threshold": 0.75,  # the "standard" preset
+        })
+
+    @pytest.mark.anyio
+    async def test_typical_agreeing_overlap_reaches_standard_consensus(self):
+        positions = _positions_with_overlap(shared_words=8, unique_words=21)  # raw overlap 0.16
+        assert ConsensusEngine().compute_confidence_weighted_score(
+            [AgentResponse(agent_name=str(i), round_number=1, position=p, reasoning="r",
+                           confidence_score=0.85) for i, p in enumerate(positions)]
+        ) == pytest.approx(0.16)
+
+        result = await self._run_gate(positions, confidence=0.85)
+
+        assert result["should_continue"] is False
+        assert result["debate_state"].termination_reason == "consensus_reached"
+        assert result["debate_state"].agreement_score >= 0.75
+
+    @pytest.mark.anyio
+    async def test_unrelated_overlap_does_not_reach_standard_consensus(self):
+        positions = _positions_with_overlap(shared_words=4, unique_words=23)  # raw overlap 0.08
+        result = await self._run_gate(positions, confidence=0.85)
+
+        assert result["debate_state"].termination_reason == "max_rounds_reached"
+        assert result["debate_state"].agreement_score < 0.75
+
+    @pytest.mark.anyio
+    async def test_low_confidence_blocks_consensus_even_with_full_overlap(self):
+        positions = _positions_with_overlap(shared_words=30, unique_words=0)
+        result = await self._run_gate(positions, confidence=0.5)
+
+        assert result["debate_state"].termination_reason == "max_rounds_reached"
+
+
+class TestFinalizeNode:
+
+    @pytest.mark.anyio
     async def test_finalize_node_returns_final_decision(self):
         emit = MagicMock()
         persist_state = AsyncMock()
@@ -455,3 +570,52 @@ class TestNodeFactories:
 
         assert result["final_decision"].thread_id == debate_state.thread_id
         assert result["debate_state"].status == "converged"
+
+
+class TestConvergenceSignalEdgeCases:
+    """Consensus must not be declared from signals that could not actually be measured."""
+
+    @staticmethod
+    async def _converge(rounds: list[DebateRound]) -> dict:
+        moderator = MagicMock()
+        moderator.synthesize = AsyncMock(return_value=_synthesis(agreement_score=0.9, should_continue=False))
+        debate_state = DebateState(
+            user_query="Should we expand internationally in Q3?",
+            current_round=len(rounds),
+            max_rounds=4,
+            min_rounds=1,
+            rounds=rounds,
+        )
+        node = make_convergence_node(moderator, _mock_settings(), MagicMock(), AsyncMock())
+        return await node({"debate_state": debate_state, "should_continue": True, "final_decision": None})
+
+    @pytest.mark.anyio
+    async def test_empty_previous_round_does_not_count_as_zero_drift(self):
+        # Previous round produced nothing (every agent timed out). Confidence spread
+        # is wide and not everyone is very confident, so nothing says "converged".
+        shared = "We should proceed with a phased expansion in Q3."
+        current = DebateRound(round_number=2, agent_outputs=[
+            AgentResponse(agent_name="Analyst", round_number=2, position=shared, reasoning="r", confidence_score=0.95),
+            AgentResponse(agent_name="Risk", round_number=2, position=shared, reasoning="r", confidence_score=0.75),
+        ])
+        result = await self._converge([DebateRound(round_number=1), current])
+
+        assert result["should_continue"] is True
+        assert result["debate_state"].termination_reason is None
+
+    @pytest.mark.anyio
+    async def test_dropped_agent_stale_confidence_is_not_used(self):
+        round1 = DebateRound(round_number=1, agent_outputs=[
+            AgentResponse(agent_name="Analyst", round_number=1, position="alpha beta", reasoning="r", confidence_score=0.6),
+            AgentResponse(agent_name="Risk", round_number=1, position="gamma delta", reasoning="r", confidence_score=0.6),
+            AgentResponse(agent_name="Ethics", round_number=1, position="epsilon", reasoning="r", confidence_score=0.3),
+        ])
+        shared = "We should proceed with a phased expansion in Q3."
+        round2 = DebateRound(round_number=2, agent_outputs=[  # Ethics timed out this round
+            AgentResponse(agent_name="Analyst", round_number=2, position=shared, reasoning="r", confidence_score=0.85),
+            AgentResponse(agent_name="Risk", round_number=2, position=shared, reasoning="r", confidence_score=0.85),
+        ])
+        result = await self._converge([round1, round2])
+
+        assert result["debate_state"].confidence_scores == {"Analyst": 0.85, "Risk": 0.85}
+        assert result["debate_state"].termination_reason == "consensus_reached"

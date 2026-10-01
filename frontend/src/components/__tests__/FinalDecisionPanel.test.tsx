@@ -43,6 +43,41 @@ describe("FinalDecisionPanel", () => {
     expect(screen.getByText("Proceed with phased rollout.")).toBeTruthy();
   });
 
+  it("shows the human reviewer direction after a HITL override", () => {
+    render(
+      <FinalDecisionPanel
+        decision={makeDecision({
+          termination_reason: "human_override",
+          human_feedback: "Go with vendor B instead.",
+        })}
+      />,
+    );
+    expect(screen.getByText("Human reviewer direction")).toBeTruthy();
+    expect(screen.getByText("Go with vendor B instead.")).toBeTruthy();
+  });
+
+  it("lists vetoes that still stood at the end", () => {
+    render(
+      <FinalDecisionPanel
+        decision={makeDecision({
+          vetoes: [{ agent_name: "Ethics", reason: "No user consent.", round_number: 2 }],
+        })}
+      />,
+    );
+    expect(screen.getByText("Standing veto")).toBeTruthy();
+    expect(screen.getByText(": No user consent.", { exact: false })).toBeTruthy();
+  });
+
+  it("shows no veto block without vetoes", () => {
+    render(<FinalDecisionPanel decision={makeDecision({ vetoes: [] })} />);
+    expect(screen.queryByText("Standing veto")).toBeNull();
+  });
+
+  it("hides the reviewer direction block when there was no override", () => {
+    render(<FinalDecisionPanel decision={makeDecision()} />);
+    expect(screen.queryByText("Human reviewer direction")).toBeNull();
+  });
+
   it("renders rationale summary", () => {
     render(<FinalDecisionPanel decision={makeDecision()} />);
     expect(screen.getByText(/Market data and risk analysis/)).toBeTruthy();

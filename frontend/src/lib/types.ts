@@ -19,7 +19,16 @@ export interface AgentResponse {
   reasoning: string;
   assumptions: string[];
   confidence_score: number;
+  // Ethics-class agents only: the position vetoes the proposal on the table
+  veto?: boolean;
+  veto_reason?: string | null;
   timestamp: string;
+}
+
+export interface VetoEntry {
+  agent_name: string;
+  reason: string;
+  round_number: number;
 }
 
 export interface CritiqueResponse {
@@ -123,17 +132,23 @@ export interface FinalDecision {
     by_model?: Record<string, { input_tokens?: number; output_tokens?: number; total_tokens?: number }>;
   };
   estimated_cost_usd?: number | null;
+  // Direction from a HITL override that the decision was told to follow
+  human_feedback?: string | null;
+  // Ethics vetoes still standing when the debate ended
+  vetoes?: VetoEntry[];
 }
 
 /* ------------------------------------------------------------------ */
 /* API request / error                                                 */
 /* ------------------------------------------------------------------ */
 
-export type DebateMode = "quick" | "standard" | "thorough";
+export type DebateMode = "quick" | "standard" | "thorough" | "custom";
 
 export interface DebateStartRequest {
   query: string;
   mode?: DebateMode;
+  // Built-in template the query started from (GET /templates id)
+  template_id?: string;
   max_rounds?: number;
   consensus_threshold?: number;
   skip_critique_phase?: boolean;
@@ -165,6 +180,13 @@ export interface ApprovalStatusResponse {
   status: DebateStatus;
   current_round: number;
   total_rounds: number;
+}
+
+/** 202 body of POST /debate/{id}/approve — the continuation streams over SSE. */
+export interface ApprovalAcceptedResponse {
+  thread_id: string;
+  status: "resuming";
+  action: "approve" | "override" | "add_round";
 }
 
 export interface ErrorResponse {
@@ -244,6 +266,8 @@ export interface AgentOutputEvent {
   reasoning: string;
   confidence_score: number;
   assumptions: string[];
+  veto?: boolean;
+  veto_reason?: string | null;
 }
 
 export interface CritiqueCompletedEvent {
@@ -260,7 +284,6 @@ export interface SynthesisEvent {
   type: "synthesis";
   round_number: number;
   agreement_score: number;
-  should_continue: boolean;
   summary: string;
   agreement_areas: string[];
   disagreement_areas: string[];
@@ -320,6 +343,12 @@ export interface CancelledEvent {
   detail?: string;
 }
 
+// A failed/interrupted debate was resumed; events after this belong to the new run
+export interface DebateResumedEvent {
+  type: "debate_resumed";
+  thread_id: string;
+}
+
 export type DebateSSEEvent =
   | DebateStartedEvent
   | RoundStartedEvent
@@ -333,6 +362,7 @@ export type DebateSSEEvent =
   | ToolCalledEvent
   | AgentTimeoutEvent  // B6
   | CancelledEvent
+  | DebateResumedEvent
   | ErrorEvent;
 
 /* ------------------------------------------------------------------ */
@@ -348,6 +378,12 @@ export interface KnowledgeDocument {
 /* P3.4 – Domain packs                                                */
 /* ------------------------------------------------------------------ */
 
+export interface DebateModesResponse {
+  // Mode used when none is chosen (backend DEFAULT_DEBATE_MODE; quick when unset)
+  default_mode: "quick" | "standard" | "thorough";
+  presets: Record<string, { max_rounds: number; consensus_threshold: number; skip_critique_phase: boolean; min_rounds: number }>;
+}
+
 export interface DomainPack {
   id: string;
   name: string;
@@ -361,6 +397,14 @@ export interface DomainPack {
 /* ------------------------------------------------------------------ */
 /* P4.2 – Simulation                                                  */
 /* ------------------------------------------------------------------ */
+
+/** Background simulation job (POST /debate/simulate-async, GET /debate/simulate/{id}). */
+export interface SimulationJob {
+  job_id: string;
+  status: "running" | "completed" | "failed" | "cancelled";
+  result: SimulationResult | null;
+  error: string | null;
+}
 
 export interface SimulationResult {
   query: string;
@@ -456,10 +500,14 @@ export const AGENT_META: Record<AgentName, AgentMeta> = {
 
 export interface AnalyticsOverview {
   total_debates: number;
-  avg_rounds_to_consensus: number;
+  avg_rounds: number;
+  // Only debates that reached consensus; null when none did
+  avg_rounds_to_consensus: number | null;
   avg_agreement_score: number;
   debates_by_termination: Record<string, number>;
   debates_per_day: { date: string; count: number }[];
+  // Days covered by debates_per_day
+  trend_days: number;
 }
 
 export interface AgentStats {
@@ -470,7 +518,8 @@ export interface AgentStats {
 
 export interface AnalyticsAgents {
   agents: Record<string, AgentStats>;
-  agreement_matrix: Record<string, Record<string, number>>;
+  // Similarity of two agents' final positions (0–1); null if they never debated together
+  agreement_matrix: Record<string, Record<string, number | null>>;
 }
 
 export interface AnalyticsConvergence {
@@ -500,6 +549,10 @@ export interface LLMSettingsResponse {
   model: string;
   available_models: Record<LLMProvider, string[]>;
   using_custom_key: boolean;
+  /** Providers with an API key configured on the server. */
+  server_keys?: Partial<Record<LLMProvider, boolean>>;
+  /** Switching providers needs the admin token (X-Admin-Token). */
+  admin_token_required?: boolean;
 }
 
 export interface LLMSettingsUpdate {

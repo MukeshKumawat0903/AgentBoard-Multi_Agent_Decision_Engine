@@ -5,9 +5,12 @@
 
 "use client";
 
-import { useState, useEffect } from "react";
-import { runSimulation } from "@/lib/api";
-import type { SimulationResult } from "@/lib/types";
+import { useState, useEffect, useRef } from "react";
+import { cancelSimulationJob, getDebateModes, getSimulationJob, startSimulation } from "@/lib/api";
+import type { SimulationJob, SimulationResult } from "@/lib/types";
+
+/** How often to poll a running simulation job (ms). */
+const POLL_INTERVAL_MS = 2_000;
 
 const RATING_COLOR: Record<string, string> = {
   High: "bg-green-100 text-green-700 dark:bg-green-900/40 dark:text-green-300",
@@ -34,11 +37,34 @@ function ScoreBar({ label, value }: { label: string; value: number }) {
 export default function SimulatePage() {
   const [query, setQuery] = useState("");
   const [runs, setRuns] = useState(3);
-  const [maxRounds, setMaxRounds] = useState(3);
-  const [mode, setMode] = useState("standard");
+  // null: use the selected mode's preset (quick 2 · standard 2 · thorough 6)
+  const [maxRounds, setMaxRounds] = useState<number | null>(null);
+  // Server default (DEFAULT_DEBATE_MODE) once loaded, unless the user already chose; Quick until then.
+  const [mode, setMode] = useState("quick");
+  const modeChosen = useRef(false);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [result, setResult] = useState<SimulationResult | null>(null);
+  // Running job id, so it can be cancelled (and polling stopped) on demand or unmount.
+  const jobIdRef = useRef<string | null>(null);
+  const mountedRef = useRef(true);
+
+  useEffect(() => {
+    mountedRef.current = true;
+    return () => {
+      mountedRef.current = false;
+      // Don't leave 2–5 debates burning tokens after the user has left the page.
+      if (jobIdRef.current) cancelSimulationJob(jobIdRef.current).catch(() => {});
+    };
+  }, []);
+
+  useEffect(() => {
+    getDebateModes()
+      .then((m) => {
+        if (mountedRef.current && !modeChosen.current) setMode(m.default_mode);
+      })
+      .catch(() => {});
+  }, []);
 
   // Pre-fill query from URL ?query= param (e.g. navigated from compare page)
   useEffect(() => {
@@ -54,13 +80,33 @@ export default function SimulatePage() {
     setError(null);
     setResult(null);
     try {
-      const res = await runSimulation({ query: query.trim(), runs, max_rounds: maxRounds, mode });
-      setResult(res);
+      // Runs as a background job: a single long request would outlive proxy timeouts.
+      let job: SimulationJob = await startSimulation({
+        query: query.trim(),
+        runs,
+        mode,
+        ...(maxRounds ? { max_rounds: maxRounds } : {}),
+      });
+      jobIdRef.current = job.job_id;
+      while (job.status === "running") {
+        await new Promise((resolve) => setTimeout(resolve, POLL_INTERVAL_MS));
+        if (!mountedRef.current) return;
+        job = await getSimulationJob(job.job_id);
+      }
+      if (!mountedRef.current) return;
+      if (job.status === "completed" && job.result) setResult(job.result);
+      else if (job.status === "cancelled") setError("Simulation cancelled.");
+      else setError(job.error ?? "Simulation failed.");
     } catch (err) {
-      setError(err instanceof Error ? err.message : "Simulation failed.");
+      if (mountedRef.current) setError(err instanceof Error ? err.message : "Simulation failed.");
     } finally {
-      setLoading(false);
+      jobIdRef.current = null;
+      if (mountedRef.current) setLoading(false);
     }
+  }
+
+  function handleCancel() {
+    if (jobIdRef.current) cancelSimulationJob(jobIdRef.current).catch(() => {});
   }
 
   return (
@@ -75,10 +121,11 @@ export default function SimulatePage() {
       {/* Input form */}
       <form onSubmit={handleSubmit} className="rounded-2xl bg-surface-raised ring-1 ring-black/5 dark:ring-white/10 shadow-card p-6 space-y-5">
         <div>
-          <label className="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1">
+          <label htmlFor="sim-query" className="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1">
             Decision query
           </label>
           <textarea
+            id="sim-query"
             rows={3}
             value={query}
             onChange={(e) => setQuery(e.target.value)}
@@ -93,10 +140,11 @@ export default function SimulatePage() {
 
         <div className="grid grid-cols-3 gap-4">
           <div>
-            <label className="block text-xs font-medium text-gray-500 dark:text-gray-400 mb-1">
+            <label htmlFor="sim-runs" className="block text-xs font-medium text-gray-500 dark:text-gray-400 mb-1">
               Runs (2–5)
             </label>
             <input
+              id="sim-runs"
               type="number"
               min={2}
               max={5}
@@ -109,15 +157,17 @@ export default function SimulatePage() {
             />
           </div>
           <div>
-            <label className="block text-xs font-medium text-gray-500 dark:text-gray-400 mb-1">
+            <label htmlFor="sim-max-rounds" className="block text-xs font-medium text-gray-500 dark:text-gray-400 mb-1">
               Max rounds
             </label>
             <input
+              id="sim-max-rounds"
               type="number"
               min={2}
               max={6}
-              value={maxRounds}
-              onChange={(e) => setMaxRounds(Number(e.target.value))}
+              value={maxRounds ?? ""}
+              placeholder="Mode default"
+              onChange={(e) => setMaxRounds(e.target.value ? Number(e.target.value) : null)}
               disabled={loading}
               className="w-full rounded-lg border border-line-strong px-3 py-2 text-sm
                          bg-surface-raised text-gray-900 dark:text-gray-100
@@ -125,12 +175,16 @@ export default function SimulatePage() {
             />
           </div>
           <div>
-            <label className="block text-xs font-medium text-gray-500 dark:text-gray-400 mb-1">
+            <label htmlFor="sim-mode" className="block text-xs font-medium text-gray-500 dark:text-gray-400 mb-1">
               Mode
             </label>
             <select
+              id="sim-mode"
               value={mode}
-              onChange={(e) => setMode(e.target.value)}
+              onChange={(e) => {
+                modeChosen.current = true;
+                setMode(e.target.value);
+              }}
               disabled={loading}
               className="w-full rounded-lg border border-line-strong px-3 py-2 text-sm
                          bg-surface-raised text-gray-900 dark:text-gray-100
@@ -156,6 +210,15 @@ export default function SimulatePage() {
             </span>
           ) : `Run ${runs} Simulations`}
         </button>
+        {loading && (
+          <button
+            type="button"
+            onClick={handleCancel}
+            className="w-full py-2 rounded-lg text-sm text-gray-600 dark:text-gray-300 ring-1 ring-line-strong hover:bg-surface transition"
+          >
+            Cancel simulation
+          </button>
+        )}
 
         {error && (
           <p className="text-xs text-red-500 text-center">{error}</p>

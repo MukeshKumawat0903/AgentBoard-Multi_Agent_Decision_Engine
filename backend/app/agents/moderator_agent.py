@@ -6,14 +6,22 @@ schemas directly, eliminating manual JSON parsing and prompt-only JSON
 enforcement.
 """
 
+import asyncio
+
 from langchain_core.prompts import PromptTemplate
 from pydantic import BaseModel, ConfigDict, Field
 
 from app.agents.base_agent import BaseAgent
 from app.schemas.agent_response import AgentResponse, CritiqueResponse
-from app.schemas.final_decision import FinalDecision, StructuredDisagreement
+from app.schemas.final_decision import FinalDecision, StructuredDisagreement, VetoEntry
 from app.schemas.state import DebateState
 from app.services.llm_client import GroqClient
+from app.utils.exceptions import LLMRateLimitError
+
+# Extra attempts for moderator calls rejected by the provider's rate limit, with
+# the wait (seconds) before each. A rate-limited moderator call would otherwise
+# end the whole debate after every agent call has already been paid for.
+_RATE_LIMIT_BACKOFF_SECONDS: tuple[float, ...] = (10.0, 20.0)
 
 
 class ModeratorSynthesis(BaseModel):
@@ -31,10 +39,16 @@ class ModeratorSynthesis(BaseModel):
     agreement_score: float = Field(
         ge=0.0,
         le=1.0,
-        description="0 = full disagreement, 1 = full consensus.",
+        description=(
+            "The moderator's own estimate, 0 = full disagreement, 1 = full consensus. "
+            "Logged only: the convergence gate uses the measured agreement."
+        ),
     )
     should_continue: bool = Field(
-        description="True = run another round, False = converge and finalize.",
+        description=(
+            "The moderator's recommendation (True = another round would help). "
+            "The convergence gate makes the actual decision."
+        ),
     )
     next_round_focus: str | None = Field(
         default=None,
@@ -117,8 +131,10 @@ _SYNTHESIS_TEMPLATE = PromptTemplate.from_template(
     "Current agreement score: {agreement_score}\n\n"
     "Agent positions this round:\n{agents_summary}\n"
     "Synthesize the positions. Identify agreement and disagreement areas. "
-    "Compute an agreement score (0.0-1.0). Set should_continue=false if "
-    "agreement_score >= 0.75 or this is the final round."
+    "Estimate how far the agents agree (agreement_score, 0.0-1.0) and recommend "
+    "whether another round would help (should_continue), with its key question "
+    "(next_round_focus). Whether the debate stops is decided separately, from the "
+    "agents' measured agreement."
 )
 
 _FINALIZE_TEMPLATE = PromptTemplate.from_template(
@@ -126,7 +142,23 @@ _FINALIZE_TEMPLATE = PromptTemplate.from_template(
     "Total rounds completed: {current_round}\n"
     "Final agreement score: {agreement_score}\n\n"
     "Full debate history:\n{all_rounds}\n"
+    "{human_direction}"
+    "{standing_vetoes}"
     "Produce the final decision synthesizing all agent input."
+)
+
+# Appended to the finalize prompt while an Ethics-class veto still stands.
+_STANDING_VETOES_TEMPLATE = (
+    "\nStanding ethics vetoes — do not adopt the vetoed course as proposed; state "
+    "how the decision addresses each one:\n{vetoes}\n\n"
+)
+
+# Appended to the finalize prompt when a human reviewer overrode the debate
+# through the HITL panel; their direction takes precedence over the agents.
+_HUMAN_DIRECTION_TEMPLATE = (
+    "\nHuman reviewer override — the reviewer has given this direction, and the "
+    "final decision MUST follow it. Use the debate to explain how to carry it out "
+    "and which risks it carries:\n{feedback}\n\n"
 )
 
 
@@ -141,10 +173,36 @@ class ModeratorAgent(BaseAgent):
             llm_client=llm_client,
         )
 
+    async def _invoke_with_rate_limit_backoff(
+        self, schema, *, action: str, round_number: int, system_prompt: str, user_prompt: str
+    ):
+        """Call the LLM, waiting and retrying when the provider rate-limits us.
+
+        Goes through ``_call_structured`` like the other agents, so the call is
+        logged and uses this agent's configured temperature and retries.
+        """
+        waits = list(_RATE_LIMIT_BACKOFF_SECONDS)
+        while True:
+            try:
+                return await self._call_structured(
+                    schema, action, round_number, user_prompt, system_prompt=system_prompt
+                )
+            except LLMRateLimitError:
+                if not waits:
+                    raise
+                delay = waits.pop(0)
+                self.logger.warning(
+                    "moderator_rate_limited_retrying",
+                    extra={"schema": schema.__name__, "delay_s": delay},
+                )
+                await asyncio.sleep(delay)
+
     async def synthesize(self, state: DebateState) -> ModeratorSynthesis:
         user_prompt = self._build_synthesis_prompt(state)
-        synthesis = await self.llm_client.ainvoke_structured(
+        synthesis: ModeratorSynthesis = await self._invoke_with_rate_limit_backoff(
             ModeratorSynthesis,
+            action="synthesize",
+            round_number=state.current_round,
             system_prompt=SYNTHESIS_SYSTEM_PROMPT,
             user_prompt=user_prompt,
         )
@@ -152,16 +210,18 @@ class ModeratorAgent(BaseAgent):
             "synthesis_complete",
             extra={
                 "round": state.current_round,
-                "agreement_score": synthesis.agreement_score,
-                "should_continue": synthesis.should_continue,
+                "moderator_agreement_estimate": synthesis.agreement_score,
+                "moderator_recommends_continue": synthesis.should_continue,
             },
         )
         return synthesis
 
     async def finalize(self, state: DebateState) -> FinalDecision:
         user_prompt = self._build_finalize_prompt(state)
-        llm_out = await self.llm_client.ainvoke_structured(
+        llm_out = await self._invoke_with_rate_limit_backoff(
             FinalDecisionLLMOutput,
+            action="finalize",
+            round_number=state.current_round,
             system_prompt=FINAL_DECISION_SYSTEM_PROMPT,
             user_prompt=user_prompt,
         )
@@ -179,6 +239,8 @@ class ModeratorAgent(BaseAgent):
             alternatives=llm_out.alternatives,
             dissenting_opinions=llm_out.dissenting_opinions,
             structured_disagreements=llm_out.structured_disagreements,
+            human_feedback=(state.human_feedback or "").strip() or None,
+            vetoes=self._standing_vetoes(state),
         )
         self.logger.info(
             "finalize_complete",
@@ -243,7 +305,36 @@ class ModeratorAgent(BaseAgent):
             current_round=state.current_round,
             agreement_score=f"{state.agreement_score:.2f}",
             all_rounds=ModeratorAgent._format_all_rounds(state),
+            human_direction=(
+                _HUMAN_DIRECTION_TEMPLATE.format(feedback=state.human_feedback.strip())
+                if state.human_feedback and state.human_feedback.strip()
+                else ""
+            ),
+            standing_vetoes=ModeratorAgent._format_vetoes(ModeratorAgent._standing_vetoes(state)),
         )
+
+    @staticmethod
+    def _standing_vetoes(state: DebateState) -> list[VetoEntry]:
+        """Vetoes in the most recent round that has agent outputs."""
+        for round_data in reversed(state.rounds):
+            if round_data.agent_outputs:
+                return [
+                    VetoEntry(
+                        agent_name=output.agent_name,
+                        reason=(output.veto_reason or "").strip() or "No reason given.",
+                        round_number=round_data.round_number,
+                    )
+                    for output in round_data.agent_outputs
+                    if output.veto
+                ]
+        return []
+
+    @staticmethod
+    def _format_vetoes(vetoes: list[VetoEntry]) -> str:
+        if not vetoes:
+            return ""
+        lines = "\n".join(f"- {v.agent_name}: {v.reason}" for v in vetoes)
+        return _STANDING_VETOES_TEMPLATE.format(vetoes=lines)
 
     @staticmethod
     def _format_all_outputs(state: DebateState) -> str:

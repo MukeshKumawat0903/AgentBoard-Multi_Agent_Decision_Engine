@@ -6,6 +6,9 @@ background task registry, and SSE event channels.
 """
 
 import asyncio
+from collections import OrderedDict
+from collections.abc import Callable
+from typing import Any
 
 from app.core.config import Settings, settings
 from app.db.database import get_db as _get_db  # re-export for routes
@@ -13,10 +16,39 @@ from app.schemas.final_decision import FinalDecision
 from app.schemas.state import DebateState
 from app.services.llm_client import LangChainProvider, get_llm_client
 
+
+class BoundedStore(OrderedDict):
+    """Insertion-ordered cache that drops its oldest *evictable* entries once it
+    holds more than ``max_size``. SQLite stays the source of truth, so an evicted
+    entry is simply re-read from the database on its next use."""
+
+    def __init__(self, max_size: int, is_evictable: Callable[[Any], bool]) -> None:
+        super().__init__()
+        self.max_size = max_size
+        self.is_evictable = is_evictable
+
+    def __setitem__(self, key: str, value: Any) -> None:
+        super().__setitem__(key, value)
+        self.move_to_end(key)
+        if len(self) > self.max_size:
+            for old_key in list(self.keys()):
+                if len(self) <= self.max_size:
+                    break
+                if old_key != key and self.is_evictable(self[old_key]):
+                    del self[old_key]
+
+
+# Running / paused debates are never evicted: their status must stay in memory
+# (recovering it from the DB would treat an in-progress run as orphaned).
+_TERMINAL_STATUSES = frozenset({"converged", "max_rounds_reached", "cancelled", "error"})
+_MAX_CACHED_DEBATES = 200
+
 # --- In-memory stores (V1) ---
 # Both keyed by thread_id (str).  Swap for Redis/DB in production.
-_debate_store: dict[str, DebateState] = {}
-_decision_store: dict[str, FinalDecision] = {}
+_debate_store: dict[str, DebateState] = BoundedStore(
+    _MAX_CACHED_DEBATES, lambda state: state.status in _TERMINAL_STATUSES
+)
+_decision_store: dict[str, FinalDecision] = BoundedStore(_MAX_CACHED_DEBATES, lambda _decision: True)
 
 # Per-thread asyncio locks – prevent concurrent mutation of the same debate
 # state from a background task and an SSE handler running in the same loop.
@@ -81,6 +113,16 @@ def get_background_tasks() -> dict[str, asyncio.Task]:
 def get_active_runs() -> set[str]:
     """FastAPI dependency – returns the set of thread_ids running in-request."""
     return _active_runs
+
+
+# Background scenario-simulation jobs, keyed by job_id (in-process; finished
+# jobs are pruned after a while by the route that creates new ones).
+_simulation_jobs: dict[str, dict] = {}
+
+
+def get_simulation_jobs() -> dict[str, dict]:
+    """FastAPI dependency – returns the simulation job registry."""
+    return _simulation_jobs
 
 
 def get_settings() -> Settings:

@@ -5,7 +5,7 @@
  */
 
 import type {
-  ApprovalStatusResponse,
+  ApprovalAcceptedResponse,
   AgentConfigResponse,
   AnalyticsAgents,
   AnalyticsConvergence,
@@ -16,6 +16,7 @@ import type {
   DebateStartRequest,
   DebateStatusResponse,
   DebateTemplate,
+  DebateModesResponse,
   DomainPack,
   EvaluationResult,
   FinalDecision,
@@ -23,6 +24,7 @@ import type {
   KnowledgeDocument,
   LLMSettingsResponse,
   LLMSettingsUpdate,
+  SimulationJob,
   SimulationResult,
 } from "./types";
 
@@ -45,34 +47,104 @@ function toAbsoluteURL(path: string): URL {
 }
 
 /* ------------------------------------------------------------------ */
+/* Admin token (deployment-wide actions)                               */
+/* ------------------------------------------------------------------ */
+
+const ADMIN_TOKEN_KEY = "agentboard_admin_token";
+
+/** Admin token for this browser tab (sessionStorage: gone when the tab closes). */
+export function getAdminToken(): string {
+  try {
+    return sessionStorage.getItem(ADMIN_TOKEN_KEY) ?? "";
+  } catch {
+    return "";
+  }
+}
+
+export function setAdminToken(token: string): void {
+  try {
+    if (token) sessionStorage.setItem(ADMIN_TOKEN_KEY, token);
+    else sessionStorage.removeItem(ADMIN_TOKEN_KEY);
+  } catch {
+    // sessionStorage unavailable — the token just isn't remembered
+  }
+}
+
+function adminHeaders(): Record<string, string> {
+  const token = getAdminToken();
+  return token ? { "X-Admin-Token": token } : {};
+}
+
+/* ------------------------------------------------------------------ */
 /* Generic fetcher                                                     */
 /* ------------------------------------------------------------------ */
+
+/** Messages for the backend's LLM-failure codes (body.error), which come back as
+ *  502/503/429 even though the backend itself is up and answered. */
+const LLM_ERROR_MESSAGES: Record<string, string> = {
+  llm_response_error: "The AI model returned an invalid response. Please try again.",
+  llm_connection_error: "Could not reach the AI provider. Please try again shortly.",
+  llm_rate_limit: "The AI provider is rate-limiting requests. Please wait a moment and try again.",
+};
+
+/**
+ * Pull a human-readable message out of the error bodies the backend produces:
+ * `{detail: "text"}`, `{detail: {error, detail}}` (ErrorResponse), FastAPI's
+ * validation `{detail: [{msg}, …]}`, or `{error: "text"}` (rate limiter).
+ */
+export function extractErrorMessage(body: unknown): string | null {
+  if (!body || typeof body !== "object") return null;
+  const { detail, error } = body as Record<string, unknown>;
+  if (typeof detail === "string" && detail) return detail;
+  if (Array.isArray(detail)) {
+    const msgs = detail
+      .map((item) =>
+        item && typeof item === "object" && "msg" in item ? String((item as Record<string, unknown>).msg) : "",
+      )
+      .filter(Boolean);
+    if (msgs.length) return msgs.join("; ");
+  }
+  if (detail && typeof detail === "object") {
+    const inner = detail as Record<string, unknown>;
+    if (typeof inner.detail === "string" && inner.detail) return inner.detail;
+    if (typeof inner.error === "string" && inner.error) return inner.error;
+  }
+  if (typeof error === "string" && error) return error;
+  return null;
+}
 
 class ApiError extends Error {
   status: number;
   body: unknown;
+  /** Machine-readable error code from the body, when the backend sent one. */
+  code: string | null;
 
   constructor(status: number, body: unknown) {
-    // When the Next.js proxy can't reach the backend (ECONNREFUSED) it returns
-    // a 500 or 502/503/504 with no parseable JSON body. Give a human-friendly
-    // message instead of the raw "API error 500" so users know to start the server.
+    const record = body && typeof body === "object" ? (body as Record<string, unknown>) : null;
+    const nested =
+      record?.detail && typeof record.detail === "object" && !Array.isArray(record.detail)
+        ? (record.detail as Record<string, unknown>)
+        : null;
+    const code =
+      (typeof record?.error === "string" ? record.error : null) ??
+      (typeof nested?.error === "string" ? nested.error : null);
+
     let message: string;
-    if ((status >= 500) && (body === null || body === undefined)) {
+    if (status >= 500 && (body === null || body === undefined)) {
+      // The Next.js proxy couldn't reach the backend at all (no JSON body).
       message = "Backend unreachable. Is the server running?";
+    } else if (code && code in LLM_ERROR_MESSAGES) {
+      message = LLM_ERROR_MESSAGES[code];
     } else if (status === 502 || status === 503 || status === 504) {
       message = "Backend unavailable — please try again shortly.";
     } else {
-      // Try to extract a detail message from the response body
-      const detail =
-        body && typeof body === "object" && "detail" in body
-          ? String((body as Record<string, unknown>).detail)
-          : null;
-      message = detail ?? `API error ${status}`;
+      message = extractErrorMessage(body) ?? `API error ${status}`;
     }
     super(message);
     this.name = "ApiError";
     this.status = status;
     this.body = body;
+    this.code = code;
   }
 }
 
@@ -85,9 +157,11 @@ async function apiFetch<T>(
     // NB10: don't force Content-Type when body is FormData — browser sets multipart boundary
     const defaultHeaders: Record<string, string> =
       init?.body instanceof FormData ? {} : { "Content-Type": "application/json" };
+    const { headers, ...rest } = init ?? {};
     const res = await fetch(url, {
-      headers: defaultHeaders,
-      ...init,
+      ...rest,
+      // Merge (not replace) so callers can add headers such as X-Admin-Token.
+      headers: { ...defaultHeaders, ...(headers as Record<string, string> | undefined) },
     });
 
     const json = await res.json().catch(() => null);
@@ -182,6 +256,18 @@ export interface StreamHandlers {
  * Cancel an in-flight async debate so the backend stops making LLM calls.
  * Returns null if the request was aborted. Throws ApiError on 404/409.
  */
+/**
+ * Resume a failed or interrupted debate from its last checkpoint. Returns at
+ * once (202); the continuation streams over the debate's SSE stream.
+ */
+export async function resumeDebateAsync(
+  threadId: string,
+): Promise<{ thread_id: string; status: "resuming" }> {
+  return requireResult(
+    apiFetch(`/debate/${encodeURIComponent(threadId)}/resume-async`, { method: "POST" }),
+  );
+}
+
 export async function cancelDebate(
   threadId: string,
 ): Promise<{ thread_id: string; status: string } | null> {
@@ -201,6 +287,7 @@ const SSE_EVENTS = [
   "tool_called",
   "agent_timeout",  // B6: backend emits this when an agent call times out
   "cancelled",      // terminal event when a debate is cancelled
+  "debate_resumed", // a failed/interrupted debate continues from its checkpoint
   "error",
 ] as const;
 
@@ -210,6 +297,9 @@ const SSE_EVENTS = [
  * - Exponential backoff: 1 s → 2 s → 4 s → 8 s → 16 s → 30 s max.
  * - Tracks lastEventId and passes it via query param on reconnect.
  * - Max 10 reconnect attempts, then fires onError and stops.
+ * - The server sends a `ping` event every 20 s on a live connection; pings keep
+ *   the stale-connection timer from firing (e.g. while paused for HITL review)
+ *   and are not forwarded to `onEvent`.
  * - Returns an AbortController so callers can stop reconnection.
  */
 export function connectToStream(
@@ -224,6 +314,14 @@ export function connectToStream(
   // and force a reconnect so the UI doesn't hang silently.
   const HEARTBEAT_MS = 60_000;
   let heartbeatTimer: ReturnType<typeof setTimeout> | null = null;
+  let currentSource: EventSource | null = null;
+
+  // Registered once (not per reconnect) so listeners don't pile up.
+  controller.signal.addEventListener("abort", () => {
+    if (heartbeatTimer !== null) clearTimeout(heartbeatTimer);
+    currentSource?.close();
+    if (retryTimeout !== null) clearTimeout(retryTimeout);
+  });
 
   function resetHeartbeat(es: EventSource) {
     if (heartbeatTimer !== null) clearTimeout(heartbeatTimer);
@@ -256,10 +354,22 @@ export function connectToStream(
 
     handlers.onStatusChange?.(attempts === 0 ? "connected" : "reconnecting");
     const eventSource = new EventSource(url.toString());
+    currentSource = eventSource;
     resetHeartbeat(eventSource);
+    // A reconnect that succeeds must clear the "reconnecting" status.
+    eventSource.onopen = () => handlers.onStatusChange?.("connected");
+
+    // Server keep-alive: proves the connection is alive, carries no data.
+    eventSource.addEventListener("ping", () => {
+      attempts = 0;
+      resetHeartbeat(eventSource);
+    });
 
     for (const eventType of SSE_EVENTS) {
       eventSource.addEventListener(eventType, (e: MessageEvent) => {
+        // The browser's own connection-failure event is also named "error" but
+        // carries no data; only real server messages may reset the backoff.
+        if (typeof e.data !== "string") return;
         // Reset backoff on a successful message
         attempts = 0;
         resetHeartbeat(eventSource);
@@ -302,12 +412,6 @@ export function connectToStream(
         if (!controller.signal.aborted) connect();
       }, delay);
     };
-
-    controller.signal.addEventListener("abort", () => {
-      if (heartbeatTimer !== null) clearTimeout(heartbeatTimer);
-      eventSource.close();
-      if (retryTimeout !== null) clearTimeout(retryTimeout);
-    });
   }
 
   connect();
@@ -318,13 +422,24 @@ export function connectToStream(
 /* History                                                             */
 /* ------------------------------------------------------------------ */
 
+export type HistorySort = "newest" | "oldest" | "highest_agreement";
+export type HistoryTerminationReason = "consensus_reached" | "human_override" | "max_rounds_reached";
+
 export async function getHistory(
-  params: { page?: number; limit?: number; q?: string } = {},
+  params: {
+    page?: number;
+    limit?: number;
+    q?: string;
+    sort?: HistorySort;
+    termination_reason?: HistoryTerminationReason;
+  } = {},
 ): Promise<HistoryListResponse> {
   const search = new URLSearchParams();
   if (params.page) search.set("page", String(params.page));
   if (params.limit) search.set("limit", String(params.limit));
   if (params.q) search.set("q", params.q);
+  if (params.sort) search.set("sort", params.sort);
+  if (params.termination_reason) search.set("termination_reason", params.termination_reason);
   const qs = search.toString();
   return requireResult(apiFetch<HistoryListResponse>(`/history${qs ? `?${qs}` : ""}`));
 }
@@ -342,6 +457,8 @@ export async function getHistoryItem(
 export async function healthCheck(): Promise<{
   status: string;
   version: string;
+  // Provider debates currently use, and whether it has an API key
+  llm: { provider: string; model: string; configured: boolean };
   groq_configured: boolean;
 }> {
   return requireResult(apiFetch("/health"));
@@ -384,7 +501,9 @@ export async function listKnowledgeDocuments(): Promise<KnowledgeDocument[]> {
 }
 
 export async function deleteKnowledgeDocument(docName: string): Promise<{ doc_name: string; chunks_deleted: number }> {
-  return requireResult(apiFetch(`/knowledge/documents/${encodeURIComponent(docName)}`, { method: "DELETE" }));
+  return requireResult(
+    apiFetch(`/knowledge/documents/${encodeURIComponent(docName)}`, { method: "DELETE", headers: adminHeaders() }),
+  );
 }
 
 /* ------------------------------------------------------------------ */
@@ -405,12 +524,18 @@ export async function getAgentMemory(agentName: string, limit = 20): Promise<Mem
 }
 
 export async function clearAgentMemory(agentName: string): Promise<{ agent_name: string; deleted: number }> {
-  return requireResult(apiFetch(`/memory/${encodeURIComponent(agentName)}`, { method: "DELETE" }));
+  return requireResult(
+    apiFetch(`/memory/${encodeURIComponent(agentName)}`, { method: "DELETE", headers: adminHeaders() }),
+  );
 }
 
 /* ------------------------------------------------------------------ */
 /* P3.4 – Domain packs                                                */
 /* ------------------------------------------------------------------ */
+
+export async function getDebateModes(): Promise<DebateModesResponse> {
+  return requireResult(apiFetch<DebateModesResponse>("/debate-modes"));
+}
 
 export async function getDomainPacks(): Promise<DomainPack[]> {
   return requireResult(apiFetch<DomainPack[]>("/domain-packs"));
@@ -424,9 +549,9 @@ export async function approveDebate(
   threadId: string,
   action: "approve" | "override" | "add_round",
   feedback = "",
-): Promise<FinalDecision | ApprovalStatusResponse> {
+): Promise<ApprovalAcceptedResponse> {
   return requireResult(
-    apiFetch<FinalDecision | ApprovalStatusResponse>(
+    apiFetch<ApprovalAcceptedResponse>(
       `/debate/${encodeURIComponent(threadId)}/approve`,
       { method: "POST", body: JSON.stringify({ action, feedback }) },
     ),
@@ -437,6 +562,29 @@ export async function approveDebate(
 /* P4.2 – Simulation                                                  */
 /* ------------------------------------------------------------------ */
 
+type SimulationParams = Parameters<typeof runSimulation>[0];
+
+/** Start a simulation as a background job; poll it with getSimulationJob(). */
+export async function startSimulation(params: SimulationParams): Promise<SimulationJob> {
+  return requireResult(
+    apiFetch<SimulationJob>("/debate/simulate-async", {
+      method: "POST",
+      body: JSON.stringify(params),
+    }),
+  );
+}
+
+export async function getSimulationJob(jobId: string): Promise<SimulationJob> {
+  return requireResult(apiFetch<SimulationJob>(`/debate/simulate/${encodeURIComponent(jobId)}`));
+}
+
+export async function cancelSimulationJob(jobId: string): Promise<SimulationJob> {
+  return requireResult(
+    apiFetch<SimulationJob>(`/debate/simulate/${encodeURIComponent(jobId)}/cancel`, { method: "POST" }),
+  );
+}
+
+/** Synchronous variant: holds the request open for every run (prefer startSimulation). */
 export async function runSimulation(params: {
   query: string;
   runs?: number;
@@ -498,6 +646,7 @@ export async function setLLMSettings(
     apiFetch<LLMSettingsResponse>("/llm-settings", {
       method: "POST",
       body: JSON.stringify(update),
+      headers: adminHeaders(),
     }),
   );
 }

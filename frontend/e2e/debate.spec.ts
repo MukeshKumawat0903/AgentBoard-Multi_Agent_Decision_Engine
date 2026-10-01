@@ -5,6 +5,7 @@
 
 import { test, expect } from "@playwright/test";
 import {
+  serveOpenStream, makeInProgressSSEEvents,
   mockStaticRoutes, mockDebateStartAsync, mockDebateStream,
   mockHistoryItem, mockExport, THREAD_A,
 } from "./fixtures/mock-api";
@@ -29,11 +30,15 @@ test.describe("Debate streaming flow (happy path)", () => {
     await page.locator("textarea").first().fill("Should we expand into the Asian market in Q3?");
     await page.getByRole("button", { name: /Start Debate/i }).first().click();
     await expect(page).toHaveURL(new RegExp(`/debate/${THREAD_A}`));
-    await expect(page.getByText("Debate Query")).toBeVisible({ timeout: 15_000 });
-    await expect(page.getByText("Should we expand into the Asian market in Q3?")).toBeVisible();
+    const banner = page.getByText("Debate Query").locator("..");
+    await expect(banner).toBeVisible({ timeout: 15_000 });
+    // The query also appears in the final decision, so check the banner itself.
+    await expect(banner.getByText("Should we expand into the Asian market in Q3?")).toBeVisible();
   });
 
   test("round progress bar appears during streaming", async ({ page }) => {
+    // Shown only while the debate is still running.
+    await serveOpenStream(page, makeInProgressSSEEvents(THREAD_A));
     await page.goto(`/debate/${THREAD_A}`);
     // Round progress indicators appear once debate_started event arrives
     await expect(page.getByText(/Round \d+ of \d+/i)).toBeVisible({ timeout: 15_000 });
@@ -68,7 +73,7 @@ test.describe("Debate streaming flow (happy path)", () => {
 
   test("termination reason banner reflects consensus_reached (B5 fix)", async ({ page }) => {
     await page.goto(`/debate/${THREAD_A}`);
-    await expect(page.getByText(/Debate complete — consensus reached/i)).toBeVisible({ timeout: 20_000 });
+    await expect(page.getByText(/Consensus reached after \d+ rounds?/)).toBeVisible({ timeout: 20_000 });
   });
 
   test("risk flags are shown in the final decision panel", async ({ page }) => {
@@ -115,6 +120,7 @@ test.describe("Debate page — max_rounds_reached termination (B5 fix)", () => {
     );
 
     await page.goto(`/debate/${THREAD_A}`);
-    await expect(page.getByText(/max rounds reached/i)).toBeVisible({ timeout: 20_000 });
+    await expect(page.getByText(/Debate complete — max rounds reached after \d+/)).toBeVisible({ timeout: 20_000 });
+    await expect(page.getByText(/Consensus reached after/)).toHaveCount(0);
   });
 });

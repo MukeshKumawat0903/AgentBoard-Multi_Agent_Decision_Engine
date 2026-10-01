@@ -39,6 +39,14 @@ class AgentResponse(BaseModel):
         le=1.0,
         description="Agent's self-assessed confidence (0 = none, 1 = certain).",
     )
+    veto: bool = Field(
+        default=False,
+        description="Ethics-class agents only: this position vetoes the proposal on the table.",
+    )
+    veto_reason: str | None = Field(
+        default=None,
+        description="Why the veto was issued and what would lift it.",
+    )
     timestamp: datetime = Field(
         default_factory=lambda: datetime.now(UTC),
         description="UTC timestamp when the response was generated.",

@@ -13,8 +13,11 @@ from typing import Any
 
 import aiosqlite
 
+from app.core.config import settings
+from app.data.templates import TEMPLATES
 from app.schemas.final_decision import FinalDecision
 from app.schemas.state import DebateState
+from app.services.consensus import _word_overlap, normalize_position_overlap
 
 logger = logging.getLogger("agentboard.db.crud")
 
@@ -64,7 +67,8 @@ async def save_decision(
     Uses an upsert that preserves any cached ``evaluation_json`` for this
     thread_id — a plain ``INSERT OR REPLACE`` would delete-then-reinsert the
     row and silently wipe a previously cached evaluation (e.g. when a HITL
-    approve flow re-saves a decision after it was evaluated).
+    approve flow re-saves a decision after it was evaluated). The original
+    ``created_at`` is kept too, so a re-save doesn't move the debate in history.
     """
     decision_text = f"{decision.decision} {decision.rationale_summary}"
     await db.execute(
@@ -75,8 +79,7 @@ async def save_decision(
         ON CONFLICT(thread_id) DO UPDATE SET
             user_query    = excluded.user_query,
             decision_text = excluded.decision_text,
-            decision_json = excluded.decision_json,
-            created_at    = excluded.created_at
+            decision_json = excluded.decision_json
         """,
         (
             decision.thread_id,
@@ -94,15 +97,34 @@ async def save_decision(
 # ---------------------------------------------------------------------------
 
 
+# Whitelisted ORDER BY clauses for the history list.
+HISTORY_SORTS: dict[str, str] = {
+    "newest": "dec.created_at DESC",
+    "oldest": "dec.created_at ASC",
+    "highest_agreement": (
+        "COALESCE(deb.agreement_score, json_extract(dec.decision_json, '$.agreement_score'), 0) DESC, "
+        "dec.created_at DESC"
+    ),
+}
+
+
+def _escape_like(text: str) -> str:
+    """Make ``%`` and ``_`` in user search text match literally (used with ESCAPE '\\')."""
+    return text.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_")
+
+
 async def get_history(
     db: aiosqlite.Connection,
     page: int = 1,
     limit: int = 20,
     q: str | None = None,
+    sort: str = "newest",
+    termination_reason: str | None = None,
 ) -> tuple[list[dict[str, Any]], int]:
-    """Return a page of completed debates, optionally filtered by free-text search.
+    """Return a page of completed debates, optionally searched, filtered and sorted.
 
-    Returns (items, total_count).
+    Filtering and sorting happen in SQL so they apply to the whole history,
+    not just the page being shown. Returns (items, total_count).
     """
     offset = (page - 1) * limit
 
@@ -119,28 +141,35 @@ async def get_history(
                 deb.max_rounds,
                 deb.agreement_score,
                 deb.termination_reason,
-                deb.state_json
+                deb.state_json,
+                json_extract(dec.decision_json, '$.total_rounds'),
+                json_extract(dec.decision_json, '$.termination_reason'),
+                json_extract(dec.decision_json, '$.agreement_score')
     """
 
+    conditions: list[str] = []
+    args: list[Any] = []
     if q:
-        pattern = f"%{q}%"
-        where = "WHERE dec.user_query LIKE ? OR dec.decision_text LIKE ?"
-        count_args: tuple = (pattern, pattern)
-        list_args: tuple = (pattern, pattern, limit, offset)
-    else:
-        where = ""
-        count_args = ()
-        list_args = (limit, offset)
+        pattern = f"%{_escape_like(q)}%"
+        conditions.append(
+            "(dec.user_query LIKE ? ESCAPE '\\' OR dec.decision_text LIKE ? ESCAPE '\\')"
+        )
+        args += [pattern, pattern]
+    if termination_reason:
+        conditions.append(
+            "COALESCE(deb.termination_reason, json_extract(dec.decision_json, '$.termination_reason')) = ?"
+        )
+        args.append(termination_reason)
+    where = f"WHERE {' AND '.join(conditions)}" if conditions else ""
+    order_by = HISTORY_SORTS.get(sort, HISTORY_SORTS["newest"])
 
-    cur = await db.execute(
-        f"SELECT COUNT(*) {base_join} {where}", count_args
-    )
+    cur = await db.execute(f"SELECT COUNT(*) {base_join} {where}", tuple(args))
     row = await cur.fetchone()
     total: int = row[0] if row else 0
 
     cur = await db.execute(
-        f"{select_cols} {base_join} {where} ORDER BY dec.created_at DESC LIMIT ? OFFSET ?",
-        list_args,
+        f"{select_cols} {base_join} {where} ORDER BY {order_by} LIMIT ? OFFSET ?",
+        (*args, limit, offset),
     )
     rows = await cur.fetchall()
 
@@ -158,18 +187,30 @@ async def get_history(
     items: list[dict[str, Any]] = []
     for r in rows:
         use_kb, use_mem = _parse_flags(r[8])
+        # The debates row can be missing (e.g. removed separately); fall back to
+        # what the stored decision itself recorded rather than inventing values.
+        termination_reason = r[7] or r[10] or "unknown"
+        rounds_run = r[4] or r[9] or 0
+        agreement = r[6] if r[6] is not None else r[11]
         items.append({
             "thread_id":            r[0],
             "user_query":           r[1],
             "created_at":           r[2],
-            "status":               r[3] or "converged",
-            "total_rounds":         r[5] or 4,
-            "agreement_score":      float(r[6]) if r[6] is not None else 0.0,
-            "termination_reason":   r[7] or "consensus_reached",
+            "status":               r[3] or _status_for_reason(termination_reason),
+            "total_rounds":         int(rounds_run),
+            "agreement_score":      float(agreement) if agreement is not None else 0.0,
+            "termination_reason":   termination_reason,
             "use_knowledge_base":   use_kb,
             "enable_agent_memory":  use_mem,
         })
     return items, total
+
+
+def _status_for_reason(termination_reason: str) -> str:
+    """Terminal status implied by a termination reason (mirrors finalize_node)."""
+    if termination_reason in ("consensus_reached", "human_override"):
+        return "converged"
+    return "max_rounds_reached"
 
 
 async def get_decision_json(
@@ -327,52 +368,58 @@ async def save_evaluation(
 # ---------------------------------------------------------------------------
 
 
-def _date_clause(days: int) -> str:
-    """Return an ``AND created_at >= ...`` SQL fragment, or empty for all-time.
+def _date_clause(days: int, column: str = "created_at") -> str:
+    """Return an ``AND <column> >= ...`` SQL fragment, or empty for all-time.
 
     ``days`` is an int the caller controls (never raw user text), so interpolating
     it into the DATE modifier is safe here.
     """
-    return f"AND created_at >= DATE('now', '-{int(days)} days')" if days and days > 0 else ""
+    return f"AND {column} >= DATE('now', '-{int(days)} days')" if days and days > 0 else ""
+
+
+# Debates that ran to a decision. Older debates rows have no termination_reason,
+# so it falls back to the stored decision (as the history list does).
+_COMPLETED_DEBATES = (
+    "FROM debates deb LEFT JOIN decisions dec ON dec.thread_id = deb.thread_id "
+    "WHERE deb.status IN ('converged', 'max_rounds_reached')"
+)
+_TERMINATION_REASON = (
+    "COALESCE(deb.termination_reason, json_extract(dec.decision_json, '$.termination_reason'))"
+)
 
 
 async def get_analytics_overview(db: aiosqlite.Connection, days: int = 0) -> dict[str, Any]:
     """Aggregate overview stats for completed debates, optionally scoped to N days."""
-    dc = _date_clause(days)
-    cur = await db.execute(
-        f"SELECT COUNT(*) FROM debates WHERE status IN ('converged', 'max_rounds_reached') {dc}"
-    )
-    row = await cur.fetchone()
-    total_debates: int = row[0] if row else 0
-
+    dc = _date_clause(days, "deb.created_at")
     cur = await db.execute(
         f"""
-        SELECT AVG(current_round), AVG(agreement_score)
-        FROM debates
-        WHERE status IN ('converged', 'max_rounds_reached') {dc}
+        SELECT COUNT(*), AVG(deb.current_round), AVG(deb.agreement_score),
+               AVG(CASE WHEN {_TERMINATION_REASON} = 'consensus_reached' THEN deb.current_round END)
+        {_COMPLETED_DEBATES} {dc}
         """
     )
     row = await cur.fetchone()
-    avg_rounds = float(row[0]) if row and row[0] is not None else 0.0
-    avg_agreement = float(row[1]) if row and row[1] is not None else 0.0
+    total_debates: int = row[0] if row and row[0] else 0
+    avg_rounds = float(row[1]) if row and row[1] is not None else 0.0
+    avg_agreement = float(row[2]) if row and row[2] is not None else 0.0
+    avg_rounds_to_consensus = float(row[3]) if row and row[3] is not None else None
 
     cur = await db.execute(
         f"""
-        SELECT COALESCE(termination_reason, 'unknown'), COUNT(*)
-        FROM debates
-        WHERE status IN ('converged', 'max_rounds_reached') {dc}
-        GROUP BY termination_reason
+        SELECT COALESCE({_TERMINATION_REASON}, 'unknown') AS reason, COUNT(*)
+        {_COMPLETED_DEBATES} {dc}
+        GROUP BY reason
         """
     )
     rows = await cur.fetchall()
     debates_by_termination: dict[str, int] = {r[0]: r[1] for r in rows}
 
+    # The per-day chart covers the selected range, or the last 30 days for "all time".
     trend_days = days if days and days > 0 else 30
     cur = await db.execute(
         f"""
-        SELECT DATE(created_at) AS day, COUNT(*) AS cnt
-        FROM debates
-        WHERE created_at >= DATE('now', '-{int(trend_days)} days')
+        SELECT DATE(deb.created_at) AS day, COUNT(*) AS cnt
+        {_COMPLETED_DEBATES} {_date_clause(trend_days, "deb.created_at")}
         GROUP BY day
         ORDER BY day ASC
         """
@@ -382,11 +429,28 @@ async def get_analytics_overview(db: aiosqlite.Connection, days: int = 0) -> dic
 
     return {
         "total_debates": total_debates,
-        "avg_rounds_to_consensus": round(avg_rounds, 2),
+        "avg_rounds": round(avg_rounds, 2),
+        "avg_rounds_to_consensus": (
+            round(avg_rounds_to_consensus, 2) if avg_rounds_to_consensus is not None else None
+        ),
         "avg_agreement_score": round(avg_agreement, 3),
         "debates_by_termination": debates_by_termination,
         "debates_per_day": debates_per_day,
+        "trend_days": trend_days,
     }
+
+
+def _final_positions(state: dict[str, Any]) -> dict[str, str]:
+    """Each agent's position in the last round that has any."""
+    for round_data in reversed(state.get("rounds") or []):
+        positions = {
+            out.get("agent_name"): out.get("position")
+            for out in round_data.get("agent_outputs") or []
+            if out.get("agent_name") and out.get("position")
+        }
+        if positions:
+            return positions
+    return {}
 
 
 async def get_analytics_agents(db: aiosqlite.Connection, days: int = 0) -> dict[str, Any]:
@@ -408,7 +472,7 @@ async def get_analytics_agents(db: aiosqlite.Connection, days: int = 0) -> dict[
     confidence_sums: dict[str, list[float]] = {}
     critique_severity_counts: dict[str, dict[str, int]] = {}
     contribution_sums: dict[str, list[float]] = {}
-    high_conf_per_debate: list[set[str]] = []
+    pair_agreement: dict[tuple[str, str], list[float]] = {}
 
     for row in state_rows:
         try:
@@ -420,9 +484,17 @@ async def get_analytics_agents(db: aiosqlite.Connection, days: int = 0) -> dict[
         for agent, score in final_conf.items():
             confidence_sums.setdefault(agent, []).append(float(score))
 
-        high_conf = {a for a, s in final_conf.items() if float(s) > 0.7}
-        if high_conf:
-            high_conf_per_debate.append(high_conf)
+        positions = _final_positions(state)
+        names = sorted(positions)
+        for i, a in enumerate(names):
+            for b in names[i + 1:]:
+                pair_agreement.setdefault((a, b), []).append(
+                    normalize_position_overlap(
+                        _word_overlap(positions[a], positions[b]),
+                        settings.POSITION_OVERLAP_FLOOR,
+                        settings.POSITION_OVERLAP_CEILING,
+                    )
+                )
 
         for round_data in state.get("rounds", []):
             for critique in round_data.get("critiques", []):
@@ -451,17 +523,19 @@ async def get_analytics_agents(db: aiosqlite.Connection, days: int = 0) -> dict[
             "avg_contribution_score": round(sum(contribs) / len(contribs), 3) if contribs else 0.0,
         }
 
-    # Pairwise agreement matrix: fraction where both agents had confidence > 0.7
-    matrix: dict[str, dict[str, float]] = {}
-    for a in all_agents:
+    # Pairwise agreement: how alike two agents' final positions were, averaged over
+    # the debates both took part in, on the same 0–1 scale as the consensus gate.
+    # Symmetric; None for a pair that never debated together.
+    matrix_agents = sorted({name for pair in pair_agreement for name in pair})
+    matrix: dict[str, dict[str, float | None]] = {}
+    for a in matrix_agents:
         matrix[a] = {}
-        a_debates = sum(1 for hc in high_conf_per_debate if a in hc)
-        for b in all_agents:
+        for b in matrix_agents:
             if a == b:
                 matrix[a][b] = 1.0
                 continue
-            both = sum(1 for hc in high_conf_per_debate if a in hc and b in hc)
-            matrix[a][b] = round(both / a_debates, 3) if a_debates > 0 else 0.0
+            scores = pair_agreement.get((min(a, b), max(a, b)))
+            matrix[a][b] = round(sum(scores) / len(scores), 3) if scores else None
 
     return {"agents": agent_stats, "agreement_matrix": matrix}
 
@@ -535,6 +609,9 @@ async def get_analytics_convergence(db: aiosqlite.Connection, days: int = 0) -> 
     }
 
 
+_TEMPLATE_TITLES = {t.id: t.title for t in TEMPLATES}
+
+
 async def get_analytics_quality(db: aiosqlite.Connection, days: int = 0) -> dict[str, Any]:
     """Quality score analytics from stored evaluation JSON blobs."""
     qdc = (
@@ -588,8 +665,11 @@ async def get_analytics_quality(db: aiosqlite.Connection, days: int = 0) -> dict
         except (json.JSONDecodeError, TypeError):
             state = {}
 
-        template = state.get("template_id") or state.get("domain_pack") or "default"
-        template_scores.setdefault(template, []).append(quality)
+        # Only debates started from a built-in template count towards template stats.
+        template_id = state.get("template_id")
+        if template_id:
+            template = _TEMPLATE_TITLES.get(template_id, template_id)
+            template_scores.setdefault(template, []).append(quality)
 
         mode = _mode_label(state)
         mode_scores.setdefault(mode, []).append(quality)

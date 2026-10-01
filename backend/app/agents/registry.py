@@ -146,18 +146,13 @@ class AgentRegistry:
             return default_client
 
         # Import lazily to avoid circular imports at module load time
-        from app.core.config import settings
         from app.services.llm_client import LangChainProvider as LC
+        from app.services.llm_client import server_api_key
 
         provider = config.model_provider or default_client.provider
         model = config.model_name or default_client.model
 
-        api_key_map: dict[str, str] = {
-            "groq": settings.GROQ_API_KEY,
-            "openai": settings.OPENAI_API_KEY,
-            "anthropic": settings.ANTHROPIC_API_KEY,
-        }
-        api_key = api_key_map.get(provider, "")
+        api_key = server_api_key(provider)
         if not api_key:
             raise ValueError(
                 f"Agent '{config.name}' requests provider '{provider}' but no API key "

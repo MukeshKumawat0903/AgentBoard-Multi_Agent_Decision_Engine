@@ -459,7 +459,9 @@ class TestResumeDebate:
         state = _make_state(status="in_progress")
         debate_store[state.thread_id] = state
 
-        fake_tasks: dict = {state.thread_id: MagicMock()}
+        running_task = MagicMock()
+        running_task.done.return_value = False
+        fake_tasks: dict = {state.thread_id: running_task}
         app.dependency_overrides[get_background_tasks] = lambda: fake_tasks
         try:
             response = await client.post(f"/debate/{state.thread_id}/resume")
@@ -505,3 +507,45 @@ class TestResumeDebate:
 
         assert response.status_code == 400
         assert response.json()["detail"]["error"] == "no_checkpoint_available"
+
+    @pytest.mark.anyio
+    async def test_resume_rejects_debate_paused_for_approval(self, client, isolated_stores):
+        """A HITL-paused debate continues via /approve; /resume must not run the graph."""
+        debate_store, decision_store = isolated_stores
+        state = _make_state(status="awaiting_approval")
+        debate_store[state.thread_id] = state
+
+        g = MagicMock()
+        g.resume = AsyncMock()
+        with patch("app.api.routes.DebateGraph", return_value=g):
+            response = await client.post(f"/debate/{state.thread_id}/resume")
+
+        assert response.status_code == 409
+        assert response.json()["detail"]["error"] == "debate_awaiting_approval"
+        g.resume.assert_not_called()
+        assert state.thread_id not in decision_store
+
+    @pytest.mark.anyio
+    async def test_resume_that_pauses_again_returns_status_not_none(self, client, isolated_stores):
+        """When the resumed run stops at the HITL node, report the pause (202) and
+        never cache a missing decision."""
+        debate_store, decision_store = isolated_stores
+        state = _make_state(status="error")
+        debate_store[state.thread_id] = state
+
+        paused = _make_state(status="awaiting_approval", current_round=2)
+        paused.thread_id = state.thread_id
+
+        g = MagicMock()
+        g.resume = AsyncMock(return_value=(paused, None))
+        with patch("app.api.routes.DebateGraph", return_value=g):
+            response = await client.post(f"/debate/{state.thread_id}/resume")
+
+        assert response.status_code == 202
+        assert response.json()["status"] == "awaiting_approval"
+        assert state.thread_id not in decision_store
+        assert debate_store[state.thread_id].status == "awaiting_approval"
+
+        # The decision endpoint keeps reporting "not ready" instead of crashing on None.
+        decision_resp = await client.get(f"/decision/{state.thread_id}")
+        assert decision_resp.status_code == 409

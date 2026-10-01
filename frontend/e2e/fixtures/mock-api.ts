@@ -75,6 +75,50 @@ export function buildSSEBody(events: SSEEvent[]): string {
   return events.map((e) => `event: ${e.type}\ndata: ${JSON.stringify(e.data)}\n`).join("\n") + "\n";
 }
 
+/**
+ * Replace the browser's EventSource with one that opens, delivers `events` and
+ * then stays open — like a live debate. A mocked HTTP response always ends,
+ * which makes the real EventSource reconnect, so in-progress UI (round
+ * progress, "Connected") can't be asserted reliably that way.
+ */
+export async function serveOpenStream(page: Page, events: SSEEvent[]) {
+  await page.addInitScript((evts) => {
+    class OpenEventSource extends EventTarget {
+      static CONNECTING = 0;
+      static OPEN = 1;
+      static CLOSED = 2;
+      url: string;
+      readyState = 0;
+      withCredentials = false;
+      onopen: ((e: Event) => void) | null = null;
+      onerror: ((e: Event) => void) | null = null;
+      onmessage: ((e: MessageEvent) => void) | null = null;
+      constructor(url: string) {
+        super();
+        this.url = url;
+        setTimeout(() => {
+          this.readyState = 1;
+          this.onopen?.(new Event("open"));
+          evts.forEach((e, i) =>
+            this.dispatchEvent(new MessageEvent(e.type, { data: JSON.stringify(e.data), lastEventId: String(i + 1) })),
+          );
+        }, 0);
+      }
+      close() {
+        this.readyState = 2;
+      }
+    }
+    (window as unknown as { EventSource: unknown }).EventSource = OpenEventSource;
+  }, events);
+}
+
+/** The debate events up to the first synthesis: a debate still in progress. */
+export function makeInProgressSSEEvents(threadId: string): SSEEvent[] {
+  return makeDebateSSEEvents(threadId).filter(
+    (e) => e.type !== "debate_completed" && e.type !== "final_decision",
+  );
+}
+
 export function makeDebateSSEEvents(threadId: string): SSEEvent[] {
   const decision = makeFinalDecision(threadId);
   return [
@@ -85,7 +129,7 @@ export function makeDebateSSEEvents(threadId: string): SSEEvent[] {
     { type: "agent_output",     data: { type: "agent_output",     round_number: 1, phase: "proposal", agent_name: "Risk",    position: "Proceed with caution.",      reasoning: "Currency risk is material.",  confidence_score: 0.75, assumptions: ["Hedging in place"] } },
     { type: "phase_started",    data: { type: "phase_started",    round_number: 1, phase: "critique" } },
     { type: "critique_completed",data: { type: "critique_completed", round_number: 1, critic_agent: "Risk", target_agent: "Analyst", severity: "medium", critique_points: ["Currency risk not addressed."], confidence_score: 0.7 } },
-    { type: "synthesis",        data: { type: "synthesis",        round_number: 1, agreement_score: 0.82, should_continue: false, summary: "Broad consensus on phased approach.", agreement_areas: ["Timing", "Phase structure"], disagreement_areas: ["Currency hedging"] } },
+    { type: "synthesis",        data: { type: "synthesis",        round_number: 1, agreement_score: 0.82, summary: "Broad consensus on phased approach.", agreement_areas: ["Timing", "Phase structure"], disagreement_areas: ["Currency hedging"] } },
     { type: "debate_completed", data: { type: "debate_completed", thread_id: threadId, termination_reason: "consensus_reached", total_rounds: 1, agreement_score: 0.82 } },
     { type: "final_decision",   data: { type: "final_decision",   ...decision } },
   ];
@@ -97,6 +141,7 @@ export async function mockStaticRoutes(page: Page) {
   await page.route("**/backend/agents",        (r) => json(r, MOCK_AGENTS));
   await page.route("**/backend/templates",     (r) => json(r, MOCK_TEMPLATES));
   await page.route("**/backend/domain-packs",  (r) => json(r, MOCK_DOMAIN_PACKS));
+  await page.route("**/backend/debate-modes",  (r) => json(r, { default_mode: "quick", presets: {} }));
   await page.route("**/backend/health",        (r) => json(r, { status: "ok", version: "2.0.0", groq_configured: true }));
   await page.route("**/backend/llm-settings",  (r) => json(r, { provider: "groq", model: "llama-3.3-70b-versatile", available_models: { groq: [], openai: [], anthropic: [] }, using_custom_key: false }));
   await page.route("**/backend/history*",      (r) => json(r, { items: [makeHistoryItem(THREAD_A), makeHistoryItem(THREAD_B, "Is cloud migration worth it?")], total: 2, page: 1, limit: 20 }));
@@ -124,23 +169,37 @@ export async function mockHistoryItem(page: Page, threadId: string) {
   );
 }
 
+export const SIM_JOB_ID = "sim-job-1";
+
+/**
+ * Simulations run as a background job: POST /debate/simulate-async returns a
+ * running job, then the page polls GET /debate/simulate/{job_id}.
+ */
 export async function mockSimulation(page: Page) {
   const decisions = [
     makeFinalDecision("sim-run-1"),
     makeFinalDecision("sim-run-2", { termination_reason: "max_rounds_reached" }),
     makeFinalDecision("sim-run-3"),
   ];
-  await page.route("**/backend/debate/simulate*", (r) =>
-    json(r, {
-      query: "Should we expand?",
-      runs: 3,
-      decisions,
-      consistency_score: 0.81,
-      confidence_variance: 0.03,
-      avg_agreement_score: 0.81,
-      stable_risk_flags: ["Currency volatility"],
-      stability_rating: "High",
-    })
+  const result = {
+    query: "Should we expand?",
+    runs: 3,
+    runs_completed: 3,
+    decisions,
+    consistency_score: 0.81,
+    confidence_variance: 0.03,
+    avg_agreement_score: 0.81,
+    stable_risk_flags: ["Currency volatility"],
+    stability_rating: "High",
+  };
+  await page.route("**/backend/debate/simulate-async", (r) =>
+    json(r, { job_id: SIM_JOB_ID, status: "running", result: null, error: null }),
+  );
+  await page.route(`**/backend/debate/simulate/${SIM_JOB_ID}`, (r) =>
+    json(r, { job_id: SIM_JOB_ID, status: "completed", result, error: null }),
+  );
+  await page.route(`**/backend/debate/simulate/${SIM_JOB_ID}/cancel`, (r) =>
+    json(r, { job_id: SIM_JOB_ID, status: "cancelled", result: null, error: null }),
   );
 }
 

@@ -2,10 +2,11 @@
  * LLMSettingsPanel – gear-icon button + modal to switch the active LLM
  * provider and model at runtime.
  *
- * - Groq  (default): uses the server-configured API key; no key needed from the user.
- * - OpenAI / Anthropic: user must supply their own API key.
- *   Keys are stored in localStorage for convenience and sent to the backend
- *   (in-memory only — never persisted to disk on the server).
+ * - A provider with a key configured on the server needs no key from the user;
+ *   otherwise the user supplies one. Keys are kept in sessionStorage (this tab
+ *   only) and sent to the backend, which holds them in memory only.
+ * - Switching changes the provider for every user of the deployment, so the
+ *   backend may require the admin token (shown here when it does).
  */
 
 "use client";
@@ -13,7 +14,7 @@
 import { useState, useEffect, useRef } from "react";
 import { createPortal } from "react-dom";
 import { Eye, EyeOff, Settings, X } from "lucide-react";
-import { getLLMSettings, setLLMSettings } from "@/lib/api";
+import { getAdminToken, getLLMSettings, setAdminToken, setLLMSettings } from "@/lib/api";
 import { PROVIDER_MODELS } from "@/lib/types";
 import type { LLMProvider, LLMSettingsResponse } from "@/lib/types";
 
@@ -48,7 +49,7 @@ const PROVIDERS: {
       "bg-blue-100 text-blue-700 dark:bg-blue-900/40 dark:text-blue-300",
     needsKey: true,
     keyPlaceholder: "sk-...",
-    hint: "Bring your own OpenAI API key. Stored in browser localStorage only.",
+    hint: "Use your own OpenAI API key unless the server has one configured.",
   },
   {
     id: "anthropic",
@@ -58,7 +59,7 @@ const PROVIDERS: {
       "bg-orange-100 text-orange-700 dark:bg-orange-900/40 dark:text-orange-300",
     needsKey: true,
     keyPlaceholder: "sk-ant-...",
-    hint: "Bring your own Anthropic API key. Stored in browser localStorage only.",
+    hint: "Use your own Anthropic API key unless the server has one configured.",
   },
   {
     id: "gemini",
@@ -68,17 +69,30 @@ const PROVIDERS: {
       "bg-sky-100 text-sky-700 dark:bg-sky-900/40 dark:text-sky-300",
     needsKey: true,
     keyPlaceholder: "AIza...",
-    hint: "Bring your own Google AI Studio API key. Stored in browser localStorage only.",
+    hint: "Use your own Google AI Studio API key unless the server has one configured.",
   },
 ];
 
 // ------------------------------------------------------------------ //
-// Local-storage helpers
+// Key storage — sessionStorage (this tab only), never localStorage
 // ------------------------------------------------------------------ //
+
+function storageKey(provider: LLMProvider): string {
+  return `llm_api_key_${provider}`;
+}
 
 function loadSavedKey(provider: LLMProvider): string {
   try {
-    return localStorage.getItem(`llm_api_key_${provider}`) ?? "";
+    // Keys saved by older versions lived in localStorage (on disk); move them
+    // into this tab's session and delete the persistent copy.
+    const legacy = localStorage.getItem(storageKey(provider));
+    if (legacy !== null) {
+      localStorage.removeItem(storageKey(provider));
+      if (!sessionStorage.getItem(storageKey(provider))) {
+        sessionStorage.setItem(storageKey(provider), legacy);
+      }
+    }
+    return sessionStorage.getItem(storageKey(provider)) ?? "";
   } catch {
     return "";
   }
@@ -87,12 +101,12 @@ function loadSavedKey(provider: LLMProvider): string {
 function saveKey(provider: LLMProvider, key: string) {
   try {
     if (key) {
-      localStorage.setItem(`llm_api_key_${provider}`, key);
+      sessionStorage.setItem(storageKey(provider), key);
     } else {
-      localStorage.removeItem(`llm_api_key_${provider}`);
+      sessionStorage.removeItem(storageKey(provider));
     }
   } catch {
-    // localStorage unavailable — ignore
+    // storage unavailable — ignore
   }
 }
 
@@ -110,6 +124,7 @@ export default function LLMSettingsPanel() {
   const [model, setModel] = useState<string>(PROVIDER_MODELS.groq[0]);
   const [apiKey, setApiKey] = useState("");
   const [showKey, setShowKey] = useState(false);
+  const [adminToken, setAdminTokenInput] = useState("");
 
   // UI state
   const [saving, setSaving] = useState(false);
@@ -130,6 +145,7 @@ export default function LLMSettingsPanel() {
         setProvider(s.provider);
         setModel(s.model);
         setApiKey(loadSavedKey(s.provider));
+        setAdminTokenInput(getAdminToken());
         setError(null);
       })
       .catch(() => {
@@ -172,6 +188,7 @@ export default function LLMSettingsPanel() {
     setError(null);
     setSaved(false);
     try {
+      if (current?.admin_token_required) setAdminToken(adminToken.trim());
       const res = await setLLMSettings({
         provider,
         model,
@@ -182,17 +199,17 @@ export default function LLMSettingsPanel() {
       setSaved(true);
       setTimeout(() => setSaved(false), 3000);
     } catch (err: unknown) {
-      const msg =
-        err instanceof Error ? err.message : "Failed to update settings.";
-      // Try to surface the backend validation detail
-      const body = (err as { body?: { detail?: string } })?.body;
-      setError(body?.detail ?? msg);
+      // ApiError already turns every backend error shape into readable text.
+      setError(err instanceof Error ? err.message : "Failed to update settings.");
     } finally {
       setSaving(false);
     }
   }
 
   const providerMeta = PROVIDERS.find((p) => p.id === provider)!;
+  // A user key is only required when the server has none for this provider.
+  const keyRequired = providerMeta.needsKey && !current?.server_keys?.[provider];
+  const tokenRequired = Boolean(current?.admin_token_required);
   const currentProviderMeta = current
     ? PROVIDERS.find((p) => p.id === current.provider)
     : null;
@@ -321,7 +338,11 @@ export default function LLMSettingsPanel() {
                   className="block text-xs font-medium text-gray-600 dark:text-gray-400 mb-1"
                 >
                   {providerMeta.label} API Key{" "}
-                  <span className="text-red-500">*</span>
+                  {keyRequired ? (
+                    <span className="text-red-500">*</span>
+                  ) : (
+                    <span className="text-gray-400">(optional — the server has one)</span>
+                  )}
                 </label>
                 <div className="relative">
                   <input
@@ -353,8 +374,31 @@ export default function LLMSettingsPanel() {
                   </button>
                 </div>
                 <p className="mt-1 text-xs text-amber-600 dark:text-amber-400">
-                  ⚠ Saved to browser localStorage. Never shared with third parties.
+                  ⚠ Kept for this browser tab only. Switching applies to every user of this server.
                 </p>
+              </div>
+            )}
+
+            {/* Admin token (when the server requires one to switch providers) */}
+            {tokenRequired && (
+              <div className="px-5 pt-4">
+                <label
+                  htmlFor="admin-token-input"
+                  className="block text-xs font-medium text-gray-600 dark:text-gray-400 mb-1"
+                >
+                  Admin token <span className="text-red-500">*</span>
+                </label>
+                <input
+                  id="admin-token-input"
+                  type="password"
+                  value={adminToken}
+                  onChange={(e) => setAdminTokenInput(e.target.value)}
+                  autoComplete="off"
+                  spellCheck={false}
+                  className="w-full px-3 py-2 rounded-lg border border-line
+                             bg-surface-raised text-sm text-gray-800 dark:text-gray-200
+                             focus:outline-none focus:ring-2 focus:ring-accent-500 font-mono"
+                />
               </div>
             )}
 
@@ -401,7 +445,8 @@ export default function LLMSettingsPanel() {
                   onClick={handleApply}
                   disabled={
                     saving ||
-                    (providerMeta.needsKey && !apiKey.trim())
+                    (keyRequired && !apiKey.trim()) ||
+                    (tokenRequired && !adminToken.trim())
                   }
                   className="px-4 py-2 text-sm rounded-lg font-medium
                              bg-accent-600 hover:bg-accent-700 disabled:opacity-50

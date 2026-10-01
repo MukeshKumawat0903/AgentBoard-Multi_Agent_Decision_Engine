@@ -350,9 +350,24 @@ def test_final_decision_serialization_round_trip():
 
 def test_debate_start_request_valid():
     req = DebateStartRequest(query="Should we expand internationally in Q3?")
+    # No mode given: the Quick preset (cheapest) applies.
+    assert req.mode == "quick"
     assert req.max_rounds == 2
-    assert req.min_rounds == 2  # standard preset floor
+    assert req.min_rounds == 1
+    assert req.consensus_threshold == 0.60
+    assert req.skip_critique_phase is True
     assert req.agents is None
+
+
+def test_simulation_defaults_to_quick_mode():
+    from app.schemas.api_models import SimulateRequest
+
+    assert SimulateRequest(query="Should we expand internationally in Q3?").mode == "quick"
+
+
+def test_explicit_mode_still_wins_over_the_default():
+    req = DebateStartRequest(query="Should we expand internationally in Q3?", mode="standard")
+    assert (req.mode, req.min_rounds, req.consensus_threshold, req.skip_critique_phase) == ("standard", 2, 0.75, False)
 
 
 def test_debate_start_request_custom():

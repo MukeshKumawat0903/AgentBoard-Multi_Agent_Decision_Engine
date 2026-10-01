@@ -63,4 +63,20 @@ describe("AgentCard", () => {
     expect(rail).toBeTruthy();
     expect(rail.style.backgroundColor).toBe("rgb(107, 114, 128)"); // #6B7280
   });
+
+  it("shows a veto badge and its reason", () => {
+    render(
+      <AgentCard
+        response={makeResponse({ agent_name: "Ethics", veto: true, veto_reason: "No user consent." })}
+      />,
+    );
+    expect(screen.getByText("Veto")).toBeTruthy();
+    expect(screen.getByText("Veto — consensus is blocked while it stands")).toBeTruthy();
+    expect(screen.getByText("No user consent.")).toBeTruthy();
+  });
+
+  it("shows no veto badge for a normal position", () => {
+    render(<AgentCard response={makeResponse()} />);
+    expect(screen.queryByText("Veto")).toBeNull();
+  });
 });

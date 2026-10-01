@@ -13,7 +13,7 @@ test.describe("Home page", () => {
 
   test("shows the page title", async ({ page }) => {
     await page.goto("/");
-    await expect(page.getByRole("heading", { name: "Multi-Agent Decision Engine" })).toBeVisible();
+    await expect(page.getByRole("heading", { level: 1, name: /Five AI agents\. One decision\./ })).toBeVisible();
   });
 
   test("debate input textarea is present and accepts text", async ({ page }) => {
@@ -38,26 +38,34 @@ test.describe("Home page", () => {
     }
   });
 
-  test("Browse templates button expands the template grid", async ({ page }) => {
+  // Template titles also appear as starter chips under the empty textarea,
+  // so gallery assertions are scoped to the gallery region.
+  const openGallery = async (page: import("@playwright/test").Page) => {
+    await page.getByRole("button", { name: /^Templates / }).click();
+    return page.getByRole("region", { name: "Debate templates" });
+  };
+
+  test("Templates button expands the template grid", async ({ page }) => {
     await page.goto("/");
-    await page.getByText(/Browse templates/i).click();
-    await expect(page.getByText(MOCK_TEMPLATES[0].title)).toBeVisible();
-    await expect(page.getByText(MOCK_TEMPLATES[1].title)).toBeVisible();
+    const gallery = page.getByRole("region", { name: "Debate templates" });
+    await expect(gallery.getByText(MOCK_TEMPLATES[0].title)).not.toBeVisible();
+    await openGallery(page);
+    await expect(gallery.getByText(MOCK_TEMPLATES[0].title)).toBeVisible();
+    await expect(gallery.getByText(MOCK_TEMPLATES[1].title)).toBeVisible();
   });
 
   test("template search filters by text", async ({ page }) => {
     await page.goto("/");
-    await page.getByText(/Browse templates/i).click();
-    const search = page.getByPlaceholder(/Search templates/i);
-    await search.fill("Market");
-    await expect(page.getByText("Market Expansion")).toBeVisible();
-    await expect(page.getByText("Tech Adoption")).not.toBeVisible();
+    const gallery = await openGallery(page);
+    await gallery.getByPlaceholder(/Search templates/i).fill("Market");
+    await expect(gallery.getByText("Market Expansion")).toBeVisible();
+    await expect(gallery.getByText("Tech Adoption")).not.toBeVisible();
   });
 
   test("selecting a template pre-fills the query textarea", async ({ page }) => {
     await page.goto("/");
-    await page.getByText(/Browse templates/i).click();
-    await page.getByText(MOCK_TEMPLATES[0].title).click();
+    const gallery = await openGallery(page);
+    await gallery.getByText(MOCK_TEMPLATES[0].title).click();
     const textarea = page.locator("textarea").first();
     await expect(textarea).toHaveValue(/Should we enter/);
   });

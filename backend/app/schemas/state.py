@@ -27,6 +27,10 @@ DebateStatus = Literal[
 # Valid phase values for a DebateRound
 DebatePhase = Literal["proposal", "critique", "revision", "convergence"]
 
+# Hard upper bound on rounds in one debate, including rounds a human reviewer
+# adds through the HITL "add round" action.
+MAX_DEBATE_ROUNDS_LIMIT = 8
+
 
 class DebateRound(BaseModel):
     """
@@ -96,22 +100,26 @@ class DebateState(BaseModel):
     max_rounds: int = Field(
         default=2,
         ge=2,
-        le=8,
+        le=MAX_DEBATE_ROUNDS_LIMIT,
         description="Maximum number of debate rounds allowed.",
     )
     min_rounds: int = Field(
         default=1,
         ge=1,
-        le=8,
+        le=MAX_DEBATE_ROUNDS_LIMIT,
         description="Minimum rounds before consensus may be declared (caps at max_rounds).",
     )
     mode: str | None = Field(
         default=None,
         description=(
-            "Preset the debate was started with (quick/standard/thorough), persisted so "
+            "Mode the debate was started with (quick/standard/thorough/custom), persisted so "
             "analytics can group by mode instead of inferring it from the round count. "
             "None for legacy records and direct-graph runs."
         ),
+    )
+    template_id: str | None = Field(
+        default=None,
+        description="Built-in template the query started from, for per-template analytics.",
     )
     rounds: list[DebateRound] = Field(
         default_factory=list,
@@ -152,6 +160,12 @@ class DebateState(BaseModel):
     domain_pack: str | None = Field(
         default=None,
         description="Optional domain pack ID that determined the selected agent set.",
+    )
+    # Token usage accumulated over every run segment (initial run, each HITL
+    # continuation, resumes), keyed by model name.
+    token_usage_by_model: dict[str, dict[str, int]] = Field(
+        default_factory=dict,
+        description="Cumulative LLM token usage per model across all run segments.",
     )
     # --- P4.1 Human-in-the-Loop ---
     human_feedback: str | None = Field(

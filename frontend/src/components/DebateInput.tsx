@@ -54,10 +54,13 @@ function roundThreshold(v: number): number {
 export interface SampleQuestion {
   label: string;
   query: string;
+  // Set when the sample is a built-in template
+  templateId?: string;
 }
 
 export interface DebateOptions {
-  mode: DebateMode;
+  mode: ModeSelection;
+  template_id?: string;
   max_rounds?: number;
   consensus_threshold?: number;
   agents?: string[];
@@ -74,7 +77,11 @@ interface DebateInputProps {
   agents: AgentOption[];
   selectedAgents: Set<string>;
   prefillQuery?: string;
-  prefillMode?: DebateMode;
+  prefillMode?: ModeSelection;
+  // Server's default mode (DEFAULT_DEBATE_MODE); used until the user picks one
+  defaultMode?: DebateMode;
+  // Template the prefilled query came from
+  prefillTemplateId?: string;
   selectedDomainPack?: string | null;
   samples?: SampleQuestion[];
 }
@@ -87,11 +94,25 @@ export default function DebateInput({
   selectedAgents,
   prefillQuery,
   prefillMode,
+  defaultMode,
+  prefillTemplateId,
   selectedDomainPack,
   samples,
 }: DebateInputProps) {
   const [query, setQuery] = useState(prefillQuery ?? "");
-  const [selection, setSelection] = useState<ModeSelection>(prefillMode ?? "standard");
+  // Kept while the query still starts from a template; cleared when the box is emptied.
+  const [templateId, setTemplateId] = useState<string | undefined>(prefillTemplateId);
+  // A template's mode wins, then the server default, then Quick (the cheapest preset).
+  const [selection, setSelection] = useState<ModeSelection>(prefillMode ?? defaultMode ?? "quick");
+  // The server default may arrive after the first render; it must not undo a choice.
+  const modeChosen = useRef(false);
+  useEffect(() => {
+    if (defaultMode && !prefillMode && !modeChosen.current) setSelection(defaultMode);
+  }, [defaultMode, prefillMode]);
+  function chooseMode(mode: ModeSelection) {
+    modeChosen.current = true;
+    setSelection(mode);
+  }
   // Round count + consensus threshold for the "custom" option; ignored for presets.
   const [customRounds, setCustomRounds] = useState<number>(CUSTOM_DEFAULT_ROUNDS);
   const [customThreshold, setCustomThreshold] = useState<number>(CUSTOM_DEFAULT_THRESHOLD);
@@ -124,9 +145,9 @@ export default function DebateInput({
     const allSelected = selectedAgents.size === agents.length;
     const isCustom = selection === "custom";
     onSubmit(query.trim(), {
-      // "Custom" maps to Standard's config with an explicit round override;
-      // the presets resolve their own round count on the backend.
-      mode: isCustom ? "standard" : selection,
+      // "Custom" sends its own rounds/threshold; the presets resolve theirs on the backend.
+      mode: selection,
+      template_id: templateId,
       max_rounds: isCustom ? customRounds : undefined,
       consensus_threshold: isCustom ? customThreshold : undefined,
       agents: allSelected ? undefined : [...selectedAgents],
@@ -163,6 +184,7 @@ export default function DebateInput({
           onChange={(e: ChangeEvent<HTMLTextAreaElement>) => {
             const val = e.target.value;
             setQuery(val);
+            if (!val.trim()) setTemplateId(undefined);
             // Clear error glow as soon as the input becomes valid.
             if (showErrorState && val.trim().length >= 10) {
               setShowErrorState(false);
@@ -201,6 +223,7 @@ export default function DebateInput({
                 type="button"
                 onClick={() => {
                   setQuery(s.query);
+                  setTemplateId(s.templateId);
                   textareaRef.current?.focus();
                 }}
                 className="text-xs px-2.5 py-1 rounded-full border border-line text-gray-600 dark:text-gray-300
@@ -226,7 +249,7 @@ export default function DebateInput({
               <button
                 key={value}
                 type="button"
-                onClick={() => setSelection(value)}
+                onClick={() => chooseMode(value)}
                 disabled={isLoading}
                 aria-pressed={selected}
                 title={description}
@@ -264,7 +287,7 @@ export default function DebateInput({
             return (
               <button
                 type="button"
-                onClick={() => setSelection("custom")}
+                onClick={() => chooseMode("custom")}
                 disabled={isLoading}
                 aria-pressed={selected}
                 title="Full critique with a round count you choose"

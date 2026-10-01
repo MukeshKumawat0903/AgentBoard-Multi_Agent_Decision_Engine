@@ -5,11 +5,11 @@
  * Sections
  * --------
  * 1. KPI row          – total debates, avg rounds, avg agreement, consensus rate
- * 2. Debate trend     – LineChart of debates per day (last 30 days)
+ * 2. Debate trend     – LineChart of completed debates per day over the selected range
  * 3. Termination      – PieChart of converged vs max-rounds
  * 4. Convergence curve– LineChart of avg agreement score by round
  * 5. Agent confidence – BarChart of avg confidence per agent
- * 6. Agreement matrix – coloured grid of pairwise agent agreement
+ * 6. Agreement matrix – coloured grid of how alike each pair's final positions were
  * 7. Quality tab      – quality scores by template / mode / domain pack
  */
 
@@ -115,7 +115,7 @@ function Section({ title, children }: { title: string; children: React.ReactNode
 /* ------------------------------------------------------------------ */
 /* Agreement matrix                                                    */
 /* ------------------------------------------------------------------ */
-function AgreementMatrix({ matrix }: { matrix: Record<string, Record<string, number>> }) {
+function AgreementMatrix({ matrix }: { matrix: Record<string, Record<string, number | null>> }) {
   const agents = Object.keys(matrix);
   if (agents.length === 0)
     return <p className="text-sm text-gray-400">No agent data yet.</p>;
@@ -141,7 +141,19 @@ function AgreementMatrix({ matrix }: { matrix: Record<string, Record<string, num
             <tr key={row}>
               <td className="p-2 text-gray-500 dark:text-gray-400 font-medium pr-4">{row}</td>
               {agents.map((col) => {
-                const v = matrix[row]?.[col] ?? 0;
+                const v = matrix[row]?.[col] ?? null;
+                if (v === null) {
+                  return (
+                    <td
+                      key={col}
+                      className="p-2 text-center rounded bg-gray-100 dark:bg-gray-800 text-gray-400"
+                      style={{ minWidth: 48 }}
+                      title={`${row} and ${col} have not debated together`}
+                    >
+                      —
+                    </td>
+                  );
+                }
                 return (
                   <td
                     key={col}
@@ -388,6 +400,8 @@ export default function AnalyticsPage() {
   // ---------- derived data --------------------------------
   const trendData =
     overview?.debates_per_day.map((d) => ({ date: d.date.slice(5), count: d.count })) ?? [];
+  // "All time" still charts the last 30 days.
+  const trendDays = overview?.trend_days ?? (days || 30);
 
   const terminationData = Object.entries(overview?.debates_by_termination ?? {}).map(
     ([name, value]) => ({
@@ -512,8 +526,12 @@ export default function AnalyticsPage() {
             />
             <KpiCard
               label="Avg rounds"
-              value={overview?.avg_rounds_to_consensus.toFixed(1) ?? "—"}
-              sub="to completion"
+              value={overview?.avg_rounds.toFixed(1) ?? "—"}
+              sub={
+                overview?.avg_rounds_to_consensus != null
+                  ? `${overview.avg_rounds_to_consensus.toFixed(1)} when consensus is reached`
+                  : "to completion"
+              }
             />
             <KpiCard
               label="Avg agreement"
@@ -551,9 +569,9 @@ export default function AnalyticsPage() {
           )}
 
           {/* Debate trend */}
-          <Section title="Debates per day (last 30 days)">
+          <Section title={`Debates per day (last ${trendDays} days)`}>
             {trendData.length === 0 ? (
-              <p className="text-sm text-gray-400">No debate data in the last 30 days.</p>
+              <p className="text-sm text-gray-400">No completed debates in the last {trendDays} days.</p>
             ) : (
               <ResponsiveContainer width="100%" height={220}>
                 <LineChart data={trendData} margin={{ top: 4, right: 16, left: -10, bottom: 0 }}>
@@ -848,7 +866,7 @@ export default function AnalyticsPage() {
               {/* Agreement matrix */}
               {agents?.agreement_matrix &&
                 Object.keys(agents.agreement_matrix).length > 0 && (
-                  <Section title="Pairwise agreement matrix (fraction of debates both agents &gt; 70% confidence)">
+                  <Section title="Pairwise agreement (how alike two agents' final positions were)">
                     <AgreementMatrix matrix={agents.agreement_matrix} />
                   </Section>
                 )}

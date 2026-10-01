@@ -28,11 +28,11 @@ from typing import Awaitable, Callable
 from langgraph.types import interrupt  # type: ignore[import-untyped]
 
 from app.agents.base_agent import BaseAgent
-from app.agents.moderator_agent import ModeratorAgent
+from app.agents.moderator_agent import ModeratorAgent, ModeratorSynthesis
 from app.core.config import Settings
 from app.orchestrator.lg_state import DebateGraphState
 from app.schemas.final_decision import MinorityReportEntry
-from app.schemas.state import DebateRound, DebateState
+from app.schemas.state import MAX_DEBATE_ROUNDS_LIMIT, DebateRound, DebateState
 from app.services.consensus import (
     ConsensusEngine,
     ConsensusSignals,
@@ -40,17 +40,22 @@ from app.services.consensus import (
     _word_overlap,
     count_open_disagreements,
     is_consensus_reached,
+    normalize_position_overlap,
     select_dissenting_agents,
 )
+from app.services.llm_client import llm_call_slot
 
-# B11: threshold below which agents are considered "stuck" (drift-based early stop)
-_DRIFT_EARLY_STOP_THRESHOLD: float = 0.05
-
-_PROPOSAL_TIMEOUT: float = 15.0
-_CRITIQUE_TIMEOUT: float = 15.0
-_REVISION_TIMEOUT: float = 15.0
+# Per-phase timeouts for callers that don't pass one; the graph passes the configured
+# AGENT_*_TIMEOUT values, so these just mirror the Settings defaults.
+_PROPOSAL_TIMEOUT: float = Settings.model_fields["AGENT_PROPOSAL_TIMEOUT"].default
+_CRITIQUE_TIMEOUT: float = Settings.model_fields["AGENT_CRITIQUE_TIMEOUT"].default
+_REVISION_TIMEOUT: float = Settings.model_fields["AGENT_REVISION_TIMEOUT"].default
 
 logger = logging.getLogger("agentboard.nodes")
+
+# Strong references to in-flight agent-memory saves: the event loop only keeps
+# weak references to tasks, so an unreferenced task can vanish mid-flight.
+_memory_tasks: set[asyncio.Task] = set()
 
 # ---------------------------------------------------------------------------
 # Type alias for the SSE emit callable
@@ -67,6 +72,19 @@ _PersistState = Callable[["DebateState"], Awaitable[None]] | None
 def _agent_timeout(agent: BaseAgent, base: float, tool_multiplier: float) -> float:
     """Give tool-using agents extra time (they run a tool *and* an LLM call)."""
     return base * tool_multiplier if getattr(agent, "allowed_tools", None) else base
+
+
+def _hitl_options(ds: DebateState) -> list[str]:
+    """Reviewer actions on offer; "add_round" only while another round fits."""
+    options = ["approve", "override"]
+    if ds.max_rounds < MAX_DEBATE_ROUNDS_LIMIT:
+        options.append("add_round")
+    return options
+
+
+def _agent_provider(agent: BaseAgent) -> str:
+    """Provider key used for the per-provider concurrency limit."""
+    return str(getattr(getattr(agent, "llm_client", None), "provider", "default"))
 
 
 def make_proposals_node(
@@ -104,9 +122,11 @@ def make_proposals_node(
         async def _safe_run(agent: BaseAgent):
             agent_timeout = _agent_timeout(agent, timeout, tool_multiplier)
             try:
-                result = await asyncio.wait_for(
-                    agent.run(ds), timeout=agent_timeout
-                )
+                # Wait for a provider slot first so queueing never eats into the timeout.
+                async with llm_call_slot(_agent_provider(agent)):
+                    result = await asyncio.wait_for(
+                        agent.run(ds), timeout=agent_timeout
+                    )
                 if result is not None:
                     emit("agent_output", {
                         "round_number": ds.current_round,
@@ -116,6 +136,8 @@ def make_proposals_node(
                         "reasoning": result.reasoning,
                         "confidence_score": result.confidence_score,
                         "assumptions": result.assumptions,
+                        "veto": result.veto,
+                        "veto_reason": result.veto_reason,
                     })
                 return result
             except TimeoutError:
@@ -192,9 +214,10 @@ def make_critiques_node(
 
         async def _safe_critique(agent: BaseAgent, target):
             try:
-                result = await asyncio.wait_for(
-                    agent.critique(ds, target), timeout=timeout
-                )
+                async with llm_call_slot(_agent_provider(agent)):
+                    result = await asyncio.wait_for(
+                        agent.critique(ds, target), timeout=timeout
+                    )
                 if result is not None:
                     emit("critique_completed", {
                         "round_number": ds.current_round,
@@ -289,9 +312,10 @@ def make_revisions_node(
                 return None
             agent_timeout = _agent_timeout(agent, timeout, tool_multiplier)
             try:
-                result = await asyncio.wait_for(
-                    agent.revise(ds, critiques), timeout=agent_timeout
-                )
+                async with llm_call_slot(_agent_provider(agent)):
+                    result = await asyncio.wait_for(
+                        agent.revise(ds, critiques), timeout=agent_timeout
+                    )
                 if result is not None:
                     emit("agent_output", {
                         "round_number": ds.current_round,
@@ -301,6 +325,8 @@ def make_revisions_node(
                         "reasoning": result.reasoning,
                         "confidence_score": result.confidence_score,
                         "assumptions": result.assumptions,
+                        "veto": result.veto,
+                        "veto_reason": result.veto_reason,
                     })
                 return result
             except TimeoutError:
@@ -392,16 +418,39 @@ def make_convergence_node(
             "phase": "convergence",
         })
 
-        synthesis = await moderator.synthesize(ds)
+        try:
+            synthesis = await moderator.synthesize(ds)
+        except Exception as exc:  # noqa: BLE001
+            # The per-round summary is informational — the gate below works from
+            # the agents' outputs — so one failed moderator call (typically a
+            # provider rate limit) must not throw away the whole debate. With no
+            # agent output at all there is nothing to salvage, so fail as before.
+            if not round_data.agent_outputs:
+                raise
+            logger.warning(
+                "moderator_synthesis_failed",
+                extra={"round": ds.current_round, "error": str(exc)},
+            )
+            synthesis = ModeratorSynthesis(
+                summary="The moderator could not summarise this round; the debate "
+                "continues on the agents' own positions.",
+                agreement_score=0.0,
+                should_continue=True,
+            )
 
         confidence_engine = ConsensusEngine()
         # Mean self-confidence — a secondary signal, no longer the agreement metric.
         confidence_agreement = confidence_engine.compute_agreement_score(round_data.agent_outputs)
         # Canonical agreement blends mean confidence with confidence-weighted *position
         # overlap*, so the number reflects how much the agents actually say the same
-        # thing — not just how individually sure they are. Word-overlap runs low, so
-        # it gets a modest weight; the multi-criteria gate below does the real work.
-        position_agreement = confidence_engine.compute_confidence_weighted_score(round_data.agent_outputs)
+        # thing — not just how individually sure they are. Raw word-overlap runs low
+        # even for agreeing agents, so it is rescaled onto a 0–1 agreement scale first;
+        # otherwise the blend could never reach the mode thresholds.
+        position_agreement = normalize_position_overlap(
+            confidence_engine.compute_confidence_weighted_score(round_data.agent_outputs),
+            settings.POSITION_OVERLAP_FLOOR,
+            settings.POSITION_OVERLAP_CEILING,
+        )
         if len(round_data.agent_outputs) >= 2:
             w = settings.CONSENSUS_POSITION_WEIGHT
             agreement_score = (1.0 - w) * confidence_agreement + w * position_agreement
@@ -428,8 +477,11 @@ def make_convergence_node(
 
         ds.agreement_score = agreement_score
 
-        for output in round_data.agent_outputs:
-            ds.confidence_scores[output.agent_name] = output.confidence_score
+        # Only agents that spoke this round: an agent that timed out or failed must
+        # not keep feeding its stale score from an earlier round into the gate.
+        ds.confidence_scores = {
+            output.agent_name: output.confidence_score for output in round_data.agent_outputs
+        }
 
         ds.touch()
         if persist_state is not None:
@@ -440,17 +492,19 @@ def make_convergence_node(
                 "thread_id": ds.thread_id,
                 "round": ds.current_round,
                 "agreement_score": agreement_score,
-                "should_continue": synthesis.should_continue,
+                "moderator_recommends_continue": synthesis.should_continue,
             },
         )
+        # The moderator's own continue/stop recommendation is not sent: the
+        # convergence gate below decides, and the UI must not show a conflicting call.
         emit("synthesis", {
             "round_number": ds.current_round,
             "agreement_score": agreement_score,
-            "should_continue": synthesis.should_continue,
             "summary": synthesis.summary,
             "agreement_areas": synthesis.agreement_areas,
             "disagreement_areas": synthesis.disagreement_areas,
             "confidence_agreement_score": confidence_agreement,
+            "position_agreement_score": position_agreement,
             "semantic_agreement_score": semantic_agreement,
         })
 
@@ -466,10 +520,13 @@ def make_convergence_node(
         # Confidence has "converged" when agents stopped moving between rounds, or
         # they broadly agree on how settled things are (low confidence spread), or
         # every agent is highly confident.
+        # Drift is only measurable when the same agents spoke in both rounds; an
+        # empty or disjoint previous round would otherwise read as "no movement".
         drift: float | None = None
-        if len(ds.rounds) >= 2:
+        previous_outputs = ds.rounds[-2].agent_outputs if len(ds.rounds) >= 2 else []
+        if {o.agent_name for o in previous_outputs} & {o.agent_name for o in round_data.agent_outputs}:
             drift = ConsensusEngine().detect_position_drift(
-                ds.rounds[-2].agent_outputs,
+                previous_outputs,
                 round_data.agent_outputs,
             )
         _confidences = list(ds.confidence_scores.values())
@@ -482,12 +539,14 @@ def make_convergence_node(
         dissenting = len(select_dissenting_agents(round_data.agent_outputs, settings.MINORITY_REPORT_BAND))
         open_disagreements = count_open_disagreements(round_data.critiques)
 
+        active_vetoes = sum(1 for output in round_data.agent_outputs if output.veto)
         signals = ConsensusSignals(
             position_agreement=agreement_score,
             rounds_completed=ds.current_round,
             dissenting_agents=dissenting,
             open_disagreements=open_disagreements,
             confidence_converged=confidence_converged,
+            active_vetoes=active_vetoes,
         )
         consensus = is_consensus_reached(
             signals,
@@ -517,6 +576,7 @@ def make_convergence_node(
                 "open_disagreements": open_disagreements,
                 "confidence_converged": confidence_converged,
                 "drift": round(drift, 4) if drift is not None else None,
+                "active_vetoes": active_vetoes,
                 "consensus": consensus,
                 "should_continue": should_continue,
             },
@@ -534,7 +594,7 @@ def make_convergence_node(
                 "agreement_score": agreement_score,
                 "termination_reason": ds.termination_reason,
                 "synthesis_summary": synthesis.summary,
-                "options": ["approve", "override", "add_round"],
+                "options": _hitl_options(ds),
             }
 
         logger.info(
@@ -583,7 +643,7 @@ def make_hitl_node(
             "agreement_score": ds.agreement_score,
             "termination_reason": ds.termination_reason,
             "synthesis_summary": "",
-            "options": ["approve", "override", "add_round"],
+            "options": _hitl_options(ds),
         }
 
         ds.status = "awaiting_approval"
@@ -606,8 +666,16 @@ def make_hitl_node(
             ds.human_feedback = feedback
             ds.termination_reason = "human_override"
         elif action == "add_round":
-            ds.max_rounds += 1
-            should_continue = True
+            if ds.max_rounds < MAX_DEBATE_ROUNDS_LIMIT:
+                ds.max_rounds += 1
+                should_continue = True
+            else:
+                # The API rejects this up front; finalise rather than exceed the
+                # schema limit and leave a state that can no longer be loaded.
+                logger.warning(
+                    "hitl_add_round_over_limit",
+                    extra={"thread_id": ds.thread_id, "max_rounds": ds.max_rounds},
+                )
 
         logger.info(
             "hitl_decision",
@@ -795,6 +863,8 @@ def make_finalize_node(
                                     extra={"error": str(t.exception())},
                                 )
                         task.add_done_callback(_on_memory_done)
+                        _memory_tasks.add(task)
+                        task.add_done_callback(_memory_tasks.discard)
                         saved_names.add(output.agent_name)
                 break  # only save from the last round
 

@@ -36,10 +36,17 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import os
+import sqlite3
+import threading
 import time
-from collections.abc import Awaitable, Callable
+from collections.abc import AsyncIterator, Awaitable, Callable
+from contextlib import asynccontextmanager
 from typing import Any, cast
 
+import aiosqlite
+from langgraph.checkpoint.serde.jsonplus import JsonPlusSerializer  # type: ignore[import-untyped]
+from langgraph.checkpoint.sqlite import SqliteSaver  # type: ignore[import-untyped]
 from langgraph.checkpoint.sqlite.aio import AsyncSqliteSaver  # type: ignore[import-untyped]
 from langgraph.graph import END, START, StateGraph  # type: ignore[import-untyped]
 from langgraph.types import Command  # type: ignore[import-untyped]
@@ -61,9 +68,97 @@ from app.orchestrator.nodes import (
     make_proposals_node,
     make_revisions_node,
 )
-from app.schemas.final_decision import FinalDecision
-from app.schemas.state import DebateState
+from app.schemas.agent_response import AgentResponse, CritiqueResponse
+from app.schemas.final_decision import (
+    AgentStance,
+    FinalDecision,
+    MinorityReportEntry,
+    StructuredDisagreement,
+    VetoEntry,
+)
+from app.schemas.state import DebateRound, DebateState
 from app.services.llm_client import LangChainProvider
+
+# App classes stored inside LangGraph checkpoints. LangGraph only warns about
+# unregistered types today but will block them in a future version, which
+# would break resuming and HITL approval for every saved debate.
+_CHECKPOINT_TYPES = (
+    DebateState,
+    DebateRound,
+    AgentResponse,
+    CritiqueResponse,
+    FinalDecision,
+    MinorityReportEntry,
+    StructuredDisagreement,
+    AgentStance,
+    VetoEntry,
+)
+_CHECKPOINT_SERDE = JsonPlusSerializer(allowed_msgpack_modules=_CHECKPOINT_TYPES)
+
+
+# Checkpoint databases whose schema this process has already created.
+_initialised_checkpoint_dbs: set[str] = set()
+_checkpoint_init_lock = threading.Lock()
+
+
+def _ensure_checkpoint_schema(conn_string: str) -> None:
+    """Create the checkpoint tables once per database, serialised process-wide.
+
+    Every saver connection runs LangGraph's ``setup()`` (switch to WAL + create
+    tables). On a brand-new file, concurrent first setups — e.g. the parallel
+    runs of a simulation, or two users starting debates right after a fresh
+    deploy — fail with "database is locked". Done once up front, the per-
+    connection setups find everything in place and don't contend.
+    """
+    if conn_string == ":memory:" or conn_string in _initialised_checkpoint_dbs:
+        return
+    with _checkpoint_init_lock:
+        if conn_string in _initialised_checkpoint_dbs:
+            return
+        conn = sqlite3.connect(conn_string, timeout=30)
+        try:
+            SqliteSaver(conn).setup()
+        finally:
+            conn.close()
+        _initialised_checkpoint_dbs.add(conn_string)
+
+
+@asynccontextmanager
+async def _open_checkpointer(conn_string: str) -> AsyncIterator[AsyncSqliteSaver]:
+    """Like ``AsyncSqliteSaver.from_conn_string`` but with the app's serializer."""
+    await asyncio.to_thread(_ensure_checkpoint_schema, conn_string)
+    async with aiosqlite.connect(conn_string) as conn:
+        yield AsyncSqliteSaver(conn, serde=_CHECKPOINT_SERDE)
+
+
+async def prune_finished_checkpoints(checkpoint_url: str, database_url: str) -> int:
+    """Delete checkpoints of debates that have a final decision or no longer exist.
+
+    Checkpoints only matter for continuing a debate (resume / HITL approval), so
+    failed, cancelled and paused debates keep theirs. Returns threads removed.
+    """
+    if checkpoint_url == ":memory:" or not os.path.exists(checkpoint_url):
+        return 0
+    async with aiosqlite.connect(database_url) as db:
+        decided = {row[0] for row in await (await db.execute("SELECT thread_id FROM decisions")).fetchall()}
+        known = {row[0] for row in await (await db.execute("SELECT thread_id FROM debates")).fetchall()}
+    async with _open_checkpointer(checkpoint_url) as checkpointer:
+        await checkpointer.setup()
+        cur = await checkpointer.conn.execute("SELECT DISTINCT thread_id FROM checkpoints")
+        threads = [row[0] for row in await cur.fetchall()]
+        stale = [t for t in threads if t in decided or t not in known]
+        for thread_id in stale:
+            await checkpointer.adelete_thread(thread_id)
+        if stale:
+            await checkpointer.conn.execute("VACUUM")
+    return len(stale)
+
+
+def require_decision(decision: FinalDecision | None) -> FinalDecision:
+    """The decision of a run that went to the end; only a supervised run pauses without one."""
+    if decision is None:
+        raise RuntimeError("The debate ended without a decision.")
+    return decision
 
 
 class DebateGraph:
@@ -183,6 +278,18 @@ class DebateGraph:
         return result, dict(usage_cb.usage_metadata)
 
     @staticmethod
+    def _merge_usage(*usages: dict | None) -> dict[str, dict[str, int]]:
+        """Sum per-model usage dicts (integer counters only)."""
+        merged: dict[str, dict[str, int]] = {}
+        for usage in usages:
+            for model, counts in (usage or {}).items():
+                target = merged.setdefault(model, {})
+                for key, value in (counts or {}).items():
+                    if isinstance(value, int) and not isinstance(value, bool):
+                        target[key] = target.get(key, 0) + value
+        return merged
+
+    @staticmethod
     def _attach_usage(decision: FinalDecision | None, usage_by_model: dict) -> FinalDecision | None:
         """Attach aggregate token usage and an estimated cost to a decision."""
         if decision is None or not usage_by_model:
@@ -213,14 +320,14 @@ class DebateGraph:
 
         # Per-phase timeouts are configurable via Settings.
         _tool_mult = self.settings.AGENT_TOOL_TIMEOUT_MULTIPLIER
-        workflow.add_node("proposals",   make_proposals_node(self.agents, emit, self._on_state_change, self.settings.AGENT_PROPOSAL_TIMEOUT, _tool_mult))   # type: ignore[arg-type]
-        workflow.add_node("critiques",   make_critiques_node(self.agents, emit, self._on_state_change, self.settings.AGENT_CRITIQUE_TIMEOUT))   # type: ignore[arg-type]
-        workflow.add_node("revisions",   make_revisions_node(self.agents, emit, self._on_state_change, self.settings.AGENT_REVISION_TIMEOUT, _tool_mult))   # type: ignore[arg-type]
-        workflow.add_node("convergence", make_convergence_node(self.moderator, self.settings, emit, self._on_state_change))  # type: ignore[arg-type]
+        workflow.add_node("proposals",   make_proposals_node(self.agents, emit, self._on_state_change, self.settings.AGENT_PROPOSAL_TIMEOUT, _tool_mult))   # type: ignore[arg-type, call-overload]
+        workflow.add_node("critiques",   make_critiques_node(self.agents, emit, self._on_state_change, self.settings.AGENT_CRITIQUE_TIMEOUT))   # type: ignore[arg-type, call-overload]
+        workflow.add_node("revisions",   make_revisions_node(self.agents, emit, self._on_state_change, self.settings.AGENT_REVISION_TIMEOUT, _tool_mult))   # type: ignore[arg-type, call-overload]
+        workflow.add_node("convergence", make_convergence_node(self.moderator, self.settings, emit, self._on_state_change))  # type: ignore[arg-type, call-overload]
         # B2 Fix: HITL approval is a separate node so moderator.synthesize() is never
         # re-executed on resume — only interrupt()/approval handling re-runs.
-        workflow.add_node("hitl",        make_hitl_node(emit, self._on_state_change))  # type: ignore[arg-type]
-        workflow.add_node("finalize",    make_finalize_node(self.moderator, emit, self._on_state_change, self._memory_store, self.settings, list(self.agents.keys())))  # type: ignore[arg-type]
+        workflow.add_node("hitl",        make_hitl_node(emit, self._on_state_change))  # type: ignore[arg-type, call-overload]
+        workflow.add_node("finalize",    make_finalize_node(self.moderator, emit, self._on_state_change, self._memory_store, self.settings, list(self.agents.keys())))  # type: ignore[arg-type, call-overload]
 
         workflow.add_edge(START, "proposals")
 
@@ -267,9 +374,12 @@ class DebateGraph:
         consensus_threshold: float | None = None,
         skip_critique_phase: bool = False,
         hitl_mode: bool = False,
-    ) -> tuple[DebateState, FinalDecision]:
+    ) -> tuple[DebateState, FinalDecision | None]:
         """
         Execute the full debate graph and return ``(DebateState, FinalDecision)``.
+
+        The decision is ``None`` when a supervised (``hitl_mode``) debate pauses
+        for approval; the state then has status ``awaiting_approval``.
 
         Parameters
         ----------
@@ -344,14 +454,16 @@ class DebateGraph:
         thread_config = cast(Any, {"configurable": {"thread_id": debate_state.thread_id}})
 
         _debate_t0 = time.monotonic()
-        async with AsyncSqliteSaver.from_conn_string(
+        async with _open_checkpointer(
             self.settings.CHECKPOINT_DATABASE_URL
         ) as checkpointer:
             await checkpointer.setup()
             graph = self._build(checkpointer)
-            result, token_usage = await self._ainvoke_with_usage(
+            result, segment_usage = await self._ainvoke_with_usage(
                 graph, initial_graph_state, thread_config
             )
+        token_usage = self._merge_usage(debate_state.token_usage_by_model, segment_usage)
+        result["debate_state"].token_usage_by_model = token_usage
 
         if result.get("__interrupt__"):
             interrupt_payload = result["__interrupt__"][0].value
@@ -363,7 +475,7 @@ class DebateGraph:
             return paused_state, None
 
         final_debate_state: DebateState = result["debate_state"]
-        final_decision: FinalDecision = self._attach_usage(result["final_decision"], token_usage)
+        final_decision = self._attach_usage(result["final_decision"], token_usage)
 
         self.logger.info(
             "debate_total_timing",
@@ -376,10 +488,26 @@ class DebateGraph:
         )
         return final_debate_state, final_decision
 
+    async def delete_checkpoints(self, thread_id: str) -> None:
+        """Drop the saved progress of a debate that can no longer be continued."""
+        async with _open_checkpointer(self.settings.CHECKPOINT_DATABASE_URL) as checkpointer:
+            await checkpointer.setup()
+            await checkpointer.adelete_thread(thread_id)
+
+    async def has_checkpoint(self, thread_id: str) -> bool:
+        """True if LangGraph has saved progress for ``thread_id`` (so it can resume)."""
+        thread_config = cast(Any, {"configurable": {"thread_id": thread_id}})
+        async with _open_checkpointer(
+            self.settings.CHECKPOINT_DATABASE_URL
+        ) as checkpointer:
+            await checkpointer.setup()
+            return await checkpointer.aget_tuple(thread_config) is not None
+
     async def resume(
         self,
         thread_id: str,
-    ) -> tuple[DebateState, FinalDecision]:
+        prior_usage: dict | None = None,
+    ) -> tuple[DebateState, FinalDecision | None]:
         """
         Resume an interrupted debate from its last LangGraph checkpoint.
 
@@ -397,7 +525,7 @@ class DebateGraph:
         self.logger.info("debate_resume_attempt", extra={"thread_id": thread_id})
         self._emit("debate_resumed", {"thread_id": thread_id})
 
-        async with AsyncSqliteSaver.from_conn_string(
+        async with _open_checkpointer(
             self.settings.CHECKPOINT_DATABASE_URL
         ) as checkpointer:
             await checkpointer.setup()
@@ -418,7 +546,11 @@ class DebateGraph:
             graph = self._build(checkpointer)
             # Passing None lets LangGraph load the state from the checkpoint
             # instead of restarting the graph from the beginning.
-            result, token_usage = await self._ainvoke_with_usage(graph, None, thread_config)
+            result, segment_usage = await self._ainvoke_with_usage(graph, None, thread_config)
+        # Checkpoints don't carry usage merged after earlier segments; the caller
+        # passes the total recorded so far.
+        token_usage = self._merge_usage(prior_usage, segment_usage)
+        result["debate_state"].token_usage_by_model = token_usage
 
         if result.get("__interrupt__"):
             interrupt_payload = result["__interrupt__"][0].value
@@ -430,7 +562,7 @@ class DebateGraph:
             return paused_state, None
 
         final_debate_state: DebateState = result["debate_state"]
-        final_decision: FinalDecision = self._attach_usage(result["final_decision"], token_usage)
+        final_decision = self._attach_usage(result["final_decision"], token_usage)
 
         self.logger.info(
             "debate_resume_complete",
@@ -448,7 +580,8 @@ class DebateGraph:
         thread_id: str,
         action: str = "approve",
         feedback: str = "",
-    ) -> tuple[DebateState, FinalDecision]:
+        prior_usage: dict | None = None,
+    ) -> tuple[DebateState, FinalDecision | None]:
         """
         Resume a HITL-interrupted debate with the user's approval decision.
 
@@ -481,7 +614,7 @@ class DebateGraph:
                 f"Invalid action '{action}'. Must be 'approve', 'override', or 'add_round'."
             )
 
-        async with AsyncSqliteSaver.from_conn_string(
+        async with _open_checkpointer(
             self.settings.CHECKPOINT_DATABASE_URL
         ) as checkpointer:
             await checkpointer.setup()
@@ -505,11 +638,13 @@ class DebateGraph:
             self._emit("debate_approved", {"thread_id": thread_id, "action": action})
 
             graph = self._build(checkpointer)
-            result, token_usage = await self._ainvoke_with_usage(
+            result, segment_usage = await self._ainvoke_with_usage(
                 graph,
                 Command(resume={"action": action, "feedback": feedback}),
                 thread_config,
             )
+        token_usage = self._merge_usage(prior_usage, segment_usage)
+        result["debate_state"].token_usage_by_model = token_usage
 
         if result.get("__interrupt__"):
             interrupt_payload = result["__interrupt__"][0].value
@@ -521,7 +656,7 @@ class DebateGraph:
             return paused_state, None
 
         final_debate_state: DebateState = result["debate_state"]
-        final_decision: FinalDecision = self._attach_usage(result["final_decision"], token_usage)
+        final_decision = self._attach_usage(result["final_decision"], token_usage)
 
         self.logger.info(
             "debate_approve_complete",

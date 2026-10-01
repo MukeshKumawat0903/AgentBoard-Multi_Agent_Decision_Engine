@@ -16,7 +16,7 @@ import logging
 import time
 from abc import ABC, abstractmethod
 from collections.abc import Callable
-from typing import TYPE_CHECKING, Literal, TypeVar
+from typing import TYPE_CHECKING, ClassVar, Literal, TypeVar
 
 from pydantic import BaseModel, Field
 
@@ -108,6 +108,22 @@ class BaseAgent(ABC):
         self.temperature: float = 0.3
         self.max_retries: int = 2
 
+    # Schema the LLM fills for proposals and revisions; Ethics-class agents add a veto.
+    output_schema: ClassVar[type[AgentLLMOutput]] = AgentLLMOutput
+
+    def _to_response(self, raw: AgentLLMOutput, round_number: int) -> AgentResponse:
+        veto = bool(getattr(raw, "veto", False))
+        return AgentResponse(
+            agent_name=self.name,
+            round_number=round_number,
+            position=raw.position,
+            reasoning=raw.reasoning,
+            assumptions=raw.assumptions,
+            confidence_score=raw.confidence_score,
+            veto=veto,
+            veto_reason=getattr(raw, "veto_reason", None) if veto else None,
+        )
+
     async def run(self, state: DebateState) -> AgentResponse:
         user_prompt = self._build_proposal_prompt(state)
         # P3.1: inject knowledge-base context into the proposal prompt
@@ -119,20 +135,13 @@ class BaseAgent(ABC):
         # P3.3: inject agent memory into system prompt for this call
         system_prompt = await self._build_system_prompt(state)
         raw = await self._call_structured(
-            AgentLLMOutput,
+            self.output_schema,
             "proposal",
             state.current_round,
             user_prompt,
             system_prompt=system_prompt,
         )
-        return AgentResponse(
-            agent_name=self.name,
-            round_number=state.current_round,
-            position=raw.position,
-            reasoning=raw.reasoning,
-            assumptions=raw.assumptions,
-            confidence_score=raw.confidence_score,
-        )
+        return self._to_response(raw, state.current_round)
 
     async def critique(
         self,
@@ -170,20 +179,13 @@ class BaseAgent(ABC):
             user_prompt = await self._run_tools(user_prompt, state.user_query)
         system_prompt = await self._build_system_prompt(state)
         raw = await self._call_structured(
-            AgentLLMOutput,
+            self.output_schema,
             "revision",
             state.current_round,
             user_prompt,
             system_prompt=system_prompt,
         )
-        return AgentResponse(
-            agent_name=self.name,
-            round_number=state.current_round,
-            position=raw.position,
-            reasoning=raw.reasoning,
-            assumptions=raw.assumptions,
-            confidence_score=raw.confidence_score,
-        )
+        return self._to_response(raw, state.current_round)
 
     @abstractmethod
     def _build_proposal_prompt(self, state: DebateState) -> str:

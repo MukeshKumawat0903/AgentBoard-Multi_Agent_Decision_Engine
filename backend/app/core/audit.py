@@ -21,8 +21,10 @@ def audit_event(
 ) -> None:
     """Emit a structured audit record for a state-changing operation."""
     client_ip = None
-    if request is not None and request.client is not None:
-        client_ip = request.client.host
+    if request is not None:
+        from app.core.rate_limiter import client_ip as resolve_client_ip
+
+        client_ip = resolve_client_ip(request)
 
     extra = {
         "action": action,

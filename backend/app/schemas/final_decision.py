@@ -38,6 +38,14 @@ class StructuredDisagreement(BaseModel):
     )
 
 
+class VetoEntry(BaseModel):
+    """An ethics veto still standing in the last round of the debate."""
+
+    agent_name: str = Field(description="Agent that issued the veto.")
+    reason: str = Field(description="Why the proposal was vetoed.")
+    round_number: int = Field(ge=1, description="Round in which the veto stood.")
+
+
 class FinalDecision(BaseModel):
     """
     The converged output of a completed multi-agent debate session.
@@ -131,6 +139,16 @@ class FinalDecision(BaseModel):
     estimated_cost_usd: float | None = Field(
         default=None,
         description="Best-effort estimated cost in USD (None when the model price is unknown).",
+    )
+    human_feedback: str | None = Field(
+        default=None,
+        description="Direction given by a human reviewer through a HITL override, "
+        "which the final decision was instructed to follow.",
+    )
+    vetoes: list[VetoEntry] = Field(
+        default_factory=list,
+        description="Ethics vetoes still standing when the debate ended; consensus "
+        "cannot be reached while one stands.",
     )
 
     model_config = ConfigDict(

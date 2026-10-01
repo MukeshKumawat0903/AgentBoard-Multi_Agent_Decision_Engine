@@ -121,7 +121,7 @@ class StrategyAgent(BaseAgent):
 
     @staticmethod
     def _build_context(state: DebateState) -> str:
-        lines = []
+        lines: list[str] = []
         for r in reversed(state.rounds):
             for out in r.agent_outputs:
                 if out.agent_name == "Analyst" and not any("Analyst" in ln for ln in lines):

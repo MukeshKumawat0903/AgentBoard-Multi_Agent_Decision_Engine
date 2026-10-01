@@ -171,6 +171,59 @@ class TestKnowledgeBaseIngest:
                 # delete must have been called with the old IDs
                 collection.delete.assert_called_once_with(ids=old_ids)
 
+    def _ingest_with_mock_collection(self, kb, path, metadata):
+        with patch("app.services.retriever.get_shared_embedder", return_value=_mock_embedder()):
+            with patch("app.services.retriever._load_chroma") as mock_chroma:
+                collection = MagicMock()
+                collection.get.return_value = {"ids": [], "metadatas": []}
+                mock_chroma.return_value.PersistentClient.return_value.get_or_create_collection.return_value = collection
+                asyncio.run(kb.ingest(str(path), metadata))
+                return collection
+
+    def test_upload_from_temp_file_is_indexed_under_original_name(self, tmp_path):
+        """Uploads arrive as temp files; chunks must carry the uploader's file name."""
+        kb = _make_kb(str(tmp_path))
+        temp_file = tmp_path / "tmpk2j3h4.txt"
+        temp_file.write_text("Quarterly revenue analysis. " * 20)
+
+        collection = self._ingest_with_mock_collection(kb, temp_file, {"source": "report.txt"})
+
+        collection.get.assert_called_once_with(where={"source": "report.txt"}, include=["metadatas"])
+        upserted = collection.upsert.call_args.kwargs["metadatas"]
+        assert upserted and {m["source"] for m in upserted} == {"report.txt"}
+
+    def test_identical_content_under_two_names_gets_distinct_ids(self, tmp_path):
+        body = "Shared policy text that two teams uploaded. " * 20
+        first, second = tmp_path / "tmp1.txt", tmp_path / "tmp2.txt"
+        first.write_text(body)
+        second.write_text(body)
+
+        # Fresh KB per ingest: a KB keeps the collection it initialised first.
+        ids_a = self._ingest_with_mock_collection(
+            _make_kb(str(tmp_path / "kb_a")), first, {"source": "a.txt"}
+        ).upsert.call_args.kwargs["ids"]
+        ids_b = self._ingest_with_mock_collection(
+            _make_kb(str(tmp_path / "kb_b")), second, {"source": "b.txt"}
+        ).upsert.call_args.kwargs["ids"]
+
+        assert set(ids_a).isdisjoint(ids_b)
+
+
+class TestDocumentName:
+    def test_prefers_source_metadata_over_temp_path(self):
+        from app.services.retriever import _document_name
+        assert _document_name("/tmp/tmpabc.pdf", {"source": "Annual Report.pdf"}) == "Annual Report.pdf"
+
+    def test_strips_directories_of_either_separator_style(self):
+        from app.services.retriever import _document_name
+        assert _document_name("/tmp/x.md", {"source": "../../etc/notes.md"}) == "notes.md"
+        assert _document_name("/tmp/x.md", {"source": "C:\\Users\\me\\notes.md"}) == "notes.md"
+
+    def test_falls_back_to_file_name_without_source(self):
+        from app.services.retriever import _document_name
+        assert _document_name("/data/handbook.txt", {}) == "handbook.txt"
+        assert _document_name("/data/handbook.txt", {"source": "  "}) == "handbook.txt"
+
 
 class TestKnowledgeBaseRetrieve:
     def _build_kb_with_mocked_retrieve(self, tmp_path, scores, docs, metas):
@@ -345,6 +398,19 @@ class TestKnowledgeEndpointsR1:
             f"chunks_indexed must be int, got {type(body['chunks_indexed'])}"
         )
         assert body["chunks_indexed"] == 3
+
+    def test_upload_passes_original_filename_to_ingest(self, tmp_path):
+        kb = self._make_kb_mock(chunks=3)
+        client = self._make_client_with_kb(kb)
+
+        txt = tmp_path / "local.txt"
+        txt.write_text("Hello world content for upload test.")
+        with open(txt, "rb") as f:
+            client.post("/knowledge/upload", files={"file": ("board-minutes.txt", f, "text/plain")})
+
+        ingested_path, metadata = kb.ingest.call_args.args
+        assert metadata["source"] == "board-minutes.txt"
+        assert not ingested_path.endswith("board-minutes.txt")  # really a temp file
 
     def test_list_documents_returns_json_list(self):
         kb = self._make_kb_mock()

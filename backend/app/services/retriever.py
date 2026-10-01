@@ -23,8 +23,12 @@ from __future__ import annotations
 
 import asyncio
 import hashlib
+import importlib.util
 import logging
 import threading
+import time
+from collections import OrderedDict
+from functools import lru_cache
 from pathlib import Path
 from typing import Any
 
@@ -153,6 +157,44 @@ def _load_file(file_path: str) -> str:
     return path.read_text(encoding="utf-8", errors="ignore")
 
 
+_MAX_DOCUMENT_NAME_LENGTH = 200
+
+
+def _document_name(file_path: str, metadata: dict[str, Any]) -> str:
+    """Name a document is listed, cited and deleted under.
+
+    Uploads are written to a temporary file first, so the caller passes the
+    original file name as ``metadata["source"]``; the temp path's own name is
+    only a fallback. Any directory part is stripped (both separator styles).
+    """
+    raw = str(metadata.get("source") or Path(file_path).name)
+    name = raw.replace("\\", "/").rsplit("/", 1)[-1].strip()
+    return name[:_MAX_DOCUMENT_NAME_LENGTH] or Path(file_path).name
+
+
+class KnowledgeBaseUnavailable(RuntimeError):
+    """The knowledge base could not be initialised (missing packages, model
+    download failure, unwritable cache directory, …)."""
+
+
+# Most recent distinct (query, k) retrievals kept in memory per knowledge base.
+_RETRIEVE_CACHE_SIZE = 256
+
+# After a failed initialisation, don't try again for this long (seconds):
+# loading Chroma and the embedding model is slow, and the cause (e.g. no
+# network for the model download) rarely clears within one request.
+_INIT_RETRY_AFTER_SECONDS = 300.0
+
+
+@lru_cache(maxsize=1)
+def _dependencies_installed() -> bool:
+    """Cheap check (no imports executed) that the optional packages exist."""
+    return all(
+        importlib.util.find_spec(name) is not None
+        for name in ("chromadb", "sentence_transformers")
+    )
+
+
 # ---------------------------------------------------------------------------
 # ChromaDB loader
 # ---------------------------------------------------------------------------
@@ -206,42 +248,74 @@ class KnowledgeBase:
         self._lock = asyncio.Lock()          # serialise async writes
         self._init_lock = threading.Lock()   # guard sync init (R8)
         self._available = False
+        # Why the last initialisation failed, and when (monotonic seconds).
+        self._init_error: str | None = None
+        self._init_failed_at = 0.0
 
-        # Per-instance retrieval cache: keyed by (query, k) → list[dict] (R6)
-        self._retrieve_cache: dict[tuple[str, int], list[dict[str, Any]]] = {}
+        # Per-instance retrieval cache: keyed by (query, k) → list[dict] (R6).
+        # Bounded LRU: every debate question adds an entry.
+        self._retrieve_cache: OrderedDict[tuple[str, int], list[dict[str, Any]]] = OrderedDict()
 
     # ------------------------------------------------------------------
     # Lazy initialisation (R8: thread-safe double-check)
     # ------------------------------------------------------------------
 
     def _ensure_available(self) -> None:
+        """Load Chroma and the embedding model (slow, blocking — run it in a thread)."""
         if self._available:
             return
         with self._init_lock:
             if self._available:
                 return
-            chromadb = _load_chroma()
-            self._client = chromadb.PersistentClient(path=self._persist_dir)
-            self._collection = self._client.get_or_create_collection(
-                name="agentboard_docs",
-                metadata={"hnsw:space": "cosine"},
-            )
-            # Load via shared cache (R5)
-            get_shared_embedder(self._embedding_model_name)
+            try:
+                chromadb = _load_chroma()
+                self._client = chromadb.PersistentClient(path=self._persist_dir)
+                self._collection = self._client.get_or_create_collection(
+                    name="agentboard_docs",
+                    metadata={"hnsw:space": "cosine"},
+                )
+                # Load via shared cache (R5)
+                get_shared_embedder(self._embedding_model_name)
+            except Exception as exc:
+                self._init_error = f"{type(exc).__name__}: {exc}"
+                self._init_failed_at = time.monotonic()
+                logger.warning(
+                    "knowledge_base_unavailable",
+                    extra={"error": self._init_error, "persist_dir": self._persist_dir},
+                )
+                raise
             self._available = True
+            self._init_error = None
+
+    def _recently_failed(self) -> bool:
+        return (
+            self._init_error is not None
+            and time.monotonic() - self._init_failed_at < _INIT_RETRY_AFTER_SECONDS
+        )
 
     @property
     def is_available(self) -> bool:
-        """Return True if chromadb and sentence-transformers are installed."""
-        try:
-            self._ensure_available()
+        """Cheap check that never loads anything: initialised already, or the
+        packages are installed and initialisation hasn't just failed."""
+        if self._available:
             return True
-        except (RuntimeError, Exception):  # noqa: BLE001  (R8: tolerate Chroma errors)
+        return not self._recently_failed() and _dependencies_installed()
+
+    async def ensure_ready(self) -> bool:
+        """Initialise in a worker thread if needed; False if the KB can't be used."""
+        if self._available:
+            return True
+        if self._recently_failed():
             return False
+        try:
+            await asyncio.to_thread(self._ensure_available)
+        except Exception:  # noqa: BLE001  (logged with the real cause in _ensure_available)
+            return False
+        return True
 
     async def warm(self) -> None:
         """Pre-load the embedding model and Chroma client in a thread (R8)."""
-        await asyncio.to_thread(self._ensure_available)
+        await self.ensure_ready()
 
     # ------------------------------------------------------------------
     # Public API
@@ -250,7 +324,8 @@ class KnowledgeBase:
     async def ingest(self, file_path: str, metadata: dict[str, Any] | None = None) -> int:
         """Chunk, embed, and store a document.  Returns the number of chunks ingested."""
         async with self._lock:
-            self._ensure_available()
+            if not await self.ensure_ready():
+                raise KnowledgeBaseUnavailable(self._init_error or "knowledge base packages are not installed")
             result = await asyncio.to_thread(self._ingest_sync, file_path, metadata or {})
             self._retrieve_cache.clear()  # invalidate cache on new content (R6)
             return result
@@ -261,8 +336,9 @@ class KnowledgeBase:
         if not chunks:
             return 0
 
-        doc_name = Path(file_path).name
+        doc_name = _document_name(file_path, metadata)
         content_hash = hashlib.md5(text.encode()).hexdigest()[:12]
+        name_hash = hashlib.md5(doc_name.encode()).hexdigest()[:8]
 
         # R2: delete stale chunks for this source before inserting
         existing = self._collection.get(where={"source": doc_name}, include=["metadatas"])
@@ -274,7 +350,9 @@ class KnowledgeBase:
                 extra={"file": doc_name, "removed": len(old_ids)},
             )
 
-        doc_ids = [f"{content_hash}_chunk_{i}" for i in range(len(chunks))]
+        # Include the document name so two files with identical text don't
+        # overwrite each other's chunks (and each other's source metadata).
+        doc_ids = [f"{name_hash}_{content_hash}_chunk_{i}" for i in range(len(chunks))]
         chunk_metadata = [
             {**metadata, "source": doc_name, "chunk": i, "content_hash": content_hash}
             for i in range(len(chunks))
@@ -303,14 +381,17 @@ class KnowledgeBase:
         Results are cached per (query, k) for the life of this instance (R6).
         Returns an empty list if the knowledge base is empty or unavailable.
         """
-        if not self.is_available:
+        if not await self.ensure_ready():
             return []
         effective_k = k if k is not None else self._top_k
         cache_key = (query, effective_k)
         if cache_key in self._retrieve_cache:
+            self._retrieve_cache.move_to_end(cache_key)
             return self._retrieve_cache[cache_key]
         result = await asyncio.to_thread(self._retrieve_sync, query, effective_k)
         self._retrieve_cache[cache_key] = result
+        while len(self._retrieve_cache) > _RETRIEVE_CACHE_SIZE:
+            self._retrieve_cache.popitem(last=False)
         return result
 
     def _retrieve_sync(self, query: str, k: int) -> list[dict[str, Any]]:
@@ -355,7 +436,7 @@ class KnowledgeBase:
 
     async def list_documents(self) -> list[dict[str, Any]]:
         """Return unique document names and their chunk counts."""
-        if not self.is_available:
+        if not await self.ensure_ready():
             return []
         return await asyncio.to_thread(self._list_sync)
 
@@ -370,7 +451,7 @@ class KnowledgeBase:
 
     async def delete_document(self, doc_name: str) -> int:
         """Delete all chunks for a given document.  Returns deleted count."""
-        if not self.is_available:
+        if not await self.ensure_ready():
             return 0
         async with self._lock:
             result = await asyncio.to_thread(self._delete_sync, doc_name)

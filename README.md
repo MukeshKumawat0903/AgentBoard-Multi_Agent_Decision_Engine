@@ -14,7 +14,7 @@ Built with **FastAPI**, **LangGraph**, **Next.js 15**, **React 18**, **Tailwind 
 | ----------------------------------------------------------------------------------- | --------------------------------------------------------------------------------- |
 | ![AgentBoard — New Debate workspace (light)](assets/screenshots/01-home-light.png) | ![AgentBoard — New Debate workspace (dark)](assets/screenshots/01-home-dark.png) |
 
-The landing page **is** the New Debate workspace: type a question, pick a debate **mode** — `Quick` (2 rounds, no critiques), `Standard` (2 rounds, full critique), `Thorough` (6 rounds), or `Custom` (pick your own round count + consensus threshold) — choose which of the five core agents (Analyst · Risk · Strategy · Ethics · Moderator) take part, toggle intelligence options (Knowledge Base RAG, Agent Memory, Supervised HITL), and start. Agents then debate live and converge on a decision you can defend.
+The landing page **is** the New Debate workspace: type a question, pick a debate **mode** — `Quick` (2 rounds, no critiques; the default), `Standard` (2 rounds, full critique), `Thorough` (6 rounds), or `Custom` (pick your own round count + consensus threshold) — choose which of the five core agents (Analyst · Risk · Strategy · Ethics · Moderator) take part, toggle intelligence options (Knowledge Base RAG, Agent Memory, Supervised HITL), and start. Agents then debate live and converge on a decision you can defend.
 
 > **More views:** the live debate stream, final-decision panel, analytics dashboard, history, and compare pages render against live data. To capture them, start the backend (`uvicorn app.main:app`) with a valid `GROQ_API_KEY`, run the frontend, open each page, and drop the PNGs into `assets/screenshots/` — then embed them here with `![Caption](assets/screenshots/<file>.png)`.
 
@@ -70,7 +70,7 @@ and full debate trace
 | **Analyst**   | 📊   | Objective data analyst       | Web search + date tools for factual grounding           |
 | **Risk**      | ⚠️ | Adversarial risk assessor    | Categorises risks by type & severity                    |
 | **Strategy**  | 🎯   | Actionable strategy proposer | Date tool for time-sensitive reasoning; 2+ alternatives |
-| **Ethics**    | 🤝   | Ethics & compliance guardian | **VETO power** on ethical violations              |
+| **Ethics**    | 🤝   | Ethics & compliance guardian | **VETO power**: a veto blocks consensus and is listed in the decision |
 | **Moderator** | 🏛️ | Neutral synthesiser          | Produces the final consensus decision                   |
 
 ### Domain Agents (activated via domain packs)
@@ -231,12 +231,14 @@ python -m venv venv
 # macOS / Linux
 source venv/bin/activate
 
-pip install -r requirements.txt
+pip install -r requirements-dev.lock   # pinned, tested versions (CPU-only torch)
 copy .env.example .env          # then add your GROQ_API_KEY
 uvicorn app.main:app --reload --port 8000
 ```
 
 Alembic migrations run automatically on startup.
+
+`requirements-dev.lock` (runtime + test tools) and `requirements.lock` (runtime only, used by Docker) pin every package to the versions CI tests against. Use Python 3.11, as the image and CI do (on macOS, version 14 or later). If an existing venv misbehaves — for example `langchain_openai` fails to import, or the knowledge base reports missing packages — delete the `venv` folder and recreate it with the steps above. `requirements.txt` only lists the direct dependencies; see `requirements-dev.txt` for how to regenerate the locks.
 
 ### 2. Frontend (new terminal)
 

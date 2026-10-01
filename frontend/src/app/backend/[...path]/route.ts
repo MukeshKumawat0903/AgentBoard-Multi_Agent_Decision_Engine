@@ -50,8 +50,9 @@ function buildUpstreamHeaders(req: NextRequest): Headers {
       headers.set(key, value);
     }
   });
-  // Let the upstream know where the request came from
-  headers.set("x-forwarded-for", req.headers.get("x-forwarded-for") ?? "unknown");
+  // x-forwarded-for is copied above: the Next.js server fills it with the
+  // client's socket address (or keeps the one an edge proxy sent), and the
+  // backend uses it for per-client rate limiting when it trusts this proxy.
   headers.set("x-forwarded-host", req.headers.get("host") ?? "");
   return headers;
 }
@@ -81,6 +82,9 @@ async function proxyRequest(
       method: req.method,
       headers: upstreamHeaders,
       body,
+      // When the browser goes away (tab closed, EventSource closed), abort the
+      // upstream request too, so the backend sees the disconnect.
+      signal: req.signal,
       // Required for streaming / SSE responses — do not buffer the body.
       // @ts-expect-error – Node 18 fetch supports duplex but TS types lag behind
       duplex: "half",
@@ -101,6 +105,10 @@ async function proxyRequest(
       headers: responseHeaders,
     });
   } catch (err) {
+    // The client disconnected first — nobody is waiting for this response.
+    if (req.signal.aborted) {
+      return new Response(null, { status: 499 });
+    }
     const message =
       err instanceof Error ? err.message : "Unknown proxy error";
     console.error(`[backend-proxy] Failed to reach ${upstreamUrl}: ${message}`);

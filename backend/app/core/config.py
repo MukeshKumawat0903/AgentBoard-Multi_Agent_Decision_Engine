@@ -5,9 +5,14 @@ Loads environment variables from .env file and provides
 a singleton Settings instance for the entire application.
 """
 
+from pathlib import Path
 from typing import Literal
 
+from pydantic import field_validator, model_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
+
+# backend/ — relative data paths are anchored here, not to the process CWD.
+BACKEND_DIR = Path(__file__).resolve().parents[2]
 
 
 class Settings(BaseSettings):
@@ -17,8 +22,9 @@ class Settings(BaseSettings):
     APP_ENV: Literal["development", "staging", "production"] = "development"
     APP_VERSION: str = "2.0.0"
 
-    # --- GROQ LLM Configuration (primary provider) ---
-    GROQ_API_KEY: str
+    # --- GROQ LLM Configuration (default provider) ---
+    # Only the active provider's key is required (see _require_active_provider_key).
+    GROQ_API_KEY: str = ""
     GROQ_MODEL: str = "llama-3.3-70b-versatile"
     GROQ_BASE_URL: str = "https://api.groq.com/openai/v1"
 
@@ -33,6 +39,10 @@ class Settings(BaseSettings):
     GEMINI_MODEL: str = "gemini-3.5-flash"
 
     # --- Debate Engine Configuration ---
+    # Mode used when a debate or simulation doesn't pick one, and the mode the
+    # UI pre-selects. Quick (the cheapest preset) when not set.
+    DEFAULT_DEBATE_MODE: Literal["quick", "standard", "thorough"] = "quick"
+
     # Orchestrator-level fallbacks used only when DebateGraph is driven directly
     # without going through resolve_debate_config's mode presets (see
     # debate_graph.py / nodes.py). Aligned with the "standard" mode preset so
@@ -67,19 +77,37 @@ class Settings(BaseSettings):
     MAX_OPEN_DISAGREEMENTS_FOR_CONSENSUS: int = 2
     # Weight of confidence-weighted *position overlap* in the displayed/gated
     # agreement score; the remainder is mean self-confidence. Kept modest because
-    # raw word-overlap runs low even when agents substantively agree — the other
-    # gate criteria (min rounds, dissent, open disagreements) carry the real load.
+    # word-overlap is a weak signal — the other gate criteria (min rounds,
+    # dissent, open disagreements) carry the real load.
     CONSENSUS_POSITION_WEIGHT: float = 0.3
+    # Raw word-overlap is rescaled to 0–1 before blending. Measured on real
+    # debates: positions from unrelated debates overlap ~0.08 (scores 0), the same
+    # agent restating its stance in the next round overlaps ~0.19 (scores 1).
+    POSITION_OVERLAP_FLOOR: float = 0.08
+    POSITION_OVERLAP_CEILING: float = 0.19
     # Max tool invocations an agent may make per proposal/revision call.
     MAX_TOOL_CALLS_PER_ROUND: int = 3
+    # Max LLM calls in flight per provider (0 = unlimited). A debate fans out
+    # N×(N-1) critiques at once, which otherwise trips provider rate limits.
+    # Time spent waiting for a slot does not count against agent timeouts.
+    LLM_MAX_CONCURRENCY: int = 4
 
     # --- Application Configuration ---
     LOG_LEVEL: str = "INFO"
+    # Directory for the rotating log file (relative paths: under backend/).
+    LOG_DIR: str = "logs"
     CORS_ORIGINS: list[str] = ["http://localhost:3000"]
 
     # --- Security ---
-    SECRET_KEY: str = "change-me-in-production-use-a-32-char-secret"
+    # Token for administrative actions (switching the LLM provider, clearing
+    # agent memory, deleting KB documents), sent as the X-Admin-Token header.
+    # Empty: those actions are open in development and refused in production.
+    ADMIN_API_TOKEN: str = ""
     RATE_LIMIT_PER_MINUTE: int = 30
+    # Comma-separated IPs/CIDRs of proxies in front of the API (the Next.js
+    # server, an edge proxy). Requests from these use X-Forwarded-For as the
+    # client address for rate limiting and logs.
+    TRUSTED_PROXY_IPS: str = "127.0.0.1,::1"
 
     # --- Agent Registry ---
     # Comma-separated list of agent names that are enabled by default.
@@ -118,11 +146,40 @@ class Settings(BaseSettings):
     # Set False to disable HITL even when supervised mode is requested.
     HITL_ENABLED: bool = True
 
+    @field_validator("DATABASE_URL", "CHECKPOINT_DATABASE_URL", "KNOWLEDGE_BASE_DIR", "LOG_DIR")
+    @classmethod
+    def _anchor_data_paths(cls, value: str) -> str:
+        """Resolve relative data paths against backend/ and accept sqlite URLs.
+
+        Otherwise starting the server from another directory silently creates
+        (and uses) a second, empty database next to wherever it was launched,
+        and a "sqlite:///x.db" URL would be opened by aiosqlite as a file
+        literally named "sqlite:///x.db".
+        """
+        if value == ":memory:":
+            return value
+        for prefix in ("sqlite+aiosqlite:///", "sqlite:///"):
+            if value.startswith(prefix):
+                value = value[len(prefix):]
+                break
+        path = Path(value)
+        return str(path if path.is_absolute() else (BACKEND_DIR / path).resolve())
+
+    @model_validator(mode="after")
+    def _require_active_provider_key(self) -> "Settings":
+        """Fail at startup when the provider debates will use has no API key."""
+        key_setting = f"{self.LLM_PROVIDER.upper()}_API_KEY"
+        if not getattr(self, key_setting):
+            raise ValueError(f"{key_setting} is required when LLM_PROVIDER={self.LLM_PROVIDER}.")
+        return self
+
     model_config = SettingsConfigDict(
         env_file=".env",
         env_file_encoding="utf-8",
         case_sensitive=True,
         extra="ignore",
+        # Settings hold API keys; keep their values out of validation errors and logs.
+        hide_input_in_errors=True,
     )
 
 

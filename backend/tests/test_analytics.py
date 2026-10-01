@@ -3,7 +3,7 @@ Tests for Phase 5 — Analytics & Evaluation backend endpoints.
 
 Coverage
 --------
-GET /analytics/overview    — returns expected keys; empty DB returns zeros
+GET /analytics/overview    — returns expected keys (values: test_analytics_accuracy.py)
 GET /analytics/agents      — returns expected keys; populated DB returns stats
 GET /analytics/convergence — returns expected keys; synthesis events shape the curve
 GET /analytics/quality     — returns evaluated_count=0 when no evaluations exist
@@ -26,7 +26,6 @@ from app.api.dependencies import get_db
 from app.db.crud import (
     get_analytics_agents,
     get_analytics_convergence,
-    get_analytics_overview,
     get_analytics_quality,
 )
 from app.main import app
@@ -96,56 +95,6 @@ class _FakeDB:
             if key.lower() in sql.lower():
                 return _FakeCursor(rows)
         return _FakeCursor([])
-
-
-# ---------------------------------------------------------------------------
-# Overview CRUD tests
-# ---------------------------------------------------------------------------
-
-
-class TestAnalyticsOverviewCRUD:
-    """Direct CRUD function tests — no HTTP layer."""
-
-    @pytest.mark.anyio
-    async def test_empty_db_returns_zeros(self):
-        db = _FakeDB(
-            {
-                "avg(current_round)": [(None, None)],
-                "date(created": [],
-                "coalesce(termination_reason": [],
-                "count(*) from debates": [(0,)],
-            }
-        )
-        result = await get_analytics_overview(db)  # type: ignore[arg-type]
-        assert result["total_debates"] == 0
-        assert result["avg_rounds_to_consensus"] == 0.0
-        assert result["avg_agreement_score"] == 0.0
-        assert result["debates_by_termination"] == {}
-        assert result["debates_per_day"] == []
-
-    @pytest.mark.anyio
-    async def test_with_data_returns_correct_values(self):
-        state_json = json.dumps({"domain_pack": "finance", "max_rounds": 4})
-        db = _FakeDB(
-            {
-                "avg(current_round)": [(2.5, 0.82)],
-                "date(created": [
-                    ("2026-03-19", 2),
-                    ("2026-03-20", 1),
-                ],
-                "coalesce(termination_reason": [
-                    ("consensus_reached", 2),
-                    ("max_rounds_reached", 1),
-                ],
-                "count(*) from debates": [(3,)],
-            }
-        )
-        result = await get_analytics_overview(db)  # type: ignore[arg-type]
-        assert result["total_debates"] == 3
-        assert result["avg_rounds_to_consensus"] == 2.5
-        assert result["avg_agreement_score"] == pytest.approx(0.82, abs=0.001)
-        assert result["debates_by_termination"]["consensus_reached"] == 2
-        assert len(result["debates_per_day"]) == 2
 
 
 # ---------------------------------------------------------------------------

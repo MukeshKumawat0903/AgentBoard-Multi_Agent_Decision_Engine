@@ -7,8 +7,10 @@ separate from the domain schemas to keep API contracts clean.
 
 from typing import Literal
 
-from pydantic import BaseModel, ConfigDict, Field, model_validator
+from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
+from app.core.config import settings
+from app.data.templates import TEMPLATES
 from app.schemas.state import DebateRound
 
 __all__ = [
@@ -24,13 +26,41 @@ __all__ = [
 # Debate mode presets
 # ---------------------------------------------------------------------------
 
-DebateMode = Literal["quick", "standard", "thorough"]
+DebateMode = Literal["quick", "standard", "thorough", "custom"]
 
 _MODE_PRESETS: dict[str, dict] = {
     "quick":    {"max_rounds": 2, "consensus_threshold": 0.60, "skip_critique_phase": True,  "min_rounds": 1},
     "standard": {"max_rounds": 2, "consensus_threshold": 0.75, "skip_critique_phase": False, "min_rounds": 2},
     "thorough": {"max_rounds": 6, "consensus_threshold": 0.85, "skip_critique_phase": False, "min_rounds": 3},
 }
+# "custom" is the caller's own rounds/threshold on top of Standard's other settings;
+# it is a separate mode so analytics can tell those debates apart.
+_MODE_PRESETS["custom"] = dict(_MODE_PRESETS["standard"])
+
+def default_debate_mode() -> DebateMode:
+    """Mode used when a request doesn't name one: the DEFAULT_DEBATE_MODE setting,
+    which is Quick (the cheapest preset) unless configured otherwise."""
+    return settings.DEFAULT_DEBATE_MODE
+
+
+def mode_presets() -> dict[str, dict]:
+    """Copy of the mode presets (rounds, threshold, critique phase, minimum rounds)."""
+    return {name: dict(preset) for name, preset in _MODE_PRESETS.items()}
+
+_TEMPLATE_IDS = frozenset(t.id for t in TEMPLATES)
+
+# A debate needs at least two agents besides the Moderator, who only synthesises.
+MIN_DEBATING_AGENTS = 2
+
+
+def _check_debating_agents(agents: list[str] | None, domain_pack: str | None) -> None:
+    """Reject an explicit agent list with fewer than two debaters (a domain pack replaces it)."""
+    if agents and not domain_pack:
+        debaters = {name for name in agents if name != "Moderator"}
+        if len(debaters) < MIN_DEBATING_AGENTS:
+            raise ValueError(
+                f"Select at least {MIN_DEBATING_AGENTS} debating agents; the Moderator does not count."
+            )
 
 
 def resolve_debate_config(
@@ -45,8 +75,8 @@ def resolve_debate_config(
     after merging mode presets with any explicit overrides.  Explicit values
     always win.
 
-    Mode presets (``_MODE_PRESETS``, defaulting to "standard" when ``mode`` is
-    ``None``) are the single source of defaults for API-resolved debates.
+    Mode presets (``_MODE_PRESETS``, defaulting to ``default_debate_mode()`` when
+    ``mode`` is ``None``) are the single source of defaults for API-resolved debates.
     ``Settings.MAX_DEBATE_ROUNDS`` / ``CONSENSUS_THRESHOLD`` are separate,
     orchestrator-level fallbacks used only when ``DebateGraph`` is driven
     directly without going through this resolution (see debate_graph.py /
@@ -54,7 +84,8 @@ def resolve_debate_config(
 
     ``min_rounds`` is clamped to ``max_rounds`` so it can never exceed the cap.
     """
-    base = _MODE_PRESETS.get(mode or "standard", _MODE_PRESETS["standard"])
+    default = default_debate_mode()
+    base = _MODE_PRESETS.get(mode or default, _MODE_PRESETS[default])
     resolved_rounds = max_rounds if max_rounds is not None else base["max_rounds"]
     resolved_threshold = consensus_threshold if consensus_threshold is not None else base["consensus_threshold"]
     resolved_skip = skip_critique_phase if skip_critique_phase is not None else base["skip_critique_phase"]
@@ -75,7 +106,9 @@ class DebateStartRequest(BaseModel):
         default=None,
         description=(
             "Preset debate mode: 'quick' (2 rounds, no critiques), "
-            "'standard' (2 rounds), 'thorough' (6 rounds). "
+            "'standard' (2 rounds), 'thorough' (6 rounds), or 'custom' (Standard's "
+            "settings with your own rounds/threshold). Omitted: DEFAULT_DEBATE_MODE "
+            "(Quick unless configured). "
             "Explicit max_rounds/consensus_threshold override the preset."
         ),
     )
@@ -103,7 +136,10 @@ class DebateStartRequest(BaseModel):
     )
     agents: list[str] | None = Field(
         default=None,
-        description="Optional subset of agent names to use. Defaults to all enabled agents.",
+        description=(
+            "Optional subset of agent names to use, with at least 2 besides the Moderator. "
+            "Defaults to all enabled agents."
+        ),
     )
     use_knowledge_base: bool = Field(
         default=False,
@@ -121,6 +157,22 @@ class DebateStartRequest(BaseModel):
         default=False,
         description="When True, the debate pauses after each convergence phase for human approval.",
     )
+    template_id: str | None = Field(
+        default=None,
+        description="ID of the built-in template (GET /templates) the query started from, if any.",
+    )
+
+    @field_validator("template_id")
+    @classmethod
+    def _known_template(cls, value: str | None) -> str | None:
+        # Only used for analytics, so an unknown id (e.g. a template list cached
+        # from an older version) is dropped rather than failing the debate.
+        return value if value in _TEMPLATE_IDS else None
+
+    @model_validator(mode="after")
+    def require_two_debaters(self) -> "DebateStartRequest":
+        _check_debating_agents(self.agents, self.domain_pack)
+        return self
 
     @model_validator(mode="after")
     def apply_mode_defaults(self) -> "DebateStartRequest":
@@ -137,14 +189,14 @@ class DebateStartRequest(BaseModel):
         self.skip_critique_phase = resolved_skip
         self.min_rounds = resolved_min
         if self.mode is None:
-            self.mode = "standard"
+            self.mode = default_debate_mode()
         return self
 
     model_config = ConfigDict(
         json_schema_extra={
             "example": {
                 "query": "Should our company expand into the Asian market in Q3?",
-                "mode": "standard",
+                "mode": "quick",
                 "agents": None,
             }
         }
@@ -160,13 +212,22 @@ class SimulateRequest(BaseModel):
         description="The decision question to simulate across N independent runs.",
     )
     runs: int = Field(default=3, ge=2, le=5, description="Number of independent runs.")
-    max_rounds: int = Field(default=3, ge=2, le=6, description="Max rounds per run.")
-    mode: DebateMode = Field(default="standard", description="Debate mode preset.")
+    max_rounds: int | None = Field(
+        default=None, ge=2, le=6,
+        description="Max rounds per run. Omit to use the mode's preset (quick 2, standard 2, thorough 6).",
+    )
+    mode: DebateMode = Field(
+        default_factory=default_debate_mode,
+        description="Debate mode preset. Omitted: DEFAULT_DEBATE_MODE (Quick unless configured).",
+    )
     # Honour the same configuration a single debate would use, so a simulation
     # reproduces the exact agent set / intelligence toggles being tested.
     agents: list[str] | None = Field(
         default=None,
-        description="Optional subset of agent names. Defaults to all enabled agents.",
+        description=(
+            "Optional subset of agent names, with at least 2 besides the Moderator. "
+            "Defaults to all enabled agents."
+        ),
     )
     domain_pack: str | None = Field(
         default=None,
@@ -181,6 +242,18 @@ class SimulateRequest(BaseModel):
         description="When True, agents receive past-debate lessons in each run.",
     )
 
+    @model_validator(mode="after")
+    def require_two_debaters(self) -> "SimulateRequest":
+        _check_debating_agents(self.agents, self.domain_pack)
+        return self
+
+
+class DebateModesResponse(BaseModel):
+    """Response for GET /debate-modes."""
+
+    default_mode: DebateMode = Field(description="Mode used when none is chosen (DEFAULT_DEBATE_MODE).")
+    presets: dict[str, dict] = Field(description="Settings each mode applies.")
+
 
 class ApproveRequest(BaseModel):
     """Request body for POST /debate/{thread_id}/approve."""
@@ -194,6 +267,12 @@ class ApproveRequest(BaseModel):
         max_length=5000,
         description="Human feedback text, used with the 'override' action.",
     )
+
+    @model_validator(mode="after")
+    def require_feedback_for_override(self) -> "ApproveRequest":
+        if self.action == "override" and not self.feedback.strip():
+            raise ValueError("feedback is required when action is 'override'.")
+        return self
 
 
 class DebateStartResponse(BaseModel):
@@ -358,6 +437,14 @@ class LLMSettingsResponse(BaseModel):
     using_custom_key: bool = Field(
         description="True when a user-supplied API key is active (non-Groq providers)."
     )
+    server_keys: dict[str, bool] = Field(
+        default_factory=dict,
+        description="Providers that have an API key configured on the server.",
+    )
+    admin_token_required: bool = Field(
+        default=False,
+        description="True when switching providers requires the X-Admin-Token header.",
+    )
 
 
 class LLMSettingsUpdate(BaseModel):
@@ -367,15 +454,11 @@ class LLMSettingsUpdate(BaseModel):
     model: str
     api_key: str | None = Field(
         default=None,
-        description="Required when provider is 'openai', 'anthropic' or 'gemini'.",
+        description="Optional; when omitted the server's configured key for the provider is used.",
     )
 
     @model_validator(mode="after")
-    def require_key_for_non_groq(self) -> "LLMSettingsUpdate":
-        if self.provider != "groq" and not self.api_key:
-            raise ValueError(
-                f"api_key is required when switching to provider '{self.provider}'."
-            )
+    def check_model_for_provider(self) -> "LLMSettingsUpdate":
         if self.model not in PROVIDER_MODELS.get(self.provider, []):
             raise ValueError(
                 f"Model '{self.model}' is not available for provider '{self.provider}'."

@@ -5,20 +5,30 @@
 
 "use client";
 
-import { useEffect, useState, useCallback, useMemo } from "react";
+import { useEffect, useState, useCallback, useRef } from "react";
 import Link from "next/link";
 import { useRouter } from "next/navigation";
 import { BookOpen, Brain, Check } from "lucide-react";
 import type { HistoryItem, HistoryListResponse } from "@/lib/types";
-import { getHistory, ApiError } from "@/lib/api";
+import { getHistory, type HistorySort, type HistoryTerminationReason } from "@/lib/api";
 import { SkeletonList } from "@/components/Skeleton";
-import Badge from "@/components/ui/Badge";
-import Button from "@/components/ui/Button";
+import Badge, { type BadgeTone } from "@/components/ui/Badge";
+import Button, { buttonClasses } from "@/components/ui/Button";
 
 const LIMIT = 15;
 
-type TerminationFilter = "all" | "consensus_reached" | "max_rounds_reached";
-type SortOrder = "newest" | "oldest" | "highest_agreement";
+type TerminationFilter = "all" | HistoryTerminationReason;
+
+const TERMINATION_BADGES: Record<string, { label: string; tone: BadgeTone }> = {
+  consensus_reached: { label: "Consensus", tone: "success" },
+  human_override: { label: "Human Override", tone: "violet" },
+  max_rounds_reached: { label: "Max Rounds", tone: "warning" },
+};
+
+function terminationBadge(reason: string): { label: string; tone: BadgeTone } {
+  return TERMINATION_BADGES[reason] ?? { label: reason.replace(/_/g, " "), tone: "neutral" };
+}
+type SortOrder = HistorySort;
 
 export default function HistoryPage() {
   const router = useRouter();
@@ -31,25 +41,37 @@ export default function HistoryPage() {
   const [terminationFilter, setTerminationFilter] = useState<TerminationFilter>("all");
   const [sortOrder, setSortOrder] = useState<SortOrder>("newest");
 
+  // Only the most recent request may update the page; slower earlier responses are dropped.
+  const latestRequest = useRef(0);
+
   const load = useCallback(
-    async (p: number, q: string) => {
+    async (p: number, q: string, filter: TerminationFilter, sort: SortOrder) => {
+      const requestId = ++latestRequest.current;
       setLoading(true);
       setError(null);
       try {
-        const res = await getHistory({ page: p, limit: LIMIT, q: q || undefined });
-        setData(res);
+        const res = await getHistory({
+          page: p,
+          limit: LIMIT,
+          q: q || undefined,
+          sort,
+          termination_reason: filter === "all" ? undefined : filter,
+        });
+        if (requestId === latestRequest.current) setData(res);
       } catch (err) {
-        setError(err instanceof Error ? err.message : "Failed to load history.");
+        if (requestId === latestRequest.current) {
+          setError(err instanceof Error ? err.message : "Failed to load history.");
+        }
       } finally {
-        setLoading(false);
+        if (requestId === latestRequest.current) setLoading(false);
       }
     },
     [],
   );
 
   useEffect(() => {
-    load(page, query);
-  }, [page, query, load]);
+    load(page, query, terminationFilter, sortOrder);
+  }, [page, query, terminationFilter, sortOrder, load]);
 
   // Debounce inputValue → query (300 ms). Resets to page 1 on each new search.
   useEffect(() => {
@@ -74,17 +96,8 @@ export default function HistoryPage() {
     setSortOrder("newest");
   }
 
-  const filteredItems = useMemo(() => {
-    if (!data) return [];
-    let items = [...data.items];
-    if (terminationFilter !== "all") {
-      items = items.filter((i) => i.termination_reason === terminationFilter);
-    }
-    if (sortOrder === "oldest") items.sort((a, b) => a.created_at.localeCompare(b.created_at));
-    else if (sortOrder === "highest_agreement") items.sort((a, b) => b.agreement_score - a.agreement_score);
-    else items.sort((a, b) => b.created_at.localeCompare(a.created_at));
-    return items;
-  }, [data, terminationFilter, sortOrder]);
+  // Filtering and sorting are done by the server across the whole history.
+  const items = data?.items ?? [];
 
   const totalPages = data ? Math.ceil(data.total / LIMIT) : 0;
 
@@ -122,7 +135,7 @@ export default function HistoryPage() {
       {/* Filter chips + sort */}
       <div className="flex flex-wrap items-center gap-2">
         <span className="text-xs text-gray-400 font-medium">Filter:</span>
-        {(["all", "consensus_reached", "max_rounds_reached"] as TerminationFilter[]).map((f) => (
+        {(["all", "consensus_reached", "human_override", "max_rounds_reached"] as TerminationFilter[]).map((f) => (
           <button
             key={f}
             type="button"
@@ -134,7 +147,7 @@ export default function HistoryPage() {
             }`}
           >
             {f === "consensus_reached" && <Check className="w-3 h-3" aria-hidden="true" />}
-            {f === "all" ? "All" : f === "consensus_reached" ? "Consensus" : "Max Rounds"}
+            {f === "all" ? "All" : terminationBadge(f).label}
           </button>
         ))}
 
@@ -142,7 +155,7 @@ export default function HistoryPage() {
           Sort:
           <select
             value={sortOrder}
-            onChange={(e) => setSortOrder(e.target.value as SortOrder)}
+            onChange={(e) => { setSortOrder(e.target.value as SortOrder); setPage(1); }}
             className="text-xs rounded border border-line-strong bg-surface-raised text-gray-700 dark:text-gray-300 px-2 py-1 focus:outline-none focus:ring-1 focus:ring-accent-500"
           >
             <option value="newest">Newest first</option>
@@ -158,7 +171,7 @@ export default function HistoryPage() {
           <span>{error}</span>
           <button
             type="button"
-            onClick={() => load(page, query)}
+            onClick={() => load(page, query, terminationFilter, sortOrder)}
             className="shrink-0 text-xs font-medium underline hover:no-underline"
           >
             Retry
@@ -168,7 +181,7 @@ export default function HistoryPage() {
 
       {loading ? (
         <SkeletonList count={5} />
-      ) : !error && filteredItems.length === 0 ? (
+      ) : !error && items.length === 0 ? (
         <div className="flex flex-col items-center justify-center py-20 gap-5 text-center">
           <svg width="64" height="64" viewBox="0 0 64 64" fill="none" aria-hidden="true">
             <rect width="64" height="64" rx="16" className="fill-gray-100 dark:fill-gray-800" />
@@ -200,7 +213,7 @@ export default function HistoryPage() {
         </div>
       ) : (
         <div className="space-y-3">
-          {filteredItems.map((item) => (
+          {items.map((item) => (
             <HistoryCard key={item.thread_id} item={item} router={router} />
           ))}
         </div>
@@ -268,11 +281,11 @@ function HistoryCard({
                 <Brain className="w-3 h-3" aria-hidden="true" /> Memory
               </Badge>
             )}
-            <Badge tone={item.termination_reason === "consensus_reached" ? "success" : "warning"}>
+            <Badge tone={terminationBadge(item.termination_reason).tone}>
               {item.termination_reason === "consensus_reached" && (
                 <Check className="w-3 h-3" aria-hidden="true" />
               )}
-              {item.termination_reason === "consensus_reached" ? "Consensus" : "Max Rounds"}
+              {terminationBadge(item.termination_reason).label}
             </Badge>
           </div>
 
@@ -294,28 +307,22 @@ function HistoryCard({
           </div>
         </div>
 
-        {/* Buttons */}
+        {/* Links, so they can also be opened in a new tab */}
         <div className="flex flex-col gap-1 shrink-0">
-          <Button
-            size="sm"
-            variant="primary"
-            onClick={(e) => {
-              e.stopPropagation();
-              router.push(`/debate/${item.thread_id}`);
-            }}
+          <Link
+            href={`/debate/${item.thread_id}`}
+            onClick={(e) => e.stopPropagation()}
+            className={buttonClasses("primary", "sm")}
           >
             View
-          </Button>
-          <Button
-            size="sm"
-            variant="outline"
-            onClick={(e) => {
-              e.stopPropagation();
-              router.push(`/compare?a=${item.thread_id}`);
-            }}
+          </Link>
+          <Link
+            href={`/compare?a=${item.thread_id}`}
+            onClick={(e) => e.stopPropagation()}
+            className={buttonClasses("outline", "sm")}
           >
             Compare
-          </Button>
+          </Link>
         </div>
       </div>
     </div>

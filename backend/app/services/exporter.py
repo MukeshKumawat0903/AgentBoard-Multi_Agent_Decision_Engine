@@ -27,6 +27,12 @@ def render_markdown(decision: FinalDecision) -> str:
         lines.append(f"\n## Query\n\n{decision.query}")
 
     lines.append(f"\n## Decision\n\n{decision.decision}")
+    if decision.human_feedback:
+        lines.append(f"\n## Human Reviewer Direction\n\n{decision.human_feedback}")
+    if decision.vetoes:
+        lines.append("\n## Standing Vetoes\n")
+        for v in decision.vetoes:
+            lines.append(f"- **{v.agent_name}** (round {v.round_number}): {v.reason}")
     lines.append(f"\n## Rationale\n\n{decision.rationale_summary}")
 
     lines.append("\n## Scores\n")
@@ -106,6 +112,16 @@ def render_html(decision: FinalDecision) -> str:
     if decision.query:
         body_parts.append(f"<h2>Query</h2><p>{esc(decision.query)}</p>")
     body_parts.append(f"<h2>Decision</h2><p class='decision'>{esc(decision.decision)}</p>")
+    if decision.human_feedback:
+        body_parts.append(
+            f"<h2>Human Reviewer Direction</h2><p>{esc(decision.human_feedback)}</p>"
+        )
+    if decision.vetoes:
+        items = "".join(
+            f"<li><strong>{esc(v.agent_name)}</strong> (round {v.round_number}): {esc(v.reason)}</li>"
+            for v in decision.vetoes
+        )
+        body_parts.append(f"<h2>Standing Vetoes</h2><ul>{items}</ul>")
     body_parts.append(f"<h2>Rationale</h2><p>{esc(decision.rationale_summary)}</p>")
 
     body_parts.append(
@@ -187,4 +203,5 @@ def render_pdf(decision: FinalDecision) -> bytes:
         raise RuntimeError("WeasyPrint is not installed. Run: pip install weasyprint") from exc
 
     html_content = render_html(decision)
-    return HTML(string=html_content).write_pdf()
+    pdf: bytes = HTML(string=html_content).write_pdf()
+    return pdf

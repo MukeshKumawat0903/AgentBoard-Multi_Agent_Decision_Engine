@@ -10,12 +10,13 @@
 
 import { useState } from "react";
 import type { ApprovalRequiredEvent } from "@/lib/types";
-import { approveDebate } from "@/lib/api";
+import { approveDebate, cancelDebate } from "@/lib/api";
 
 interface HITLPanelProps {
   event: ApprovalRequiredEvent;
   threadId: string;
-  onDone: () => void;
+  /** Called with the round of the approval request that was answered. */
+  onDone: (roundNumber: number) => void;
 }
 
 export default function HITLPanel({ event, threadId, onDone }: HITLPanelProps) {
@@ -29,11 +30,15 @@ export default function HITLPanel({ event, threadId, onDone }: HITLPanelProps) {
       setShowFeedback(true);
       return;
     }
+    if (action === "override" && !feedback.trim()) {
+      setError("Describe the direction the decision should take before submitting the override.");
+      return;
+    }
     setLoading(true);
     setError(null);
     try {
       await approveDebate(threadId, action, action === "override" ? feedback : "");
-      onDone();
+      onDone(event.round_number);
     } catch (err) {
       setError(err instanceof Error ? err.message : "Action failed.");
     } finally {
@@ -41,7 +46,21 @@ export default function HITLPanel({ event, threadId, onDone }: HITLPanelProps) {
     }
   }
 
+  // Abandon the paused debate; the stream then delivers its "cancelled" state.
+  async function handleCancel() {
+    setLoading(true);
+    setError(null);
+    try {
+      await cancelDebate(threadId);
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "Could not cancel the debate.");
+      setLoading(false);
+    }
+  }
+
   const agreementPct = Math.round(event.agreement_score * 100);
+  // The backend leaves "add_round" out once the debate is at its round limit.
+  const canAddRound = !event.options?.length || event.options.includes("add_round");
 
   return (
     <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/50 backdrop-blur-sm p-4">
@@ -116,18 +135,20 @@ export default function HITLPanel({ event, threadId, onDone }: HITLPanelProps) {
             ) : "✓ Approve"}
           </button>
 
-          <button
-            onClick={() => handleAction("add_round")}
-            disabled={loading}
-            className="flex-1 py-2.5 rounded-lg bg-accent-600 text-white text-sm font-semibold
-                       hover:bg-accent-700 disabled:opacity-50 transition"
-          >
-            + Add Round
-          </button>
+          {canAddRound && (
+            <button
+              onClick={() => handleAction("add_round")}
+              disabled={loading}
+              className="flex-1 py-2.5 rounded-lg bg-accent-600 text-white text-sm font-semibold
+                         hover:bg-accent-700 disabled:opacity-50 transition"
+            >
+              + Add Round
+            </button>
+          )}
 
           <button
             onClick={() => handleAction("override")}
-            disabled={loading}
+            disabled={loading || (showFeedback && !feedback.trim())}
             className="flex-1 py-2.5 rounded-lg bg-purple-600 text-white text-sm font-semibold
                        hover:bg-purple-700 disabled:opacity-50 transition"
           >
@@ -136,6 +157,15 @@ export default function HITLPanel({ event, threadId, onDone }: HITLPanelProps) {
                 <span className="w-4 h-4 border-2 border-white border-t-transparent rounded-full animate-spin inline-block" />
               ) : "Submit Override"
             ) : "✎ Override"}
+          </button>
+        </div>
+        <div className="px-6 pb-5 -mt-3 text-center">
+          <button
+            onClick={handleCancel}
+            disabled={loading}
+            className="text-xs text-gray-500 hover:text-red-600 dark:text-gray-400 dark:hover:text-red-400 underline disabled:opacity-50"
+          >
+            Cancel this debate
           </button>
         </div>
       </div>

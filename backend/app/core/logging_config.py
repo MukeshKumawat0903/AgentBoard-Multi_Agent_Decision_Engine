@@ -62,12 +62,13 @@ class JSONFormatter(logging.Formatter):
         return json.dumps(log_entry, default=str)
 
 
-def setup_logging(log_level: str = "INFO") -> None:
+def setup_logging(log_level: str = "INFO", log_dir: str | None = None) -> None:
     """
     Configure application-wide logging.
 
     Args:
         log_level: Logging level string (DEBUG, INFO, WARNING, ERROR, CRITICAL).
+        log_dir:   Directory for the rotating log file (default: backend/logs).
     """
     numeric_level = getattr(logging, log_level.upper(), logging.INFO)
 
@@ -76,9 +77,10 @@ def setup_logging(log_level: str = "INFO") -> None:
     logger.setLevel(numeric_level)
     logging.setLogRecordFactory(_record_factory)
 
-    # Avoid duplicate handlers on re-init
-    if logger.handlers:
-        logger.handlers.clear()
+    # Avoid duplicate handlers on re-init (close them so file handles are released)
+    for handler in list(logger.handlers):
+        handler.close()
+    logger.handlers.clear()
     if logger.filters:
         logger.filters.clear()
 
@@ -92,12 +94,12 @@ def setup_logging(log_level: str = "INFO") -> None:
     console_handler.setFormatter(formatter)
     logger.addHandler(console_handler)
 
-    # File handler – daily rotating, kept for 30 days
-    # Resolves to: backend/logs/agentboard_YYYY-MM-DD.log
-    logs_dir = Path(__file__).resolve().parent.parent.parent / "logs"
-    logs_dir.mkdir(exist_ok=True)
-    today = datetime.now().strftime("%Y-%m-%d")
-    log_file = logs_dir / f"agentboard_{today}.log"
+    # File handler – rotates at midnight, keeps 30 days. One fixed base name, so
+    # the rotated files (agentboard.log.YYYY-MM-DD) are pruned across restarts;
+    # a date in the base name made every restart start a new, never-pruned set.
+    logs_dir = Path(log_dir) if log_dir else Path(__file__).resolve().parent.parent.parent / "logs"
+    logs_dir.mkdir(parents=True, exist_ok=True)
+    log_file = logs_dir / "agentboard.log"
 
     file_handler = TimedRotatingFileHandler(
         filename=str(log_file),
@@ -109,7 +111,7 @@ def setup_logging(log_level: str = "INFO") -> None:
     )
     file_handler.setLevel(numeric_level)
     file_handler.setFormatter(formatter)
-    # Suffix so rotated files are named agentboard_YYYY-MM-DD.log.YYYY-MM-DD
+    # Rotated files are named agentboard.log.YYYY-MM-DD
     file_handler.suffix = "%Y-%m-%d"
     logger.addHandler(file_handler)
 

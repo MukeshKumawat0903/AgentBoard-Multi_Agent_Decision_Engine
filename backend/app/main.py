@@ -14,6 +14,7 @@ Phase 5 additions
   a MemoryStorage backend (swap for Redis in multi-instance deploys).
 """
 
+import asyncio
 import logging
 import os
 import time
@@ -33,6 +34,7 @@ from starlette.types import ExceptionHandler
 
 from app.agents.analyst_agent import SYSTEM_PROMPT as ANALYST_PROMPT
 from app.agents.analyst_agent import AnalystAgent
+from app.agents.base_agent import BaseAgent
 from app.agents.domain_agents import (
     ComplianceAgent,
     FinancialEthicsAgent,
@@ -53,10 +55,12 @@ from app.api.routes import router
 from app.core.config import settings
 from app.core.logging_config import setup_logging
 from app.core.metrics import app_metrics
-from app.core.rate_limiter import limiter
+from app.core.rate_limiter import client_ip, limiter
 from app.core.request_context import reset_request_id, set_request_id
 from app.db.crud import cleanup_old_debates
 from app.db.database import run_migrations
+from app.orchestrator.debate_graph import prune_finished_checkpoints
+from app.services.llm_client import llm_status
 from app.utils.exceptions import LLMConnectionError, LLMRateLimitError, LLMResponseError
 
 logger = logging.getLogger("agentboard")
@@ -93,7 +97,7 @@ class RequestIDMiddleware(BaseHTTPMiddleware):
                     "path": route_path,
                     "status_code": response.status_code,
                     "duration_ms": duration_ms,
-                    "client_ip": request.client.host if request.client else None,
+                    "client_ip": client_ip(request),
                 },
             )
             response.headers["X-Request-ID"] = request_id
@@ -103,13 +107,43 @@ class RequestIDMiddleware(BaseHTTPMiddleware):
 
 
 # ---------------------------------------------------------------------------
+# Upload size guard — refuses oversized KB uploads before reading the body
+# ---------------------------------------------------------------------------
+
+# Allowance for multipart framing around the file itself.
+_MULTIPART_OVERHEAD_BYTES = 64 * 1024
+
+
+class UploadSizeLimitMiddleware:
+    """Reject a knowledge-base upload whose Content-Length already exceeds the
+    limit, before FastAPI parses (and spools) the multipart body."""
+
+    def __init__(self, app, path: str = "/knowledge/upload") -> None:
+        self.app = app
+        self.path = path
+
+    async def __call__(self, scope, receive, send):
+        if scope["type"] == "http" and scope["method"] == "POST" and scope["path"] == self.path:
+            declared = dict(scope.get("headers") or []).get(b"content-length", b"")
+            limit = settings.KB_MAX_FILE_MB * 1024 * 1024 + _MULTIPART_OVERHEAD_BYTES
+            if declared.isdigit() and int(declared) > limit:
+                response = JSONResponse(
+                    status_code=413,
+                    content={"detail": f"File too large (max {settings.KB_MAX_FILE_MB} MB)."},
+                )
+                await response(scope, receive, send)
+                return
+        await self.app(scope, receive, send)
+
+
+# ---------------------------------------------------------------------------
 # Lifespan
 # ---------------------------------------------------------------------------
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     """Application startup and shutdown lifecycle."""
-    setup_logging(settings.LOG_LEVEL)
+    setup_logging(settings.LOG_LEVEL, settings.LOG_DIR)
     app_metrics.reset()
 
     # Phase 5: initialise LangSmith tracing before any LangChain calls
@@ -127,11 +161,12 @@ async def lifespan(app: FastAPI):
     # TTL cleanup: remove debates older than configured threshold
     async with aiosqlite.connect(settings.DATABASE_URL) as db:
         await cleanup_old_debates(db, settings.DEBATE_TTL_DAYS)
+    pruned = await prune_finished_checkpoints(settings.CHECKPOINT_DATABASE_URL, settings.DATABASE_URL)
+    logger.info("checkpoints_pruned", extra={"threads": pruned})
 
     # P3: Initialise knowledge base and agent memory singletons
     from app.api.dependencies import set_knowledge_base, set_memory_store
     from app.services.agent_memory import AgentMemoryStore
-    from app.services.llm_client import get_llm_client
     from app.services.retriever import KnowledgeBase
 
     kb = KnowledgeBase(
@@ -143,21 +178,23 @@ async def lifespan(app: FastAPI):
         top_k=settings.KB_TOP_K,
     )
     set_knowledge_base(kb)
-    # R8: warm model in background thread to avoid blocking the event loop on first request
+    # Load Chroma and the embedding model in the background: the first start may
+    # download the model, and startup (and the container healthcheck) must not wait.
     if kb.is_available:
-        await kb.warm()
-    logger.info("knowledge_base_initialized", extra={"available": kb.is_available})
+        app.state.kb_warm_task = asyncio.create_task(kb.warm())
+        app.state.kb_warm_task.add_done_callback(
+            lambda _t: logger.info("knowledge_base_initialized", extra={"available": kb.is_available})
+        )
+    else:
+        logger.info("knowledge_base_initialized", extra={"available": False})
 
-    ms = AgentMemoryStore(
-        database_url=settings.DATABASE_URL,
-        llm_client=get_llm_client(),
-    )
+    ms = AgentMemoryStore(database_url=settings.DATABASE_URL)
     set_memory_store(ms)
     logger.info("agent_memory_store_initialized")
 
     # Agent registry: register all built-in agents
     _enabled = {n.strip() for n in settings.ENABLED_AGENTS.split(",")}
-    _agent_defs = [
+    _agent_defs: list[tuple[type[BaseAgent], str, str, str, str]] = [
         (AnalystAgent,  "Analyst",  "Objective data analyst",           "📊", ANALYST_PROMPT),
         (RiskAgent,     "Risk",     "Risk identification and assessment","⚠️",  RISK_PROMPT),
         (StrategyAgent, "Strategy", "Strategic planning and options",    "🎯", STRATEGY_PROMPT),
@@ -184,7 +221,7 @@ async def lifespan(app: FastAPI):
         )
 
     # P3.4: Register domain agents (disabled by default; activated via domain_pack selector)
-    _domain_defs = [
+    _domain_defs: list[tuple[type[BaseAgent], str, str, str]] = [
         (FinancialEthicsAgent, "FinancialEthics", "Fiduciary & ESG ethics evaluator",  "💰"),
         (SecurityAgent,        "Security",        "Cybersecurity & attack surface",     "🔒"),
         (ComplianceAgent,      "Compliance",      "Regulatory & legal compliance",      "📋"),
@@ -237,7 +274,7 @@ def rate_limit_exceeded_handler(request: Request, exc: RateLimitExceeded):
         extra={
             "method": request.method,
             "path": route_path,
-            "client_ip": request.client.host if request.client else None,
+            "client_ip": client_ip(request),
         },
     )
     return _rate_limit_exceeded_handler(request, exc)
@@ -250,6 +287,9 @@ app.add_exception_handler(
 )
 app.add_middleware(SlowAPIMiddleware)
 
+# --- Upload size guard (inside the request-ID layer, so its 413s are logged) ---
+app.add_middleware(UploadSizeLimitMiddleware)
+
 # --- Request-ID Middleware (Phase 5) ---
 app.add_middleware(RequestIDMiddleware)
 
@@ -259,7 +299,7 @@ app.add_middleware(
     allow_origins=settings.CORS_ORIGINS,
     allow_credentials=True,
     allow_methods=["GET", "POST", "DELETE", "OPTIONS"],
-    allow_headers=["Content-Type", "Authorization", "X-Request-ID", "Last-Event-ID"],
+    allow_headers=["Content-Type", "Authorization", "X-Request-ID", "Last-Event-ID", "X-Admin-Token"],
 )
 
 # --- Include API Routers ---
@@ -305,9 +345,14 @@ async def unhandled_error_handler(request: Request, exc: Exception) -> JSONRespo
 # --- Health Check ---
 @app.get("/health", tags=["system"])
 async def health_check():
-    """Health check endpoint for monitoring and container probes."""
+    """Health check endpoint for monitoring and container probes.
+
+    ``llm`` describes the provider debates currently use (it can be switched at
+    runtime via /llm-settings); ``groq_configured`` is kept for older clients.
+    """
     return {
         "status": "ok",
         "version": settings.APP_VERSION,
+        "llm": llm_status(),
         "groq_configured": bool(settings.GROQ_API_KEY),
     }

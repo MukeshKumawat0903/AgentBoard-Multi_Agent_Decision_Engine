@@ -45,11 +45,28 @@ export default function AgentCard({ response }: AgentCardProps) {
             <p className="text-[11px] text-gray-500 dark:text-gray-400">{meta.role}</p>
           </div>
         </div>
-        <span className="text-xs text-gray-400">Round {response.round_number}</span>
+        <div className="flex items-center gap-2">
+          {response.veto && (
+            <span className="rounded-full bg-red-600 px-2 py-0.5 text-[10px] font-bold uppercase tracking-wide text-white">
+              Veto
+            </span>
+          )}
+          <span className="text-xs text-gray-400">Round {response.round_number}</span>
+        </div>
       </div>
 
       {/* Body */}
       <div className="pl-5 pr-4 py-3 space-y-3 text-sm">
+        {response.veto && (
+          <div className="rounded-lg bg-red-50 dark:bg-red-900/20 ring-1 ring-red-200 dark:ring-red-800 px-3 py-2">
+            <p className="text-xs font-semibold text-red-700 dark:text-red-300">
+              Veto — consensus is blocked while it stands
+            </p>
+            {response.veto_reason && (
+              <p className="text-xs text-red-700/90 dark:text-red-300/90 mt-0.5">{response.veto_reason}</p>
+            )}
+          </div>
+        )}
         {/* Position */}
         <div>
           <h4 className="font-medium text-gray-700 dark:text-gray-300 mb-1">Position</h4>

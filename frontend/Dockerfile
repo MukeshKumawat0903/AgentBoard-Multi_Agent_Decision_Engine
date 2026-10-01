@@ -44,7 +44,8 @@ ENV NODE_ENV=production
 ENV NEXT_TELEMETRY_DISABLED=1
 ENV HOSTNAME=0.0.0.0
 
-# Backend URL used by Next.js rewrites proxy (overrideable at runtime)
+# Backend URL for the /backend/* route-handler proxy, read per request so it can be
+# overridden when the container starts
 ENV BACKEND_URL=http://backend:8000
 
 # Security: non-root user

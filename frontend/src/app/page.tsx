@@ -20,7 +20,7 @@ import LoadingState from "@/components/LoadingState";
 import TemplateCard from "@/components/TemplateCard";
 import Badge from "@/components/ui/Badge";
 import Card from "@/components/ui/Card";
-import { startDebateAsync, getTemplates, getDomainPacks, getHistory, getAgents } from "@/lib/api";
+import { startDebateAsync, cancelDebate, getTemplates, getDomainPacks, getHistory, getAgents, getDebateModes } from "@/lib/api";
 import { useToast } from "@/components/Toast";
 
 import type { DebateMode, DebateTemplate, DomainPack, HistoryItem } from "@/lib/types";
@@ -86,11 +86,16 @@ export default function HomePage() {
   const router = useRouter();
   const { showToast } = useToast();
   const [isLoading, setIsLoading] = useState(false);
-  const abortRef = useRef<AbortController | null>(null);
+  // Set when the user cancels while the start request is still in flight.
+  const cancelRequestedRef = useRef(false);
+  const unmountedRef = useRef(false);
   const [templates, setTemplates] = useState<DebateTemplate[]>([]);
   const [showTemplates, setShowTemplates] = useState(false);
   const [prefillQuery, setPrefillQuery] = useState("");
   const [prefillMode, setPrefillMode] = useState<DebateMode | undefined>();
+  const [prefillTemplateId, setPrefillTemplateId] = useState<string | undefined>();
+  // Server default mode (DEFAULT_DEBATE_MODE); the form falls back to Quick until it loads.
+  const [defaultMode, setDefaultMode] = useState<"quick" | "standard" | "thorough" | undefined>();
   const [prefillKey, setPrefillKey] = useState(0);
   const [domainPacks, setDomainPacks] = useState<DomainPack[]>([]);
   const [selectedDomainPack, setSelectedDomainPack] = useState<string | null>(null);
@@ -109,11 +114,13 @@ export default function HomePage() {
   );
 
   useEffect(() => {
+    unmountedRef.current = false;
     // On first dev-server load the backend proxy may briefly fail while both
     // servers are still warming up — retry a couple of times before giving up,
     // so the right-rail boxes don't disappear until a manual refresh.
     withRetry(() => getTemplates()).then(setTemplates).catch(() => {});
     withRetry(() => getDomainPacks()).then(setDomainPacks).catch(() => {});
+    withRetry(() => getDebateModes()).then((m) => setDefaultMode(m.default_mode)).catch(() => {});
     withRetry(() => getHistory({ page: 1, limit: 3 }))
       .then((r) => {
         setRecentDebates(r.items);
@@ -131,7 +138,7 @@ export default function HomePage() {
         }
       })
       .catch(() => {});
-    return () => { abortRef.current?.abort(); };
+    return () => { unmountedRef.current = true; };
   }, []);
 
   function toggleAgent(name: string) {
@@ -139,7 +146,9 @@ export default function HomePage() {
     setSelectedAgents((prev) => {
       const next = new Set(prev);
       if (next.has(name)) {
-        if (next.size <= 2) return prev; // must keep at least 2 agents
+        // Keep at least 2 debating agents; the Moderator only synthesises.
+        const debaters = [...next].filter((n) => n !== "Moderator").length;
+        if (debaters <= 2) return prev;
         next.delete(name);
       } else {
         next.add(name);
@@ -160,14 +169,14 @@ export default function HomePage() {
     );
 
   async function handleSubmit(query: string, options: DebateOptions) {
-    abortRef.current?.abort();
-    abortRef.current = new AbortController();
+    cancelRequestedRef.current = false;
     setIsLoading(true);
     try {
       const res = await startDebateAsync(
         {
           query,
           mode: options.mode,
+          template_id: options.template_id,
           max_rounds: options.max_rounds,
           consensus_threshold: options.consensus_threshold,
           agents: options.agents,
@@ -176,24 +185,32 @@ export default function HomePage() {
           supervised: options.supervised,
           domain_pack: options.domain_pack ?? selectedDomainPack ?? undefined,
         },
-        abortRef.current.signal
+        // Not aborted on cancel: the server may already have started the debate,
+        // and only its thread_id lets us stop it.
       );
-      if (!res) return; // aborted
-      router.push(`/debate/${res.thread_id}`);
+      if (!res) return;
+      if (cancelRequestedRef.current) {
+        cancelDebate(res.thread_id).catch(() => {});
+        return;
+      }
+      if (!unmountedRef.current) router.push(`/debate/${res.thread_id}`);
     } catch (err) {
-      showToast(err instanceof Error ? err.message : "An unexpected error occurred.", "error");
+      if (!cancelRequestedRef.current) {
+        showToast(err instanceof Error ? err.message : "An unexpected error occurred.", "error");
+      }
       setIsLoading(false);
     }
   }
 
   function handleCancel() {
-    abortRef.current?.abort();
+    cancelRequestedRef.current = true;
     setIsLoading(false);
   }
 
   function handleTemplateSelect(template: DebateTemplate) {
     setPrefillQuery(template.query);
     setPrefillMode(template.mode as DebateMode);
+    setPrefillTemplateId(template.id);
     setPrefillKey((k) => k + 1);
     setShowTemplates(false);
     setTemplateSearch("");
@@ -203,7 +220,7 @@ export default function HomePage() {
   // Starter chips: prefer real templates (title → query), fall back to built-ins.
   const sampleQuestions: SampleQuestion[] =
     templates.length >= 3
-      ? templates.slice(0, 4).map((t) => ({ label: t.title, query: t.query }))
+      ? templates.slice(0, 4).map((t) => ({ label: t.title, query: t.query, templateId: t.id }))
       : FALLBACK_SAMPLES;
 
   return (
@@ -227,6 +244,7 @@ export default function HomePage() {
             type="button"
             onClick={() => setShowTemplates((v) => !v)}
             aria-expanded={showTemplates}
+            aria-controls="template-gallery"
             className="inline-flex items-center gap-1.5 text-sm font-medium text-accent-600 dark:text-accent-400
                        hover:text-accent-700 dark:hover:text-accent-300 transition
                        focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent-500 rounded px-1 py-0.5"
@@ -249,7 +267,7 @@ export default function HomePage() {
             showTemplates ? "grid-rows-[1fr]" : "grid-rows-[0fr]"
           }`}
         >
-          <div className="overflow-hidden min-h-0">
+          <div id="template-gallery" role="region" aria-label="Debate templates" className="overflow-hidden min-h-0">
             <div className="space-y-3 pb-4 lg:max-h-[40vh] lg:overflow-y-auto custom-scroll lg:pr-1">
               {/* Search bar */}
               <input
@@ -311,6 +329,8 @@ export default function HomePage() {
               selectedAgents={selectedAgents}
               prefillQuery={prefillQuery}
               prefillMode={prefillMode}
+              prefillTemplateId={prefillTemplateId}
+              defaultMode={defaultMode}
               selectedDomainPack={selectedDomainPack}
               samples={sampleQuestions}
             />

@@ -21,6 +21,8 @@ Usage::
 from __future__ import annotations
 
 import logging
+import math
+import re
 from datetime import UTC, datetime
 from typing import Any
 
@@ -33,18 +35,41 @@ logger = logging.getLogger("agentboard.tools")
 # Helper: safe numexpr calculator
 # ---------------------------------------------------------------------------
 
+_CALC_CHARS = frozenset("0123456789+-*/()., eE_abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ^%")
+_CALC_FUNCTIONS = frozenset({
+    "sin", "cos", "tan", "arcsin", "arccos", "arctan", "arctan2",
+    "sinh", "cosh", "tanh", "arcsinh", "arccosh", "arctanh",
+    "log", "log10", "log1p", "exp", "expm1", "sqrt", "abs",
+})
+_CALC_CONSTANTS = {"pi": math.pi, "e": math.e}
+# Names in the expression; the exponent in a literal like 1e5 is not matched.
+_CALC_NAME = re.compile(r"\b[A-Za-z_]\w*")
+_CALC_MAX_LENGTH = 200
+
+
 def _safe_calc(expression: str) -> str:
-    """Evaluate a safe arithmetic expression using numexpr."""
+    """Evaluate an arithmetic expression using numexpr.
+
+    Only numbers, operators, the math functions in ``_CALC_FUNCTIONS`` and the
+    constants ``pi`` / ``e`` are accepted. numexpr would otherwise look up any
+    other name in the calling Python frame, so it is also given explicit,
+    empty-apart-from-constants namespaces.
+    """
     try:
         import numexpr  # type: ignore[import-untyped]
     except ImportError:
         return "Error: calculator unavailable — install numexpr (pip install numexpr)."
+    if len(expression) > _CALC_MAX_LENGTH:
+        return f"Error: expression longer than {_CALC_MAX_LENGTH} characters"
+    if not all(c in _CALC_CHARS for c in expression):
+        return "Error: expression contains unsafe characters"
+    unknown = sorted(set(_CALC_NAME.findall(expression)) - _CALC_FUNCTIONS - _CALC_CONSTANTS.keys())
+    if unknown:
+        return f"Error: unknown name(s): {', '.join(unknown)}"
     try:
-        # Restrict to safe characters to prevent injection
-        allowed = set("0123456789+-*/()., eE_abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ^%")
-        if not all(c in allowed for c in expression):
-            return "Error: expression contains unsafe characters"
-        result = numexpr.evaluate(expression.replace("^", "**"))
+        result = numexpr.evaluate(
+            expression.replace("^", "**"), local_dict=dict(_CALC_CONSTANTS), global_dict={}
+        )
         return str(result.item() if hasattr(result, "item") else result)
     except Exception as exc:  # noqa: BLE001
         return f"Error: {exc}"
@@ -66,7 +91,8 @@ class WebSearchTool(BaseTool):
                 DuckDuckGoSearchRun,  # type: ignore[import-untyped]
             )
             search = DuckDuckGoSearchRun()
-            return search.run(query)[:2000]  # cap at 2 KB
+            results: str = search.run(query)
+            return results[:2000]  # cap at 2 KB
         except ImportError:
             return "web_search unavailable: langchain-community DuckDuckGoSearchRun not installed."
         except Exception as exc:  # noqa: BLE001

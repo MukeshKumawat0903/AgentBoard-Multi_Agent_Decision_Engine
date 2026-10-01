@@ -26,7 +26,7 @@ import {
   WifiOff,
   Wrench,
 } from "lucide-react";
-import { connectToStream, cancelDebate, getHistoryItem } from "@/lib/api";
+import { connectToStream, cancelDebate, getHistoryItem, resumeDebateAsync } from "@/lib/api";
 import type { DebateRound, FinalDecision, FinalDecisionEvent } from "@/lib/types";
 import {
   debateStreamReducer,
@@ -230,6 +230,8 @@ export default function DebateStreamViewer({ threadId, onQuery }: Props) {
   // produced the decision is visible without an extra click.
   const [showTranscript, setShowTranscript] = useState(true);
   const [cancelling, setCancelling] = useState(false);
+  const [resuming, setResuming] = useState(false);
+  const [resumeError, setResumeError] = useState<string | null>(null);
   const [elapsed, setElapsed] = useState(0);
   const startTimeRef = useRef<number | null>(null);
   const bottomRef = useRef<HTMLDivElement>(null);
@@ -254,10 +256,27 @@ export default function DebateStreamViewer({ threadId, onQuery }: Props) {
     setCancelling(true);
     try {
       await cancelDebate(threadId);
+      // The SSE stream delivers the terminal "cancelled" state.
     } catch {
-      // Ignore — the SSE stream will deliver the terminal state (cancelled/done).
+      // Already finished (409) or unreachable — re-enable the button.
+      setCancelling(false);
     }
   }, [threadId]);
+
+  // Continue a failed debate from its last checkpoint, then follow it live.
+  async function handleResume() {
+    setResuming(true);
+    setResumeError(null);
+    try {
+      await resumeDebateAsync(threadId);
+      dispatch({ type: "reset" });
+      startStream();
+    } catch (err) {
+      setResumeError(err instanceof Error ? err.message : "Could not resume this debate.");
+    } finally {
+      setResuming(false);
+    }
+  }
 
   function startStream() {
     if (controllerRef.current) controllerRef.current.abort();
@@ -391,22 +410,46 @@ export default function DebateStreamViewer({ threadId, onQuery }: Props) {
 
   /* ---- Error ---- */
   if (state.status === "error") {
+    // Losing the live stream is not a failed debate: it usually keeps running on the server.
+    const connectionLost = maxReconnectsHit;
     return (
       <div className="max-w-xl mx-auto py-16 space-y-5 px-4">
         <div className="bg-red-50 dark:bg-red-950/30 ring-1 ring-red-200 dark:ring-red-800 rounded-2xl p-6 space-y-4">
           <div className="flex items-start gap-3">
             <AlertTriangle className="w-7 h-7 text-red-500 shrink-0" aria-hidden="true" />
             <div className="space-y-1">
-              <h2 className="text-base font-semibold text-red-700 dark:text-red-400">Debate failed</h2>
+              <h2 className="text-base font-semibold text-red-700 dark:text-red-400">
+                {connectionLost ? "Connection lost" : "Debate failed"}
+              </h2>
               <p className="text-sm text-gray-600 dark:text-gray-400 leading-relaxed">
-                {state.error ?? "An error occurred while streaming the debate."}
+                {connectionLost
+                  ? "The live stream dropped after several retries. The debate may still be running on the server — reconnect to pick it up."
+                  : state.error ?? "An error occurred while streaming the debate."}
               </p>
             </div>
           </div>
+          {resumeError && <p className="text-sm text-red-600 dark:text-red-400">{resumeError}</p>}
           <div className="flex flex-wrap gap-3">
-            <Button variant="danger" onClick={() => window.location.reload()}>
-              Retry stream
-            </Button>
+            {state.resumable && (
+              <Button variant="primary" onClick={handleResume} disabled={resuming}>
+                {resuming ? "Resuming…" : "Resume debate"}
+              </Button>
+            )}
+            {connectionLost ? (
+              <Button
+                variant="danger"
+                onClick={() => {
+                  dispatch({ type: "reset" });
+                  startStream();
+                }}
+              >
+                Reconnect
+              </Button>
+            ) : (
+              <Button variant="danger" onClick={() => window.location.reload()}>
+                Retry stream
+              </Button>
+            )}
             <Button variant="secondary" onClick={() => router.push("/")}>
               Start new debate
             </Button>
@@ -616,16 +659,6 @@ export default function DebateStreamViewer({ threadId, onQuery }: Props) {
         </div>
       )}
 
-      {/* Connection lost banner */}
-      {maxReconnectsHit && (
-        <div className="flex items-center justify-between p-3 rounded-lg bg-red-50 dark:bg-red-950/30 ring-1 ring-red-200 dark:ring-red-800 text-sm text-red-700 dark:text-red-400">
-          <span>Connection lost after multiple retries.</span>
-          <Button variant="danger" size="sm" onClick={startStream} className="ml-4">
-            Reconnect
-          </Button>
-        </div>
-      )}
-
       {/* Round progress bar */}
       {state.status === "streaming" && state.maxRounds > 0 && (
         <div className="space-y-1">
@@ -739,11 +772,17 @@ export default function DebateStreamViewer({ threadId, onQuery }: Props) {
       {/* Live rounds — shown along the timeline while streaming */}
       {!isDone && renderRounds}
 
-      {/* Streaming spinner */}
+      {/* Streaming spinner — or the paused-for-review notice under HITL */}
       {state.status === "streaming" && (
         <div className="flex items-center gap-2 text-sm text-gray-400 py-4">
-          <Loader2 className="w-4 h-4 text-accent-400 animate-spin" aria-hidden="true" />
-          Agents deliberating…
+          {state.approvalRequired ? (
+            "Paused — waiting for your review."
+          ) : (
+            <>
+              <Loader2 className="w-4 h-4 text-accent-400 animate-spin" aria-hidden="true" />
+              Agents deliberating…
+            </>
+          )}
         </div>
       )}
 
@@ -761,7 +800,7 @@ export default function DebateStreamViewer({ threadId, onQuery }: Props) {
         <HITLPanel
           event={state.approvalRequired}
           threadId={threadId}
-          onDone={() => dispatch({ type: "clear_approval" })}
+          onDone={(roundNumber) => dispatch({ type: "clear_approval", roundNumber })}
         />
       )}
     </div>

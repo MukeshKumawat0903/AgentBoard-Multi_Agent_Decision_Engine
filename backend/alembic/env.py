@@ -24,9 +24,12 @@ from app.core.config import settings  # noqa: E402
 # This is the Alembic Config object.
 config = context.config
 
-# Interpret the config file for Python logging.
-if config.config_file_name is not None:
-    fileConfig(config.config_file_name)
+# Interpret the config file for Python logging — but only for the standalone
+# `alembic` CLI. When the app runs migrations at startup it has already set up
+# logging, and the default disable_existing_loggers=True would silence every
+# application logger created before this point.
+if config.config_file_name is not None and config.attributes.get("configure_logger", True):
+    fileConfig(config.config_file_name, disable_existing_loggers=False)
 
 # Build a synchronous sqlite:// URL from whatever DATABASE_URL is configured.
 # aiosqlite uses "sqlite+aiosqlite://..." but Alembic needs plain "sqlite://..."

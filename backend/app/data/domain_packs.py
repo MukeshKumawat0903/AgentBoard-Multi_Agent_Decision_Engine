@@ -35,7 +35,10 @@ class DomainPack(BaseModel):
     )
     domain_focus: str = Field(
         default="",
-        description="Short phrase injected into system prompts when this pack is active.",
+        description=(
+            "Short phrase describing the pack's subject area, for display. It is not "
+            "added to agent prompts; the pack's specialist agents carry its focus."
+        ),
     )
 
 

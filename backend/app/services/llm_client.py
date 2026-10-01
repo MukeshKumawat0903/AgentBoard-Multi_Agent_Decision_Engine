@@ -18,18 +18,72 @@ GroqClient is kept as a backward-compatible alias so existing imports
 in tests and legacy code continue to work without modification.
 """
 
+import asyncio
 import logging
+import weakref
+from collections.abc import AsyncIterator
+from contextlib import asynccontextmanager
+from contextvars import ContextVar
 from typing import Any, TypeVar, cast
 
 from langchain_core.prompts import ChatPromptTemplate
 from pydantic import SecretStr
 
 from app.core.config import settings
-from app.utils.exceptions import LLMConnectionError, LLMResponseError
+from app.utils.exceptions import LLMConnectionError, LLMRateLimitError, LLMResponseError
 
 logger = logging.getLogger("agentboard.services.llm_client")
 
 T = TypeVar("T")
+
+
+# ---------------------------------------------------------------------------
+# Provider concurrency limit
+# ---------------------------------------------------------------------------
+# A debate fans out many calls at once (every agent critiques every other
+# agent), which trips provider rate limits. Each provider gets at most
+# settings.LLM_MAX_CONCURRENCY calls in flight per event loop.
+
+_slot_held: ContextVar[bool] = ContextVar("llm_call_slot_held", default=False)
+_semaphores: "weakref.WeakKeyDictionary[asyncio.AbstractEventLoop, dict[str, asyncio.Semaphore]]" = (
+    weakref.WeakKeyDictionary()
+)
+
+
+@asynccontextmanager
+async def llm_call_slot(provider: str) -> AsyncIterator[None]:
+    """Hold one of the provider's concurrent-call slots for the duration of the block.
+
+    Re-entrant within a task: a caller that already holds a slot (e.g. a debate
+    node wrapping an agent call, so queueing isn't counted against the agent's
+    timeout) does not take a second one when the call reaches the client.
+    """
+    limit = settings.LLM_MAX_CONCURRENCY
+    if limit <= 0 or _slot_held.get():
+        yield
+        return
+    per_loop = _semaphores.setdefault(asyncio.get_running_loop(), {})
+    semaphore = per_loop.get(provider)
+    if semaphore is None:
+        semaphore = per_loop[provider] = asyncio.Semaphore(limit)
+    async with semaphore:
+        token = _slot_held.set(True)
+        try:
+            yield
+        finally:
+            _slot_held.reset(token)
+
+
+def _is_rate_limit_error(exc: BaseException) -> bool:
+    """True if ``exc`` (or anything in its cause chain) is a provider 429."""
+    seen: set[int] = set()
+    current: BaseException | None = exc
+    while current is not None and id(current) not in seen:
+        seen.add(id(current))
+        if getattr(current, "status_code", None) == 429 or "RateLimit" in type(current).__name__:
+            return True
+        current = current.__cause__ or current.__context__
+    return False
 
 
 class LangChainProvider:
@@ -85,11 +139,26 @@ class LangChainProvider:
     )
 
     @classmethod
+    def _supports_temperature(cls, model: str) -> bool:
+        """False for models whose API rejects any non-default temperature."""
+        return not model.startswith(cls._NO_TEMPERATURE_PREFIXES)
+
+    @classmethod
     def _sampling_kwargs(cls, model: str) -> dict:
         """Return sampling kwargs, omitting temperature where the API rejects it."""
-        if model.startswith(cls._NO_TEMPERATURE_PREFIXES):
+        if not cls._supports_temperature(model):
             return {}
         return {"temperature": 0.7}
+
+    def _bind_call_params(self, temperature: float, **params: Any):
+        """Bind per-call parameters, dropping temperature for models that reject it.
+
+        Binding temperature per call would otherwise re-add exactly the parameter
+        that ``_sampling_kwargs`` leaves out at construction time.
+        """
+        if self._supports_temperature(self.model):
+            params["temperature"] = temperature
+        return self._llm.bind(**params) if params else self._llm
 
     @staticmethod
     def _build_llm(provider: str, api_key: str, model: str):
@@ -104,9 +173,12 @@ class LangChainProvider:
             return ChatOpenAI(api_key=secret, model=model, **sampling)
         elif provider == "anthropic":
             from langchain_anthropic import ChatAnthropic  # type: ignore[import-untyped]
-            return ChatAnthropic(api_key=secret, model=model, **sampling)  # type: ignore[call-arg]
+            # api_key=None makes ChatAnthropic read ANTHROPIC_API_KEY from the environment.
+            return ChatAnthropic(api_key=secret, model=model, **sampling)  # type: ignore[call-arg, arg-type]
         elif provider == "gemini":
-            from langchain_google_genai import ChatGoogleGenerativeAI  # type: ignore[import-untyped]
+            from langchain_google_genai import (
+                ChatGoogleGenerativeAI,  # type: ignore[import-untyped]
+            )
             return ChatGoogleGenerativeAI(google_api_key=secret, model=model, **sampling)
         else:
             raise ValueError(f"Unsupported LLM provider: {provider!r}")
@@ -158,7 +230,7 @@ class LangChainProvider:
             system_prompt: Role/instruction for the model.
             user_prompt:   User turn message.
             temperature:   Sampling temperature (default 0.3 for structured).
-            max_retries:   Max LangChain retry attempts (B7: wired from AgentConfig).
+            max_retries:   Retries after the first failed attempt (B7: wired from AgentConfig).
 
         Returns:
             A validated instance of ``schema``.
@@ -167,21 +239,26 @@ class LangChainProvider:
             LLMResponseError: If structured output fails after retries.
         """
         try:
-            llm = cast(Any, self._llm.bind(temperature=temperature))
-            # tenacity's stop_after_attempt(0) stops *before* the first attempt,
-            # so a config value of 0 ("no retries") must still mean one call.
+            llm = cast(Any, self._bind_call_params(temperature))
+            # One initial attempt plus ``max_retries`` retries; negative values are
+            # treated as "no retries" so there is always exactly one call at least.
             chain = llm.with_structured_output(schema).with_retry(
-                stop_after_attempt=max(1, max_retries),
+                stop_after_attempt=1 + max(0, max_retries),
                 wait_exponential_jitter=True,
             )
             messages = self._build_messages(system_prompt, user_prompt)
-            result: T = await chain.ainvoke(messages)
+            async with llm_call_slot(self.provider):
+                result: T = await chain.ainvoke(messages)
             return result
         except Exception as exc:
             logger.error(
                 "ainvoke_structured_failed",
                 extra={"schema": schema.__name__, "provider": self.provider, "error": str(exc)},
             )
+            if _is_rate_limit_error(exc):
+                raise LLMRateLimitError(
+                    f"Rate limited by {self.provider} for {schema.__name__}: {exc}"
+                ) from exc
             raise LLMResponseError(
                 f"Structured output failed for {schema.__name__} "
                 f"via {self.provider}: {exc}"
@@ -200,13 +277,16 @@ class LangChainProvider:
     ) -> str:
         """Return a plain-text response from the LLM."""
         try:
-            llm = self._llm.bind(temperature=temperature, max_tokens=max_tokens)
+            llm = self._bind_call_params(temperature, max_tokens=max_tokens)
             messages = self._build_messages(system_prompt, user_prompt)
-            response = await llm.ainvoke(messages)
+            async with llm_call_slot(self.provider):
+                response = await llm.ainvoke(messages)
             if isinstance(response.content, str):
                 return response.content
             return str(response.content)
         except Exception as exc:
+            if _is_rate_limit_error(exc):
+                raise LLMRateLimitError(f"Rate limited by {self.provider}: {exc}") from exc
             raise LLMConnectionError(f"LLM chat call failed: {exc}") from exc
 
     async def chat_json(
@@ -225,7 +305,8 @@ class LangChainProvider:
 
         raw = await self.chat(system_prompt, user_prompt, temperature=temperature)
         try:
-            return _json.loads(raw)
+            parsed: dict[str, Any] = _json.loads(raw)
+            return parsed
         except _json.JSONDecodeError as exc:
             raise LLMResponseError(
                 f"LLM returned unparseable JSON. Preview: {raw[:300]}"
@@ -308,6 +389,28 @@ _llm_client_instance: LangChainProvider | None = None
 # True when the active client was configured via a user-supplied API key
 # (i.e. not the key baked into .env).
 _using_custom_key: bool = False
+# Whether the active client was given a non-empty API key.
+_active_key_configured: bool = False
+
+
+def server_api_key(provider: str) -> str:
+    """API key configured on the server (.env / environment) for ``provider``."""
+    return {
+        "groq": settings.GROQ_API_KEY,
+        "openai": settings.OPENAI_API_KEY,
+        "anthropic": settings.ANTHROPIC_API_KEY,
+        "gemini": settings.GEMINI_API_KEY,
+    }.get(provider, "")
+
+
+def server_default_model(provider: str) -> str:
+    """Model configured on the server for ``provider``."""
+    return {
+        "groq": settings.GROQ_MODEL,
+        "openai": settings.OPENAI_MODEL,
+        "anthropic": settings.ANTHROPIC_MODEL,
+        "gemini": settings.GEMINI_MODEL,
+    }.get(provider, "")
 
 
 def get_llm_client() -> LangChainProvider:
@@ -317,46 +420,58 @@ def get_llm_client() -> LangChainProvider:
     The active provider is selected via settings.LLM_PROVIDER.
     Creates the instance lazily on the first call.
     """
-    global _llm_client_instance
+    global _llm_client_instance, _active_key_configured
     if _llm_client_instance is None:
         provider = settings.LLM_PROVIDER
-        if provider == "openai":
-            api_key, model = settings.OPENAI_API_KEY, settings.OPENAI_MODEL
-        elif provider == "anthropic":
-            api_key, model = settings.ANTHROPIC_API_KEY, settings.ANTHROPIC_MODEL
-        elif provider == "gemini":
-            api_key, model = settings.GEMINI_API_KEY, settings.GEMINI_MODEL
-        else:
-            api_key, model = settings.GROQ_API_KEY, settings.GROQ_MODEL
-
+        api_key = server_api_key(provider)
         _llm_client_instance = LangChainProvider(
             provider=provider,
             api_key=api_key,
-            model=model,
+            model=server_default_model(provider),
         )
+        _active_key_configured = bool(api_key)
     return _llm_client_instance
 
 
-def reset_llm_client(provider: str, api_key: str, model: str) -> LangChainProvider:
+def reset_llm_client(
+    provider: str, api_key: str, model: str, custom_key: bool | None = None
+) -> LangChainProvider:
     """
     Replace the global singleton with a new provider/model/key combination.
 
     Called by the POST /llm-settings endpoint so all subsequent debate
     requests use the user-selected backend without a server restart.
     """
-    global _llm_client_instance, _using_custom_key
+    global _llm_client_instance, _using_custom_key, _active_key_configured
     _llm_client_instance = LangChainProvider(
         provider=provider,
         api_key=api_key,
         model=model,
     )
+    _active_key_configured = bool(api_key)
     # B8 Fix: only flag custom key when the provider is NOT groq (which uses the server key)
-    _using_custom_key = (provider != "groq")
+    _using_custom_key = (provider != "groq") if custom_key is None else custom_key
     logger.info(
         "llm_client_switched",
         extra={"provider": provider, "model": model},
     )
     return _llm_client_instance
+
+
+def llm_status() -> dict[str, Any]:
+    """Active provider, model and whether it has an API key, without creating the client."""
+    if _llm_client_instance is None:
+        provider = settings.LLM_PROVIDER
+        return {
+            "provider": provider,
+            "model": server_default_model(provider),
+            "configured": bool(server_api_key(provider)),
+        }
+    return {
+        "provider": _llm_client_instance.provider,
+        "model": _llm_client_instance.model,
+        "configured": _active_key_configured,
+    }
 
 
 def get_active_provider_info() -> dict:

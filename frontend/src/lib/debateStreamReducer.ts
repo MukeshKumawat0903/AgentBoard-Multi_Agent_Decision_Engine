@@ -28,6 +28,9 @@ export interface StreamState {
   agents: string[];  // participating agents (from debate_started)
   agentStatus: Record<string, "waiting" | "working" | "done" | "timeout">;
   approvalRequired: ApprovalRequiredEvent | null;
+  /** The backend reported the debate itself failed (so it may be resumable),
+   *  as opposed to the browser losing the stream. */
+  resumable: boolean;
 }
 
 export const initialStreamState: StreamState = {
@@ -43,6 +46,7 @@ export const initialStreamState: StreamState = {
   agents: [],
   agentStatus: {},
   approvalRequired: null,
+  resumable: false,
 };
 
 /** Build an all-"working" status map for the known participants. */
@@ -53,7 +57,11 @@ function seedWorking(agents: string[]): Record<string, "working"> {
 export type StreamAction =
   | { event: DebateSSEEvent }
   | { type: "stream_error" }
-  | { type: "clear_approval" };
+  // Start over before replaying the stream (e.g. after resuming a failed debate).
+  | { type: "reset" }
+  // roundNumber: the approval request being answered. A newer request that
+  // arrived meanwhile (e.g. after "add round") must not be cleared by it.
+  | { type: "clear_approval"; roundNumber?: number };
 
 export function ensureRound(rounds: DebateRound[], roundNumber: number): DebateRound[] {
   if (rounds.some((r) => r.round_number === roundNumber)) return rounds;
@@ -70,7 +78,16 @@ export function debateStreamReducer(state: StreamState, action: StreamAction): S
     if (state.status === "done" || state.status === "cancelled") return state;
     return { ...state, status: "error", error: "Stream connection lost." };
   }
+  if ("type" in action && action.type === "reset") {
+    return initialStreamState;
+  }
   if ("type" in action && action.type === "clear_approval") {
+    if (
+      action.roundNumber !== undefined &&
+      state.approvalRequired?.round_number !== action.roundNumber
+    ) {
+      return state;
+    }
     return { ...state, approvalRequired: null };
   }
 
@@ -127,6 +144,8 @@ export function debateStreamReducer(state: StreamState, action: StreamAction): S
         reasoning: e.reasoning,
         assumptions: e.assumptions,
         confidence_score: e.confidence_score,
+        veto: e.veto ?? false,
+        veto_reason: e.veto_reason ?? null,
         timestamp: new Date().toISOString(),
       };
       return {
@@ -239,17 +258,30 @@ export function debateStreamReducer(state: StreamState, action: StreamAction): S
       // User cancelled — terminal state, distinct from error.
       return { ...state, status: "cancelled" };
 
+    case "debate_resumed":
+      // The run continues from its checkpoint: any earlier failure is history.
+      return { ...state, status: "streaming", error: null, resumable: false };
+
     case "error": {
-      const ev = event as { type: string; detail?: string; error?: string };
+      const ev = event as { type: string; detail?: string; error?: string; error_type?: string };
       const raw = ev.detail || ev.error || "A debate error occurred.";
-      const errorMessages: Record<string, string> = {
+      const byType: Record<string, string> = {
         LLMResponseError: "The AI model failed to produce a valid response. Please try again.",
         LLMConnectionError: "Could not connect to the AI provider.",
         LLMRateLimitError: "Rate limit reached. Please wait and try again.",
         DebateError: "The debate engine encountered an unrecoverable error.",
       };
-      const friendly = Object.entries(errorMessages).find(([k]) => raw.includes(k))?.[1];
-      return { ...state, status: "error", error: friendly ?? raw };
+      const byCode: Record<string, string> = {
+        debate_recovery_required:
+          "This debate was interrupted (the server restarted or the run failed) and cannot continue live.",
+        decision_unavailable: "The debate finished, but its decision could not be loaded.",
+      };
+      const friendly =
+        (ev.error_type ? byType[ev.error_type] : undefined) ??
+        (ev.error ? byCode[ev.error] : undefined) ??
+        // Older stored events carried the exception text only.
+        Object.entries(byType).find(([k]) => raw.includes(k))?.[1];
+      return { ...state, status: "error", error: friendly ?? raw, resumable: true };
     }
 
     default:
