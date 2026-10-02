@@ -29,6 +29,7 @@ def _make_agent_output(**kwargs: Any) -> AgentLLMOutput:
         "reasoning": "Strong cost savings.",
         "assumptions": ["Stable market"],
         "confidence_score": 0.8,
+        "stance": "support",
     }
     return AgentLLMOutput(**(defaults | kwargs))
 

@@ -21,7 +21,7 @@ from typing import TYPE_CHECKING, ClassVar, Literal, TypeVar
 from pydantic import BaseModel, Field
 
 from app.core.config import settings
-from app.schemas.agent_response import AgentResponse, CritiqueResponse
+from app.schemas.agent_response import AgentResponse, CritiqueResponse, Stance
 from app.schemas.state import DebateState
 from app.services.llm_client import LangChainProvider
 
@@ -30,6 +30,17 @@ if TYPE_CHECKING:
     from app.services.retriever import KnowledgeBase
 
 TModel = TypeVar("TModel", bound=BaseModel)
+
+STANCE_DESCRIPTION = (
+    "Your verdict on the proposal on the table: support, oppose, or "
+    "conditional (support only if specific conditions are met). "
+    "Use abstain only if your role does not make recommendations."
+)
+# Stance anchor before the Moderator has named a leading proposal.
+_DEFAULT_PROPOSAL = (
+    "the course of action the problem statement asks about "
+    "(support = yes, go ahead; oppose = no)."
+)
 
 
 class AgentLLMOutput(BaseModel):
@@ -46,6 +57,9 @@ class AgentLLMOutput(BaseModel):
         le=1.0,
         description="Self-assessed confidence (0 = none, 1 = certain).",
     )
+    # Required so structured output always fills it; drives the stance-based
+    # agreement score (see services/consensus.compute_stance_agreement).
+    stance: Stance = Field(description=STANCE_DESCRIPTION)
 
 
 class CritiqueLLMOutput(BaseModel):
@@ -110,9 +124,19 @@ class BaseAgent(ABC):
 
     # Schema the LLM fills for proposals and revisions; Ethics-class agents add a veto.
     output_schema: ClassVar[type[AgentLLMOutput]] = AgentLLMOutput
+    # Role-specific rule added to the stance instruction (e.g. the Analyst abstains).
+    stance_guidance: ClassVar[str] = ""
 
     def _to_response(self, raw: AgentLLMOutput, round_number: int) -> AgentResponse:
         veto = bool(getattr(raw, "veto", False))
+        stance: Stance | None = getattr(raw, "stance", None)
+        # A veto is a "no": an agent cannot veto a proposal and back it in the same breath.
+        if veto and stance in ("support", "conditional"):
+            self.logger.info(
+                "stance_coerced_by_veto",
+                extra={"agent": self.name, "round": round_number, "stance": stance},
+            )
+            stance = "oppose"
         return AgentResponse(
             agent_name=self.name,
             round_number=round_number,
@@ -122,10 +146,36 @@ class BaseAgent(ABC):
             confidence_score=raw.confidence_score,
             veto=veto,
             veto_reason=getattr(raw, "veto_reason", None) if veto else None,
+            stance=stance,
         )
 
+    @staticmethod
+    def _proposal_on_the_table(state: DebateState) -> str | None:
+        """The Moderator's leading proposal from the previous round, if it gave one."""
+        for round_data in state.rounds:
+            if round_data.round_number == state.current_round - 1:
+                return (round_data.leading_proposal or "").strip() or None
+        return None
+
+    def _stance_instruction(self, state: DebateState) -> str:
+        """Instruction appended to proposal/revision prompts telling the agent what
+        its ``stance`` is about and how to set it.
+
+        Round 1 (or when the Moderator gave no leading proposal): the decision the
+        problem statement asks for, so "Should we expand?" → support = yes.
+        Round 2+: the Moderator's leading proposal from the previous round.
+        """
+        proposal = self._proposal_on_the_table(state) or _DEFAULT_PROPOSAL
+        lines = [
+            f"Proposal on the table: {proposal}",
+            f"Set `stance` toward this proposal. {STANCE_DESCRIPTION}",
+        ]
+        if self.stance_guidance:
+            lines.append(self.stance_guidance)
+        return "\n\n---\n" + "\n".join(lines)
+
     async def run(self, state: DebateState) -> AgentResponse:
-        user_prompt = self._build_proposal_prompt(state)
+        user_prompt = self._build_proposal_prompt(state) + self._stance_instruction(state)
         # P3.1: inject knowledge-base context into the proposal prompt
         if self.knowledge_base is not None and state.use_knowledge_base:
             user_prompt = await self._enrich_with_kb(user_prompt, state.user_query)
@@ -170,7 +220,7 @@ class BaseAgent(ABC):
         state: DebateState,
         critiques: list[CritiqueResponse],
     ) -> AgentResponse:
-        user_prompt = self._build_revision_prompt(state, critiques)
+        user_prompt = self._build_revision_prompt(state, critiques) + self._stance_instruction(state)
         # P3.1: inject KB context into revisions as well
         if self.knowledge_base is not None and state.use_knowledge_base:
             user_prompt = await self._enrich_with_kb(user_prompt, state.user_query)

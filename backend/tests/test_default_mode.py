@@ -69,3 +69,20 @@ async def test_debate_modes_endpoint_reports_the_default(monkeypatch, configured
         "max_rounds": 2, "consensus_threshold": 0.60, "skip_critique_phase": True, "min_rounds": 1,
     }
     assert set(body["presets"]) == {"quick", "standard", "thorough", "custom"}
+
+
+@pytest.mark.anyio
+@pytest.mark.parametrize(("flag", "installed", "expected"), [
+    (False, True, False),
+    (True, False, False),
+    (True, True, True),
+])
+async def test_debate_modes_endpoint_reports_semantic_availability(monkeypatch, flag, installed, expected):
+    import app.services.consensus as consensus
+
+    monkeypatch.setattr(settings, "SEMANTIC_CONSENSUS_ENABLED", flag)
+    monkeypatch.setattr(consensus, "_SEMANTIC_AVAILABLE", installed)
+    async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:  # type: ignore[arg-type]
+        resp = await client.get("/debate-modes")
+
+    assert resp.json()["semantic_available"] is expected

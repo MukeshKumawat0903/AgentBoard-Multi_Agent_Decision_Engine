@@ -1,27 +1,52 @@
 """
 Consensus scoring engine.
 
-Computes agreement scores between agent positions to drive convergence.
+Computes the signals the hybrid consensus gate evaluates. The gate converges
+only when all six hold: agreement >= threshold (Rule 1), minimum rounds,
+little dissent, few open high-severity disagreements, confidence converged,
+and no standing ethics veto.
+
+Rule 1 — agreement score, chosen by ``AGREEMENT_METHOD`` or per debate:
+
+- ``stance`` (default) – ``compute_stance_agreement``: each agent declares a
+  structured verdict (support / oppose / conditional / abstain) toward the
+  proposal on the table; agreement is the confidence-weighted vote share of
+  the largest group. Abstainers do not vote.
+- ``lexical`` – ``0.7 × mean confidence + 0.3 × rescaled word overlap``. Legacy,
+  and the automatic fallback when fewer than two agents declared a stance.
+- ``semantic`` – ``(1-w) × mean confidence + w × embedding cosine``.
+  Experimental; needs ``SEMANTIC_CONSENSUS_ENABLED`` and sentence-transformers.
+
+Why stance: text similarity (words or embeddings) measures *topic*, not
+*verdict*. "Should expand" vs "should not expand" overlap almost completely,
+and role-bound agents word their agreement differently. Every score is still
+computed and reported each round; only the chosen one drives the gate.
 
 V1 – ``ConsensusEngine`` (pure stdlib, no ML dependencies):
-- compute_agreement_score              : mean confidence as group alignment proxy
+- compute_agreement_score              : mean confidence
 - compute_confidence_weighted_score    : confidence-weighted pairwise Jaccard overlap
 - detect_position_drift                : Jaccard-overlap delta between rounds
 
 V2 – ``SemanticConsensusEngine`` (requires ``sentence-transformers``):
 - compute_semantic_similarity          : mean pairwise cosine similarity of embeddings
-- compute_agreement_score (override)   : hybrid = (1-w)*confidence + w*cosine_sim
 
-SemanticConsensusEngine is feature-flagged via ``settings.SEMANTIC_CONSENSUS_ENABLED``
-and gracefully degrades if ``sentence-transformers`` is not installed.
+With ``SEMANTIC_CONSENSUS_ENABLED`` the cosine score is a diagnostic (logged and
+emitted) unless the ``semantic`` method is chosen; ``semantic_available()`` says
+whether it can be. The engine degrades gracefully without sentence-transformers.
 """
 
 from __future__ import annotations
 
 import logging
+from collections import defaultdict
 from dataclasses import dataclass
+from typing import TYPE_CHECKING, get_args
 
 from app.schemas.agent_response import AgentResponse, CritiqueResponse
+from app.schemas.state import AgreementMethod
+
+if TYPE_CHECKING:
+    from app.core.config import Settings
 
 logger = logging.getLogger("agentboard.services.consensus")
 
@@ -169,10 +194,62 @@ class ConsensusEngine:
 
 
 # ---------------------------------------------------------------------------
+# Stance-based agreement (Rule 1 of the consensus gate, default method)
+#
+# Text similarity — word overlap or embeddings — measures *topic*: role-bound
+# agents write differently when they agree and alike when they don't ("should
+# expand" vs "should not expand"). Each agent therefore declares its verdict as
+# a structured ``stance`` and agreement is the vote share of the largest group.
+# ---------------------------------------------------------------------------
+
+AGREEMENT_METHODS: tuple[AgreementMethod, ...] = get_args(AgreementMethod)
+
+
+def resolve_agreement_method(*candidates: object) -> AgreementMethod:
+    """First candidate that names a known agreement method, else ``"stance"``.
+
+    Called as ``resolve_agreement_method(per_debate_choice, settings.AGREEMENT_METHOD)``.
+    """
+    for candidate in candidates:
+        if candidate in AGREEMENT_METHODS:
+            return candidate  # type: ignore[return-value]
+    return "stance"
+
+
+def compute_stance_agreement(responses: list[AgentResponse]) -> float | None:
+    """Confidence-weighted vote share of the largest stance group.
+
+    Abstainers and agents with no stance are excluded. ``conditional`` is its own
+    group: "yes, if X" is not counted as a plain "yes".
+    Returns None when fewer than 2 agents voted, so the caller can fall back.
+    """
+    voters = [r for r in responses if r.stance and r.stance != "abstain"]
+    if len(voters) < 2:
+        return None
+    weight: dict[str, float] = defaultdict(float)
+    for r in voters:
+        weight[r.stance] += r.confidence_score  # type: ignore[index]
+    total = sum(weight.values())
+    return max(weight.values()) / total if total else 0.0
+
+
+def stance_tally(responses: list[AgentResponse]) -> dict[str, int]:
+    """Counts per stance, for logs/UI (e.g. {'support': 2, 'oppose': 1, 'abstain': 1}).
+
+    Agents with no stance (debates stored before the field existed) are left out.
+    """
+    tally: dict[str, int] = {}
+    for r in responses:
+        if r.stance:
+            tally[r.stance] = tally.get(r.stance, 0) + 1
+    return tally
+
+
+# ---------------------------------------------------------------------------
 # Hybrid consensus gate — the signals and predicate that decide termination.
 #
 # The convergence gate no longer stops on mean confidence alone. It evaluates
-# five signals, all of which must hold before a debate is declared converged.
+# six signals, all of which must hold before a debate is declared converged.
 # The dissent/disagreement helpers below are shared with finalize_node so the
 # live gate and the final report agree on who counts as a dissenter.
 # ---------------------------------------------------------------------------
@@ -235,7 +312,7 @@ def normalize_position_overlap(raw_overlap: float, floor: float, ceiling: float)
 class ConsensusSignals:
     """The signals the hybrid consensus gate evaluates."""
 
-    position_agreement: float       # confidence-weighted position overlap [0,1]
+    position_agreement: float       # Rule 1 agreement score [0,1] (stance / lexical / semantic)
     rounds_completed: int           # ds.current_round
     dissenting_agents: int          # count_dissenting_agents(...)
     open_disagreements: int         # count_open_disagreements(...)
@@ -281,6 +358,23 @@ except ImportError:
     _SEMANTIC_AVAILABLE = False
 
 
+def semantic_libraries_installed() -> bool:
+    """True when ``sentence-transformers`` and ``numpy`` could be imported."""
+    return _SEMANTIC_AVAILABLE
+
+
+def semantic_available(settings: Settings | None = None) -> bool:
+    """True when the semantic score can be computed on this server.
+
+    Needs both the ``SEMANTIC_CONSENSUS_ENABLED`` flag and the embedding
+    libraries. The "semantic" agreement method is only offered when this holds.
+    """
+    if settings is None:
+        from app.core.config import settings as app_settings  # noqa: PLC0415
+        settings = app_settings
+    return bool(settings.SEMANTIC_CONSENSUS_ENABLED) and semantic_libraries_installed()
+
+
 class SemanticConsensusEngine(ConsensusEngine):
     """
     Hybrid consensus engine: mean-confidence (V1) × cosine similarity (V2).
@@ -306,7 +400,7 @@ class SemanticConsensusEngine(ConsensusEngine):
     """
 
     def __init__(self, model_name: str = "all-MiniLM-L6-v2") -> None:
-        if not _SEMANTIC_AVAILABLE:
+        if not semantic_libraries_installed():
             raise ImportError(
                 "sentence-transformers and numpy are required for SemanticConsensusEngine. "
                 "Install them with: pip install sentence-transformers numpy"
@@ -322,6 +416,9 @@ class SemanticConsensusEngine(ConsensusEngine):
         """
         Mean pairwise cosine similarity over sentence-transformer embeddings.
 
+        Synchronous and CPU-bound: async callers must run it in a worker thread
+        (``asyncio.to_thread``) so it never blocks the event loop.
+
         Returns:
             Float in [0, 1].  Returns 0.0 for fewer than 2 responses.
         """
@@ -329,6 +426,10 @@ class SemanticConsensusEngine(ConsensusEngine):
             return 0.0
 
         model = self._load_model()
+        # all-MiniLM-L6-v2 truncates its input at 256 word-pieces, so only the
+        # opening of a long position is embedded. Embeddings also capture topic
+        # more than verdict ("expand" vs "do not expand" score close), which is
+        # why this score is a diagnostic by default and not the agreement metric.
         positions = [r.position for r in responses]
         embeddings = model.encode(positions, convert_to_numpy=True)  # (n, d)
 

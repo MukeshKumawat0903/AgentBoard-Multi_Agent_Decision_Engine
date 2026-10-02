@@ -73,6 +73,7 @@ from app.schemas.api_models import (
 )
 from app.schemas.final_decision import FinalDecision
 from app.schemas.state import MAX_DEBATE_ROUNDS_LIMIT, DebateState
+from app.services.consensus import semantic_available
 from app.services.llm_client import (
     LangChainProvider,
     get_active_provider_info,
@@ -498,6 +499,7 @@ async def start_debate(
         enable_agent_memory=bool(body.enable_agent_memory),
         selected_agents=selected_agents,
         domain_pack=domain_pack,
+        agreement_method=body.agreement_method or settings.AGREEMENT_METHOD,
     )
     graph = DebateGraph(
         llm_client=llm_client,
@@ -579,6 +581,7 @@ async def start_debate_async(
         enable_agent_memory=bool(body.enable_agent_memory),
         selected_agents=selected_agents,
         domain_pack=domain_pack,
+        agreement_method=body.agreement_method or settings.AGREEMENT_METHOD,
     )
     thread_id = debate_state.thread_id
     queue_list: list = []
@@ -1730,6 +1733,7 @@ async def _simulate(
         memory_store=get_memory_store() if body.enable_agent_memory else None,
         use_knowledge_base=body.use_knowledge_base,
         enable_agent_memory=body.enable_agent_memory,
+        agreement_method=body.agreement_method,
     )
     app_metrics.increment_event("debate.simulated")
     return result
@@ -2077,7 +2081,12 @@ async def list_domain_packs():
 )
 async def list_debate_modes() -> DebateModesResponse:
     """The default comes from DEFAULT_DEBATE_MODE (Quick when not set); the UI pre-selects it."""
-    return DebateModesResponse(default_mode=default_debate_mode(), presets=mode_presets())
+    return DebateModesResponse(
+        default_mode=default_debate_mode(),
+        presets=mode_presets(),
+        default_agreement_method=app_settings.AGREEMENT_METHOD,
+        semantic_available=semantic_available(),
+    )
 
 
 # ---------------------------------------------------------------------------

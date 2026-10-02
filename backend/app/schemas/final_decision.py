@@ -150,6 +150,15 @@ class FinalDecision(BaseModel):
         description="Ethics vetoes still standing when the debate ended; consensus "
         "cannot be reached while one stands.",
     )
+    agreement_method: str | None = Field(
+        default=None,
+        description="Method that produced the final agreement score: 'stance', 'lexical' "
+        "or 'semantic'. None for decisions stored before this field existed.",
+    )
+    stance_tally: dict[str, int] | None = Field(
+        default=None,
+        description="Final-round count of agents per stance, e.g. {'support': 2, 'oppose': 1}.",
+    )
 
     model_config = ConfigDict(
         json_schema_extra={

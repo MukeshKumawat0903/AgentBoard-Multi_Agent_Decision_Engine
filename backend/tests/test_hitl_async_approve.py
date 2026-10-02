@@ -42,7 +42,7 @@ class _GatedLLM:
             await self.gate.wait()
             if self.fail_agents:
                 raise RuntimeError("provider exploded during proposals")
-            return AgentLLMOutput(position="Run a careful pilot first.", reasoning="r", confidence_score=0.9)
+            return AgentLLMOutput(position="Run a careful pilot first.", reasoning="r", confidence_score=0.9, stance="support")
         if schema is CritiqueLLMOutput:
             return CritiqueLLMOutput(critique_points=["minor"], severity="low", confidence_score=0.5)
         if schema is ModeratorSynthesis:

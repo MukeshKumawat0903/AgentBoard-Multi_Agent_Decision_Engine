@@ -11,7 +11,7 @@ from pydantic import BaseModel, ConfigDict, Field, field_validator, model_valida
 
 from app.core.config import settings
 from app.data.templates import TEMPLATES
-from app.schemas.state import DebateRound
+from app.schemas.state import AgreementMethod, DebateRound
 
 __all__ = [
     "ApproveRequest",
@@ -51,6 +51,26 @@ _TEMPLATE_IDS = frozenset(t.id for t in TEMPLATES)
 
 # A debate needs at least two agents besides the Moderator, who only synthesises.
 MIN_DEBATING_AGENTS = 2
+
+
+_AGREEMENT_METHOD_DESCRIPTION = (
+    "How the consensus gate measures agreement: 'stance' (agents vote support/oppose), "
+    "'lexical' (confidence + word overlap) or 'semantic' (confidence + embedding "
+    "similarity; needs SEMANTIC_CONSENSUS_ENABLED on the server). Omitted: AGREEMENT_METHOD."
+)
+
+
+def _check_agreement_method(method: AgreementMethod | None) -> AgreementMethod | None:
+    """Reject 'semantic' when the server cannot compute it (flag off or library missing)."""
+    if method == "semantic":
+        from app.services.consensus import semantic_available  # noqa: PLC0415
+
+        if not semantic_available():
+            raise ValueError(
+                "The 'semantic' agreement method is unavailable: enable "
+                "SEMANTIC_CONSENSUS_ENABLED and install sentence-transformers on the server."
+            )
+    return method
 
 
 def _check_debating_agents(agents: list[str] | None, domain_pack: str | None) -> None:
@@ -161,6 +181,15 @@ class DebateStartRequest(BaseModel):
         default=None,
         description="ID of the built-in template (GET /templates) the query started from, if any.",
     )
+    agreement_method: AgreementMethod | None = Field(
+        default=None,
+        description=_AGREEMENT_METHOD_DESCRIPTION,
+    )
+
+    @field_validator("agreement_method")
+    @classmethod
+    def _agreement_method_available(cls, value: AgreementMethod | None) -> AgreementMethod | None:
+        return _check_agreement_method(value)
 
     @field_validator("template_id")
     @classmethod
@@ -241,6 +270,15 @@ class SimulateRequest(BaseModel):
         default=False,
         description="When True, agents receive past-debate lessons in each run.",
     )
+    agreement_method: AgreementMethod | None = Field(
+        default=None,
+        description=_AGREEMENT_METHOD_DESCRIPTION,
+    )
+
+    @field_validator("agreement_method")
+    @classmethod
+    def _agreement_method_available(cls, value: AgreementMethod | None) -> AgreementMethod | None:
+        return _check_agreement_method(value)
 
     @model_validator(mode="after")
     def require_two_debaters(self) -> "SimulateRequest":
@@ -253,6 +291,17 @@ class DebateModesResponse(BaseModel):
 
     default_mode: DebateMode = Field(description="Mode used when none is chosen (DEFAULT_DEBATE_MODE).")
     presets: dict[str, dict] = Field(description="Settings each mode applies.")
+    default_agreement_method: AgreementMethod = Field(
+        default="stance",
+        description="Agreement method used when a debate does not pick one (AGREEMENT_METHOD).",
+    )
+    semantic_available: bool = Field(
+        default=False,
+        description=(
+            "True when SEMANTIC_CONSENSUS_ENABLED is set and the embedding libraries are "
+            "installed, so the 'semantic' agreement method can be chosen."
+        ),
+    )
 
 
 class ApproveRequest(BaseModel):

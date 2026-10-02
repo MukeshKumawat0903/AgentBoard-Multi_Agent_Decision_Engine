@@ -405,3 +405,19 @@ describe("error event", () => {
     expect(next.error).toBe("unknown internal error");
   });
 });
+
+// ── stance ─────────────────────────────────────────────────────────────────
+
+describe("agent_output stance", () => {
+  it("keeps the agent's stance", () => {
+    const next = debateStreamReducer(stateWith({}), {
+      event: { ...agentOutputEvent("Risk"), stance: "oppose" as const },
+    });
+    expect(next.rounds[0].agent_outputs[0].stance).toBe("oppose");
+  });
+
+  it("stores null when the event has no stance", () => {
+    const next = debateStreamReducer(stateWith({}), { event: agentOutputEvent("Risk") });
+    expect(next.rounds[0].agent_outputs[0].stance).toBeNull();
+  });
+});

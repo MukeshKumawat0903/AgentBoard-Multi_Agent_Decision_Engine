@@ -32,16 +32,19 @@ from app.agents.moderator_agent import ModeratorAgent, ModeratorSynthesis
 from app.core.config import Settings
 from app.orchestrator.lg_state import DebateGraphState
 from app.schemas.final_decision import MinorityReportEntry
-from app.schemas.state import MAX_DEBATE_ROUNDS_LIMIT, DebateRound, DebateState
+from app.schemas.state import MAX_DEBATE_ROUNDS_LIMIT, AgreementMethod, DebateRound, DebateState
 from app.services.consensus import (
     ConsensusEngine,
     ConsensusSignals,
     SemanticConsensusEngine,
     _word_overlap,
+    compute_stance_agreement,
     count_open_disagreements,
     is_consensus_reached,
     normalize_position_overlap,
+    resolve_agreement_method,
     select_dissenting_agents,
+    stance_tally,
 )
 from app.services.llm_client import llm_call_slot
 
@@ -138,6 +141,7 @@ def make_proposals_node(
                         "assumptions": result.assumptions,
                         "veto": result.veto,
                         "veto_reason": result.veto_reason,
+                        "stance": result.stance,
                     })
                 return result
             except TimeoutError:
@@ -327,6 +331,7 @@ def make_revisions_node(
                         "assumptions": result.assumptions,
                         "veto": result.veto,
                         "veto_reason": result.veto_reason,
+                        "stance": result.stance,
                     })
                 return result
             except TimeoutError:
@@ -397,7 +402,7 @@ def make_convergence_node(
 
     # Phase 4.3: instantiate the semantic engine once at factory time so the
     # sentence-transformers model is loaded once per debate graph, not once
-    # per convergence round.
+    # per convergence round. Only built when SEMANTIC_CONSENSUS_ENABLED is set.
     _semantic_engine: SemanticConsensusEngine | None = None
     if settings.SEMANTIC_CONSENSUS_ENABLED:
         try:
@@ -438,6 +443,10 @@ def make_convergence_node(
                 should_continue=True,
             )
 
+        # Next round's agents declare their stance toward this proposal.
+        proposal = synthesis.leading_proposal
+        round_data.leading_proposal = (proposal.strip() or None) if isinstance(proposal, str) else None
+
         confidence_engine = ConsensusEngine()
         # Mean self-confidence — a secondary signal, no longer the agreement metric.
         confidence_agreement = confidence_engine.compute_agreement_score(round_data.agent_outputs)
@@ -453,27 +462,52 @@ def make_convergence_node(
         )
         if len(round_data.agent_outputs) >= 2:
             w = settings.CONSENSUS_POSITION_WEIGHT
-            agreement_score = (1.0 - w) * confidence_agreement + w * position_agreement
+            lexical_agreement = (1.0 - w) * confidence_agreement + w * position_agreement
         else:
-            agreement_score = confidence_agreement
+            lexical_agreement = confidence_agreement
+        # Confidence-weighted vote share of the largest stance group; None when
+        # fewer than two agents declared a (non-abstain) stance.
+        stance_agreement = compute_stance_agreement(round_data.agent_outputs)
+        tally = stance_tally(round_data.agent_outputs)
+        # Embedding similarity is computed and reported every round when enabled,
+        # but it measures topic more than verdict, so it never drives the gate on
+        # its own. Encoding is CPU-bound: run it off the event loop so SSE keeps flowing.
         semantic_agreement: float | None = None
-
         if _semantic_engine is not None and len(round_data.agent_outputs) >= 2:
             try:
-                semantic_agreement = _semantic_engine.compute_semantic_similarity(
-                    round_data.agent_outputs
-                )
-                # Semantic similarity is a true position-overlap signal — when the
-                # engine is available it overrides the word-overlap blend entirely.
-                agreement_score = _semantic_engine.compute_agreement_score(
-                    round_data.agent_outputs,
-                    semantic_weight=settings.SEMANTIC_CONSENSUS_WEIGHT,
+                semantic_agreement = await asyncio.to_thread(
+                    _semantic_engine.compute_semantic_similarity, round_data.agent_outputs
                 )
             except Exception as exc:  # noqa: BLE001
                 logger.warning(
                     "semantic_consensus_failed",
                     extra={"error": str(exc)},
                 )
+                semantic_agreement = None
+
+        # Rule 1 of the gate: the per-debate method, else the server default. Every
+        # score above is still reported; only the chosen one drives the gate. When it
+        # cannot be computed (missing stances, < 2 voters, semantic unavailable) the
+        # lexical blend takes over, so a debate never stalls on a missing signal.
+        requested_method = resolve_agreement_method(ds.agreement_method, settings.AGREEMENT_METHOD)
+        agreement_score: float | None = None
+        method_used: AgreementMethod = requested_method
+        if requested_method == "stance":
+            agreement_score = stance_agreement
+        elif requested_method == "semantic" and semantic_agreement is not None:
+            sw = settings.SEMANTIC_CONSENSUS_WEIGHT
+            agreement_score = (1.0 - sw) * confidence_agreement + sw * semantic_agreement
+        elif requested_method == "lexical":
+            agreement_score = lexical_agreement
+        if agreement_score is None:
+            agreement_score = lexical_agreement
+            method_used = "lexical"
+            if requested_method != "lexical":
+                logger.warning(
+                    "agreement_fallback_to_lexical",
+                    extra={"round": ds.current_round, "requested": requested_method},
+                )
+        round_data.agreement_method_used = method_used
 
         ds.agreement_score = agreement_score
 
@@ -506,6 +540,10 @@ def make_convergence_node(
             "confidence_agreement_score": confidence_agreement,
             "position_agreement_score": position_agreement,
             "semantic_agreement_score": semantic_agreement,
+            "stance_agreement_score": stance_agreement,
+            "stance_tally": tally,
+            "agreement_method_used": method_used,
+            "leading_proposal": round_data.leading_proposal,
         })
 
         # Hybrid consensus gate: consensus is declared only when the agents genuinely
@@ -571,6 +609,9 @@ def make_convergence_node(
                 "round": ds.current_round,
                 "min_rounds": effective_min_rounds,
                 "agreement_score": round(agreement_score, 4),
+                "agreement_method_used": method_used,
+                "stance_agreement_score": stance_agreement,
+                "stance_tally": tally,
                 "threshold": effective_threshold,
                 "dissenting_agents": dissenting,
                 "open_disagreements": open_disagreements,
@@ -798,7 +839,10 @@ def make_finalize_node(
         }
         missing_agents = sorted(expected - final_names)
 
+        final_round = ds.rounds[-1] if ds.rounds else None
         decision = decision.model_copy(update={
+            "agreement_method": final_round.agreement_method_used if final_round else None,
+            "stance_tally": (stance_tally(final_round.agent_outputs) or None) if final_round else None,
             "minority_report": minority,
             "key_disagreements": key_disags,  # top-5 by severity, final round only
             "agent_contribution_scores": contribution,

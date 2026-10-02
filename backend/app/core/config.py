@@ -85,6 +85,14 @@ class Settings(BaseSettings):
     # agent restating its stance in the next round overlaps ~0.19 (scores 1).
     POSITION_OVERLAP_FLOOR: float = 0.08
     POSITION_OVERLAP_CEILING: float = 0.19
+    # How Rule 1 of the consensus gate measures agreement:
+    #   stance   – confidence-weighted vote share of the largest stance group (default)
+    #   lexical  – the blend above: mean confidence + rescaled word overlap. Also the
+    #              automatic fallback when stances are missing or < 2 agents voted.
+    #   semantic – mean confidence + embedding cosine (experimental); needs
+    #              SEMANTIC_CONSENSUS_ENABLED and sentence-transformers.
+    # A debate can pick its own method (agreement_method in the start request).
+    AGREEMENT_METHOD: Literal["stance", "lexical", "semantic"] = "stance"
     # Max tool invocations an agent may make per proposal/revision call.
     MAX_TOOL_CALLS_PER_ROUND: int = 3
     # Max LLM calls in flight per provider (0 = unlimited). A debate fans out
@@ -127,10 +135,14 @@ class Settings(BaseSettings):
     LANGSMITH_ENDPOINT: str = "https://api.smith.langchain.com"
 
     # --- Semantic Consensus (Phase 4) ---
-    # Requires sentence-transformers installed.
+    # Requires sentence-transformers installed. When enabled, the embedding
+    # similarity of positions is computed, logged and emitted every round as a
+    # diagnostic, and the "semantic" agreement method becomes available. It does
+    # not change the agreement score unless that method is chosen.
     SEMANTIC_CONSENSUS_ENABLED: bool = False
     SEMANTIC_MODEL: str = "all-MiniLM-L6-v2"
-    # Weight of semantic score vs confidence proxy (0.0 = all confidence, 1.0 = all semantic).
+    # "semantic" method only: weight of the cosine score vs mean confidence
+    # (0.0 = all confidence, 1.0 = all semantic).
     SEMANTIC_CONSENSUS_WEIGHT: float = 0.5
 
     # --- Phase 3: Knowledge Base RAG ---
