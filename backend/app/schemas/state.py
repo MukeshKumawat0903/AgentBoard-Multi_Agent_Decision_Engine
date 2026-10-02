@@ -27,6 +27,12 @@ DebateStatus = Literal[
 # Valid phase values for a DebateRound
 DebatePhase = Literal["proposal", "critique", "revision", "convergence"]
 
+# How Rule 1 of the consensus gate measures agreement (see services/consensus.py):
+#   stance   – confidence-weighted vote share of the largest stance group
+#   lexical  – mean confidence blended with rescaled word overlap (legacy + fallback)
+#   semantic – mean confidence blended with embedding cosine (experimental)
+AgreementMethod = Literal["stance", "lexical", "semantic"]
+
 # Hard upper bound on rounds in one debate, including rounds a human reviewer
 # adds through the HITL "add round" action.
 MAX_DEBATE_ROUNDS_LIMIT = 8
@@ -59,6 +65,13 @@ class DebateRound(BaseModel):
     tool_calls: list[dict] = Field(
         default_factory=list,
         description="Tool invocations made by agents this round (for the persisted trace).",
+    )
+    agreement_method_used: AgreementMethod | None = Field(
+        default=None,
+        description=(
+            "Method that produced this round's agreement score (after any fallback to "
+            "lexical). None for rounds stored before this field existed."
+        ),
     )
 
     model_config = ConfigDict(
@@ -130,6 +143,12 @@ class DebateState(BaseModel):
         ge=0.0,
         le=1.0,
         description="Latest consensus score produced by the Moderator (0–1).",
+    )
+    agreement_method: AgreementMethod | None = Field(
+        default=None,
+        description=(
+            "Agreement method chosen for this debate. None uses the AGREEMENT_METHOD setting."
+        ),
     )
     confidence_scores: dict[str, float] = Field(
         default_factory=dict,

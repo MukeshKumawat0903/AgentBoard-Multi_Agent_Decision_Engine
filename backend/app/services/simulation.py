@@ -34,6 +34,7 @@ if TYPE_CHECKING:
     from app.core.config import Settings
     from app.schemas.api_models import DebateMode
     from app.schemas.final_decision import FinalDecision
+    from app.schemas.state import AgreementMethod
     from app.services.llm_client import LangChainProvider
 
 logger = logging.getLogger("agentboard.simulation")
@@ -180,6 +181,7 @@ async def run_simulation(
     memory_store=None,
     use_knowledge_base: bool = False,
     enable_agent_memory: bool = False,
+    agreement_method: AgreementMethod | None = None,
 ) -> SimulationResult:
     """
     Run ``runs`` independent debates and return aggregated stability metrics.
@@ -199,8 +201,12 @@ async def run_simulation(
     )
 
     # Only build an explicit initial state when the run needs extra configuration
-    # (agent subset, knowledge base, or memory); otherwise let the graph build it.
-    needs_custom_state = bool(selected_agents) or use_knowledge_base or enable_agent_memory
+    # (agent subset, knowledge base, memory, or an agreement method); otherwise let
+    # the graph build it.
+    needs_custom_state = (
+        bool(selected_agents) or use_knowledge_base or enable_agent_memory
+        or agreement_method is not None
+    )
 
     async def _single_run(_run_idx: int) -> FinalDecision | None:
         try:
@@ -220,6 +226,7 @@ async def run_simulation(
                     use_knowledge_base=use_knowledge_base,
                     enable_agent_memory=enable_agent_memory,
                     selected_agents=selected_agents,
+                    agreement_method=agreement_method,
                 )
                 _state, decision = await graph.run(
                     query,

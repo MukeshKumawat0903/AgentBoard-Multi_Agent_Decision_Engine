@@ -32,16 +32,19 @@ from app.agents.moderator_agent import ModeratorAgent, ModeratorSynthesis
 from app.core.config import Settings
 from app.orchestrator.lg_state import DebateGraphState
 from app.schemas.final_decision import MinorityReportEntry
-from app.schemas.state import MAX_DEBATE_ROUNDS_LIMIT, DebateRound, DebateState
+from app.schemas.state import MAX_DEBATE_ROUNDS_LIMIT, AgreementMethod, DebateRound, DebateState
 from app.services.consensus import (
     ConsensusEngine,
     ConsensusSignals,
     SemanticConsensusEngine,
     _word_overlap,
+    compute_stance_agreement,
     count_open_disagreements,
     is_consensus_reached,
     normalize_position_overlap,
+    resolve_agreement_method,
     select_dissenting_agents,
+    stance_tally,
 )
 from app.services.llm_client import llm_call_slot
 
@@ -453,9 +456,13 @@ def make_convergence_node(
         )
         if len(round_data.agent_outputs) >= 2:
             w = settings.CONSENSUS_POSITION_WEIGHT
-            agreement_score = (1.0 - w) * confidence_agreement + w * position_agreement
+            lexical_agreement = (1.0 - w) * confidence_agreement + w * position_agreement
         else:
-            agreement_score = confidence_agreement
+            lexical_agreement = confidence_agreement
+        # Confidence-weighted vote share of the largest stance group; None when
+        # fewer than two agents declared a (non-abstain) stance.
+        stance_agreement = compute_stance_agreement(round_data.agent_outputs)
+        tally = stance_tally(round_data.agent_outputs)
         # Embedding similarity is computed and reported every round when enabled,
         # but it measures topic more than verdict, so it never drives the gate on
         # its own. Encoding is CPU-bound: run it off the event loop so SSE keeps flowing.
@@ -471,6 +478,30 @@ def make_convergence_node(
                     extra={"error": str(exc)},
                 )
                 semantic_agreement = None
+
+        # Rule 1 of the gate: the per-debate method, else the server default. Every
+        # score above is still reported; only the chosen one drives the gate. When it
+        # cannot be computed (missing stances, < 2 voters, semantic unavailable) the
+        # lexical blend takes over, so a debate never stalls on a missing signal.
+        requested_method = resolve_agreement_method(ds.agreement_method, settings.AGREEMENT_METHOD)
+        agreement_score: float | None = None
+        method_used: AgreementMethod = requested_method
+        if requested_method == "stance":
+            agreement_score = stance_agreement
+        elif requested_method == "semantic" and semantic_agreement is not None:
+            sw = settings.SEMANTIC_CONSENSUS_WEIGHT
+            agreement_score = (1.0 - sw) * confidence_agreement + sw * semantic_agreement
+        elif requested_method == "lexical":
+            agreement_score = lexical_agreement
+        if agreement_score is None:
+            agreement_score = lexical_agreement
+            method_used = "lexical"
+            if requested_method != "lexical":
+                logger.warning(
+                    "agreement_fallback_to_lexical",
+                    extra={"round": ds.current_round, "requested": requested_method},
+                )
+        round_data.agreement_method_used = method_used
 
         ds.agreement_score = agreement_score
 
@@ -568,6 +599,9 @@ def make_convergence_node(
                 "round": ds.current_round,
                 "min_rounds": effective_min_rounds,
                 "agreement_score": round(agreement_score, 4),
+                "agreement_method_used": method_used,
+                "stance_agreement_score": stance_agreement,
+                "stance_tally": tally,
                 "threshold": effective_threshold,
                 "dissenting_agents": dissenting,
                 "open_disagreements": open_disagreements,

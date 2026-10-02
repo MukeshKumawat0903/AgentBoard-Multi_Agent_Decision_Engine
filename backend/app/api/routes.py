@@ -499,6 +499,7 @@ async def start_debate(
         enable_agent_memory=bool(body.enable_agent_memory),
         selected_agents=selected_agents,
         domain_pack=domain_pack,
+        agreement_method=body.agreement_method or settings.AGREEMENT_METHOD,
     )
     graph = DebateGraph(
         llm_client=llm_client,
@@ -580,6 +581,7 @@ async def start_debate_async(
         enable_agent_memory=bool(body.enable_agent_memory),
         selected_agents=selected_agents,
         domain_pack=domain_pack,
+        agreement_method=body.agreement_method or settings.AGREEMENT_METHOD,
     )
     thread_id = debate_state.thread_id
     queue_list: list = []
@@ -1731,6 +1733,7 @@ async def _simulate(
         memory_store=get_memory_store() if body.enable_agent_memory else None,
         use_knowledge_base=body.use_knowledge_base,
         enable_agent_memory=body.enable_agent_memory,
+        agreement_method=body.agreement_method,
     )
     app_metrics.increment_event("debate.simulated")
     return result
@@ -2081,6 +2084,7 @@ async def list_debate_modes() -> DebateModesResponse:
     return DebateModesResponse(
         default_mode=default_debate_mode(),
         presets=mode_presets(),
+        default_agreement_method=app_settings.AGREEMENT_METHOD,
         semantic_available=semantic_available(),
     )
 
