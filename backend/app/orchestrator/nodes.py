@@ -441,6 +441,10 @@ def make_convergence_node(
                 should_continue=True,
             )
 
+        # Next round's agents declare their stance toward this proposal.
+        proposal = synthesis.leading_proposal
+        round_data.leading_proposal = (proposal.strip() or None) if isinstance(proposal, str) else None
+
         confidence_engine = ConsensusEngine()
         # Mean self-confidence — a secondary signal, no longer the agreement metric.
         confidence_agreement = confidence_engine.compute_agreement_score(round_data.agent_outputs)
