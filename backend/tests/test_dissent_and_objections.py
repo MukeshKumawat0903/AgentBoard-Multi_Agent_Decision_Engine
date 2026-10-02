@@ -1,0 +1,222 @@
+"""Rule 3 (dissent) of the consensus gate: a dissenter is a voting agent whose
+stance differs from the majority, shared by the gate and the minority report."""
+
+from __future__ import annotations
+
+import itertools
+from unittest.mock import AsyncMock, MagicMock
+
+import pytest
+
+from app.orchestrator.nodes import make_convergence_node, make_finalize_node
+from app.schemas.agent_response import AgentResponse
+from app.schemas.final_decision import FinalDecision
+from app.schemas.state import DebateRound, DebateState
+from app.services.consensus import (
+    ConsensusSignals,
+    _confidence_gap_dissenters,
+    compute_stance_agreement,
+    count_dissenting_agents,
+    is_consensus_reached,
+    majority_stance,
+    select_dissenting_agents,
+    stance_weights,
+)
+from tests.test_orchestrator import _mock_settings, _synthesis
+
+QUERY = "Should we expand into Southeast Asia next year?"
+BAND = 0.20
+
+
+@pytest.fixture
+def anyio_backend():
+    return "asyncio"
+
+
+def _agent(name: str, stance: str | None, confidence: float, round_number: int = 2) -> AgentResponse:
+    # Identical wording so Rule 1 (lexical fallback) and drift don't get in the way.
+    return AgentResponse(
+        agent_name=name, round_number=round_number,
+        position="We should decide on the Southeast Asia expansion next year.",
+        reasoning="r", confidence_score=confidence, stance=stance,
+    )
+
+
+def _names(responses: list[AgentResponse]) -> list[str]:
+    return [r.agent_name for r in responses]
+
+
+# --- who is a dissenter -------------------------------------------------------
+
+def test_a_confident_opponent_dissents_and_an_unsure_ally_does_not():
+    responses = [
+        _agent("Strategy", "support", 0.85),
+        _agent("Risk", "oppose", 0.90),
+        _agent("Ethics", "support", 0.50),
+    ]
+    assert _names(select_dissenting_agents(responses, BAND)) == ["Risk"]
+    # The old confidence-gap rule got this backwards.
+    assert _names(_confidence_gap_dissenters(responses, BAND)) == ["Ethics"]
+
+
+def test_unanimous_voters_have_no_dissenters_whatever_their_confidence():
+    responses = [_agent(n, "support", c) for n, c in zip("ABCD", (0.9, 0.9, 0.9, 0.5))]
+    assert select_dissenting_agents(responses, BAND) == []
+
+
+def test_abstainers_never_dissent():
+    responses = [_agent("Analyst", "abstain", 0.2)] + [_agent(n, "support", 0.9) for n in ("Risk", "Strategy", "Ethics")]
+    assert select_dissenting_agents(responses, BAND) == []
+
+
+def test_agents_without_a_stance_never_dissent_once_others_vote():
+    responses = [_agent("Legacy", None, 0.1), _agent("Risk", "support", 0.9), _agent("Strategy", "oppose", 0.4)]
+    assert _names(select_dissenting_agents(responses, BAND)) == ["Strategy"]
+
+
+def test_rule_three_catches_overruled_agents_that_rule_one_lets_through():
+    responses = [
+        _agent("Strategy", "support", 0.9), _agent("Finance", "support", 0.9),
+        _agent("Risk", "oppose", 0.2), _agent("Ethics", "conditional", 0.2),
+    ]
+    assert compute_stance_agreement(responses) == pytest.approx(1.8 / 2.2)  # 0.82 passes Standard
+    assert count_dissenting_agents(responses, BAND) == 2
+    signals = ConsensusSignals(
+        position_agreement=compute_stance_agreement(responses) or 0.0,
+        rounds_completed=2,
+        dissenting_agents=count_dissenting_agents(responses, BAND),
+        open_disagreements=0,
+        confidence_converged=True,
+    )
+    assert not is_consensus_reached(
+        signals, threshold=0.75, min_rounds=2, max_dissent=1, max_open_disagreements=2,
+    )
+
+
+def test_fewer_than_two_voters_fall_back_to_the_confidence_gap():
+    responses = [_agent("A", None, 0.9), _agent("B", None, 0.9), _agent("C", "support", 0.4)]
+    assert majority_stance(responses) is None
+    assert _names(select_dissenting_agents(responses, BAND)) == ["C"]
+
+
+def test_the_fallback_on_an_empty_round_is_empty():
+    assert select_dissenting_agents([], BAND) == []
+
+
+# --- majority and tie-breaks --------------------------------------------------
+
+def test_stance_weights_sum_confidence_per_voting_stance():
+    responses = [_agent("A", "support", 0.8), _agent("B", "support", 0.6), _agent("C", "abstain", 0.9)]
+    voters, weights = stance_weights(responses)
+    assert _names(voters) == ["A", "B"]
+    assert dict(weights) == {"support": pytest.approx(1.4)}
+
+
+def test_majority_is_the_largest_summed_confidence_not_the_head_count():
+    responses = [_agent("A", "support", 0.3), _agent("B", "support", 0.3), _agent("C", "oppose", 0.9)]
+    assert majority_stance(responses) == "oppose"
+
+
+def test_equal_weight_goes_to_the_larger_group():
+    responses = [_agent("A", "support", 0.5), _agent("B", "support", 0.5), _agent("C", "oppose", 1.0)]
+    assert majority_stance(responses) == "support"
+
+
+def test_float_noise_does_not_break_a_tie():
+    # 0.1 + 0.2 != 0.3 in floating point; the head count must still decide.
+    responses = [_agent("A", "support", 0.1), _agent("B", "support", 0.2), _agent("C", "oppose", 0.3)]
+    assert majority_stance(responses) == "support"
+
+
+def test_an_exact_tie_resolves_the_same_way_in_any_order():
+    responses = [
+        _agent("Risk", "oppose", 0.8), _agent("Strategy", "support", 0.8),
+        _agent("Ethics", "oppose", 0.8), _agent("Finance", "support", 0.8),
+    ]
+    results = {
+        (majority_stance(list(order)), tuple(sorted(_names(select_dissenting_agents(list(order), BAND)))))
+        for order in itertools.permutations(responses)
+    }
+    assert results == {("oppose", ("Finance", "Strategy"))}
+
+
+# --- convergence gate ---------------------------------------------------------
+
+def _two_round_state(outputs: list[AgentResponse]) -> DebateState:
+    # Same positions in both rounds → drift 0, so Rule 5 passes and Rule 3 decides.
+    previous = [o.model_copy(update={"round_number": 1}) for o in outputs]
+    return DebateState(
+        user_query=QUERY, current_round=2, max_rounds=4, min_rounds=2,
+        rounds=[DebateRound(round_number=1, agent_outputs=previous),
+                DebateRound(round_number=2, agent_outputs=outputs)],
+    )
+
+
+async def _converge(ds: DebateState) -> dict:
+    moderator = MagicMock()
+    moderator.synthesize = AsyncMock(return_value=_synthesis(agreement_score=0.9, should_continue=False))
+    settings = _mock_settings()
+    settings.AGREEMENT_METHOD = "stance"
+    node = make_convergence_node(moderator, settings, MagicMock(), AsyncMock())
+    return await node({"debate_state": ds, "should_continue": True, "final_decision": None})
+
+
+@pytest.mark.anyio
+async def test_two_overruled_agents_block_consensus():
+    outputs = [
+        _agent("Strategy", "support", 0.9), _agent("Finance", "support", 0.9),
+        _agent("Risk", "oppose", 0.2), _agent("Ethics", "conditional", 0.2),
+    ]
+    result = await _converge(_two_round_state(outputs))
+    assert result["should_continue"] is True
+    assert result["debate_state"].termination_reason != "consensus_reached"
+
+
+@pytest.mark.anyio
+async def test_one_overruled_agent_is_tolerated():
+    outputs = [
+        _agent("Strategy", "support", 0.9), _agent("Finance", "support", 0.9),
+        _agent("Ethics", "support", 0.9), _agent("Risk", "oppose", 0.2),
+    ]
+    result = await _converge(_two_round_state(outputs))
+    assert result["debate_state"].termination_reason == "consensus_reached"
+
+
+# --- minority report ----------------------------------------------------------
+
+async def _finalize(final_outputs: list[AgentResponse]) -> FinalDecision:
+    ds = DebateState(
+        user_query=QUERY, current_round=2, termination_reason="max_rounds_reached",
+        rounds=[DebateRound(round_number=1), DebateRound(round_number=2, agent_outputs=final_outputs)],
+    )
+    moderator = MagicMock()
+    moderator.finalize = AsyncMock(return_value=FinalDecision(
+        thread_id=ds.thread_id, decision="d", rationale_summary="r", confidence_score=0.8,
+        agreement_score=0.5, total_rounds=2, termination_reason="max_rounds_reached",
+    ))
+    node = make_finalize_node(moderator, MagicMock(), settings=_mock_settings())
+    result = await node({"debate_state": ds, "should_continue": False, "final_decision": None})
+    return result["final_decision"]
+
+
+@pytest.mark.anyio
+async def test_minority_report_names_the_gate_dissenters_with_stance_wording():
+    outputs = [
+        _agent("Analyst", "abstain", 0.3),
+        _agent("Strategy", "support", 0.85),
+        _agent("Risk", "oppose", 0.90),
+        _agent("Ethics", "support", 0.50),
+    ]
+    decision = await _finalize(outputs)
+
+    assert [e.agent_name for e in decision.minority_report] == _names(select_dissenting_agents(outputs, BAND))
+    assert decision.minority_report[0].dissent_reason == "Voted oppose while the majority voted support."
+
+
+@pytest.mark.anyio
+async def test_minority_report_keeps_the_confidence_gap_wording_without_stances():
+    outputs = [_agent("A", None, 0.9), _agent("B", None, 0.9), _agent("C", None, 0.4)]
+    decision = await _finalize(outputs)
+
+    assert [e.agent_name for e in decision.minority_report] == ["C"]
+    assert "below the group mean" in decision.minority_report[0].dissent_reason

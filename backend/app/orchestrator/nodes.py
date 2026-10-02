@@ -31,6 +31,7 @@ from app.agents.base_agent import BaseAgent
 from app.agents.moderator_agent import ModeratorAgent, ModeratorSynthesis
 from app.core.config import Settings
 from app.orchestrator.lg_state import DebateGraphState
+from app.schemas.agent_response import AgentResponse
 from app.schemas.final_decision import MinorityReportEntry
 from app.schemas.state import MAX_DEBATE_ROUNDS_LIMIT, AgreementMethod, DebateRound, DebateState
 from app.services.consensus import (
@@ -41,6 +42,7 @@ from app.services.consensus import (
     compute_stance_agreement,
     count_open_disagreements,
     is_consensus_reached,
+    majority_stance,
     normalize_position_overlap,
     resolve_agreement_method,
     select_dissenting_agents,
@@ -786,26 +788,33 @@ def make_finalize_node(
         else:
             contribution = {}
 
-        # B3 Fix: Minority report — use FINAL round only and the 0.20 threshold from spec.
-        # Previous code used an all-rounds mean with a 0.10 band, which caused agents
-        # who converged in later rounds to still be flagged as dissenters.
-        # select_dissenting_agents is the shared definition the convergence gate uses,
-        # so the report can never disagree with the gate about who dissented.
+        # Minority report from the final round only, so agents who came round in a
+        # later round are not flagged. select_dissenting_agents is the shared
+        # definition the convergence gate uses, so the report can never disagree
+        # with the gate about who dissented.
         minority: list[MinorityReportEntry] = []
         if ds.rounds:
             final_outputs = ds.rounds[-1].agent_outputs
             if final_outputs:
+                majority = majority_stance(final_outputs)
                 final_confidences = [o.confidence_score for o in final_outputs]
                 mean_conf = sum(final_confidences) / len(final_confidences)
+
+                def _dissent_reason(output: AgentResponse) -> str:
+                    if majority is not None:
+                        return f"Voted {output.stance} while the majority voted {majority}."
+                    # No stances to compare (older debates): the confidence-gap rule.
+                    return (
+                        f"Confidence ({output.confidence_score:.2f}) is more than "
+                        f"{minority_band:.2f} below the group mean ({mean_conf:.2f}) "
+                        f"in the final round."
+                    )
+
                 minority = [
                     MinorityReportEntry(
                         agent_name=output.agent_name,
                         final_position=output.position[:300],
-                        dissent_reason=(
-                            f"Confidence ({output.confidence_score:.2f}) is more than "
-                            f"{minority_band:.2f} below the group mean ({mean_conf:.2f}) "
-                            f"in the final round."
-                        ),
+                        dissent_reason=_dissent_reason(output),
                         confidence_score=output.confidence_score,
                     )
                     for output in select_dissenting_agents(final_outputs, minority_band)

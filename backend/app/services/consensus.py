@@ -38,7 +38,7 @@ whether it can be. The engine degrades gracefully without sentence-transformers.
 from __future__ import annotations
 
 import logging
-from collections import defaultdict
+from collections import Counter, defaultdict
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, get_args
 
@@ -216,6 +216,44 @@ def resolve_agreement_method(*candidates: object) -> AgreementMethod:
     return "stance"
 
 
+MIN_STANCE_VOTERS = 2
+# Deterministic tie-break between stance groups of equal weight and head count,
+# so the gate and the minority report always pick the same majority.
+_STANCE_TIE_ORDER: tuple[str, ...] = ("oppose", "conditional", "support")
+
+
+def stance_weights(
+    responses: list[AgentResponse],
+) -> tuple[list[AgentResponse], dict[str, float]]:
+    """Return (voters, summed confidence per stance).
+
+    Voters are agents with a stance other than ``abstain``; agents with no stance
+    (debates stored before the field existed) do not vote.
+    """
+    voters = [r for r in responses if r.stance and r.stance != "abstain"]
+    weights: dict[str, float] = defaultdict(float)
+    for r in voters:
+        weights[r.stance] += r.confidence_score  # type: ignore[index]
+    return voters, weights
+
+
+def majority_stance(responses: list[AgentResponse]) -> str | None:
+    """Stance group with the largest summed confidence.
+
+    Ties go to the larger head count, then to ``_STANCE_TIE_ORDER``. Returns None
+    when fewer than ``MIN_STANCE_VOTERS`` agents voted.
+    """
+    voters, weights = stance_weights(responses)
+    if len(voters) < MIN_STANCE_VOTERS:
+        return None
+    heads = Counter(r.stance for r in voters)
+    # Rounded so float noise (0.1 + 0.2 vs 0.3) can't break a genuine tie.
+    return max(
+        weights,
+        key=lambda s: (round(weights[s], 9), heads[s], -_STANCE_TIE_ORDER.index(s)),
+    )
+
+
 def compute_stance_agreement(responses: list[AgentResponse]) -> float | None:
     """Confidence-weighted vote share of the largest stance group.
 
@@ -223,14 +261,11 @@ def compute_stance_agreement(responses: list[AgentResponse]) -> float | None:
     group: "yes, if X" is not counted as a plain "yes".
     Returns None when fewer than 2 agents voted, so the caller can fall back.
     """
-    voters = [r for r in responses if r.stance and r.stance != "abstain"]
-    if len(voters) < 2:
+    voters, weights = stance_weights(responses)
+    if len(voters) < MIN_STANCE_VOTERS:
         return None
-    weight: dict[str, float] = defaultdict(float)
-    for r in voters:
-        weight[r.stance] += r.confidence_score  # type: ignore[index]
-    total = sum(weight.values())
-    return max(weight.values()) / total if total else 0.0
+    total = sum(weights.values())
+    return max(weights.values()) / total if total else 0.0
 
 
 def stance_tally(responses: list[AgentResponse]) -> dict[str, int]:
@@ -261,11 +296,27 @@ HIGH_SEVERITIES: frozenset[str] = frozenset({"critical", "high"})
 def select_dissenting_agents(
     responses: list[AgentResponse], band: float
 ) -> list[AgentResponse]:
-    """Agents whose confidence sits more than ``band`` below the group mean.
+    """Voting agents whose stance differs from the majority stance.
+
+    The majority is the stance group with the largest summed confidence (see
+    ``majority_stance``); abstainers never dissent. A confident opponent is a
+    dissenter, an unsure ally is not. When fewer than two agents voted (debates
+    stored before stances existed) this falls back to the confidence gap: agents
+    more than ``band`` below the group mean.
 
     Single definition of "dissenter", reused by both the convergence gate and
     the minority report in finalize_node so they never disagree.
     """
+    majority = majority_stance(responses)
+    if majority is None:
+        return _confidence_gap_dissenters(responses, band)
+    return [r for r in responses if r.stance not in (None, "abstain", majority)]
+
+
+def _confidence_gap_dissenters(
+    responses: list[AgentResponse], band: float
+) -> list[AgentResponse]:
+    """Agents whose confidence sits more than ``band`` below the group mean."""
     if not responses:
         return []
     mean_conf = sum(r.confidence_score for r in responses) / len(responses)

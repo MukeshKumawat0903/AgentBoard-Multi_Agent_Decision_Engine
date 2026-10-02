@@ -175,13 +175,17 @@ async def test_a_two_vs_two_split_never_reaches_consensus_by_default():
 
 
 @pytest.mark.anyio
-async def test_the_same_split_passes_under_the_legacy_lexical_method():
+async def test_the_same_split_passes_rule_one_under_the_legacy_lexical_method():
     """Documents the bug stance fixes: word overlap reads opposite verdicts as agreement."""
     outputs = [_voter(n, s) for n, s in TWO_VS_TWO]
     result, _ = await _run_convergence(_graph_state(outputs, agreement_method="lexical"), _settings())
 
-    assert result["debate_state"].rounds[-1].agreement_method_used == "lexical"
-    assert result["debate_state"].termination_reason == "consensus_reached"
+    ds = result["debate_state"]
+    assert ds.rounds[-1].agreement_method_used == "lexical"
+    assert ds.agreement_score >= 0.75
+    # This used to reach consensus. Dissent is now counted by stance, so the two
+    # agents on the losing side of the split fail Rule 3 whatever Rule 1 says.
+    assert ds.termination_reason != "consensus_reached"
 
 
 @pytest.mark.anyio
