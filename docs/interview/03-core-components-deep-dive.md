@@ -183,7 +183,7 @@ Quantifies how much agents agree, used to decide whether to stop debating.
 **V1 — `ConsensusEngine` (no ML dependencies)**
 - `compute_agreement_score()` — Mean confidence across all agents. Rationale: high confidence correlates with settled positions.
 - `compute_confidence_weighted_score()` — Pairwise Jaccard word overlap, weighted by agent confidence.
-- `detect_position_drift()` — How much agents changed between rounds (1 − Jaccard, averaged). Drift < 0.05 is one of three ways to pass the gate's "confidence converged" signal. It is not an early stop: every other signal must still hold.
+- `detect_position_drift()` — How much agents changed between rounds (1 − Jaccard, averaged). Drift < 0.05 is one of two ways to pass the gate's "confidence converged" signal. It is not an early stop: every other signal must still hold.
 
 **V2 — `SemanticConsensusEngine` (requires sentence-transformers)**
 - `compute_semantic_similarity()` — Mean pairwise cosine similarity of sentence-transformer embeddings.

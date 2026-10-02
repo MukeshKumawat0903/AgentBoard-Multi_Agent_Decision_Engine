@@ -16,7 +16,7 @@ Coverage:
     - completely different positions → score is low
     - higher-confidence agents inflate the weighted score
   ConsensusEngine.detect_position_drift
-    - empty inputs → 0.0
+    - empty inputs / no agent in both rounds → None (not measurable)
     - identical positions → drift ≈ 0.0
     - completely different positions → drift ≈ 1.0
     - partial match returns intermediate value
@@ -227,13 +227,15 @@ class TestComputeConfidenceWeightedScore:
 
 class TestDetectPositionDrift:
 
-    def test_empty_previous_returns_zero(self):
+    # Nothing to compare used to return 0.0, which reads as "no movement" and
+    # could pass Rule 5. It is now None: not measurable.
+    def test_empty_previous_is_not_measurable(self):
         curr = [_response("Analyst", "Expand now.")]
-        assert ENGINE.detect_position_drift([], curr) == pytest.approx(0.0)
+        assert ENGINE.detect_position_drift([], curr) is None
 
-    def test_empty_current_returns_zero(self):
+    def test_empty_current_is_not_measurable(self):
         prev = [_response("Analyst", "Expand now.")]
-        assert ENGINE.detect_position_drift(prev, []) == pytest.approx(0.0)
+        assert ENGINE.detect_position_drift(prev, []) is None
 
     def test_identical_positions_zero_drift(self):
         text = "we should expand into the market now"
@@ -283,10 +285,10 @@ class TestDetectPositionDrift:
         drift = ENGINE.detect_position_drift(prev, curr)
         assert drift == pytest.approx(0.0)
 
-    def test_no_common_agents_returns_zero(self):
+    def test_no_common_agents_is_not_measurable(self):
         prev = [_response("Analyst", "position A")]
         curr = [_response("Risk", "position B", round_number=2)]
-        assert ENGINE.detect_position_drift(prev, curr) == pytest.approx(0.0)
+        assert ENGINE.detect_position_drift(prev, curr) is None
 
     def test_result_between_zero_and_one(self):
         prev = [
@@ -300,8 +302,8 @@ class TestDetectPositionDrift:
         drift = ENGINE.detect_position_drift(prev, curr)
         assert 0.0 <= drift <= 1.0
 
-    def test_stagnation_threshold(self):
-        """Drift < 0.05 should flag the debate as stagnating."""
+    def test_small_rewording_gives_low_drift(self):
+        """A one-word change keeps drift low (agents have nearly stopped moving)."""
         text = "expand now with phased approach to manage risk"
         prev = [_response("Analyst", text), _response("Risk", text)]
         # Tiny change: add one word at the end
@@ -310,7 +312,7 @@ class TestDetectPositionDrift:
             _response("Risk", text + " prudently", round_number=2),
         ]
         drift = ENGINE.detect_position_drift(prev, curr)
-        assert drift < 0.20  # small change → low drift (stagnation indicator)
+        assert drift < 0.20
 
 
 # ---------------------------------------------------------------------------

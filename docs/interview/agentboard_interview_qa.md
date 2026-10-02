@@ -143,7 +143,7 @@
 - **V3 — Stance vote (what ships).** "Each agent now fills a structured `stance` — support, oppose, conditional or abstain — toward a concrete proposal: the question in round 1, the Moderator's one-sentence `leading_proposal` after that. Agreement is the confidence-weighted vote share of the largest stance group. The Analyst abstains, `conditional` is its own group, and a veto forces `oppose`. That 2-vs-2 split now scores ~0.50 and fails every mode. The lexical blend stays as the fallback when fewer than two agents vote, and `SEMANTIC_CONSENSUS_ENABLED` now only reports cosine as a diagnostic instead of silently replacing the score."
 - **The limit.** "I'm upfront that this *reduces* false consensus rather than solving it. The stance is self-reported, so the next step would be an NLI check that each position actually matches its stance, plus calibrating the thresholds on labeled debates."
 
-> "I also track **position drift**. If positions barely move between rounds (drift < 0.05), that's one of three ways agents count as 'settled'. It's not an early stop: every other gate signal must still hold, and a stall below the threshold runs to `max_rounds`. The story shows iterative problem-solving, finding bugs through testing, ML fundamentals, and knowing a method's limits."
+> "I also track **position drift**. If positions barely move between rounds (drift < 0.05), that's one of two ways agents count as 'settled'. It's not an early stop: every other gate signal must still hold, and a stall below the threshold runs to `max_rounds`. The story shows iterative problem-solving, finding bugs through testing, ML fundamentals, and knowing a method's limits."
 
 ### D2. "Isn't a single agreement number gameable?"
 

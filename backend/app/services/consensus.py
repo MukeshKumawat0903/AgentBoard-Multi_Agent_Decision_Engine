@@ -159,7 +159,7 @@ class ConsensusEngine:
         self,
         previous_responses: list[AgentResponse],
         current_responses: list[AgentResponse],
-    ) -> float:
+    ) -> float | None:
         """
         Measure how much agents changed their positions since the previous round.
 
@@ -169,27 +169,27 @@ class ConsensusEngine:
         The overall drift score is the average across matched agents.
 
         Interpretation:
-            0.0 – positions are identical (stagnation / stable consensus)
+            0.0 – positions are identical (agents stopped moving)
             1.0 – positions are completely new (maximum flux)
 
         Returns:
-            Float in [0, 1].  Returns 0.0 if no agents are matched across
-            the two rounds (e.g. first round has no previous round to compare).
+            Float in [0, 1], or None when no agent appears in both rounds (round 1,
+            or every agent from the previous round timed out). None means "not
+            measurable"; it must never be read as 0.0, "no movement".
 
         Usage:
-            drift < 0.05 → agents have stopped moving → safe to terminate even
-                           if the consensus threshold has not been reached.
+            drift < DRIFT_EARLY_STOP_THRESHOLD (0.05) is one of two ways to pass
+            Rule 5 (Settled) of the consensus gate; the other is a tight
+            confidence spread. It never ends a debate on its own: every other
+            rule must still pass.
         """
-        if not previous_responses or not current_responses:
-            logger.debug("detect_position_drift: one side is empty, returning 0.0")
-            return 0.0
-
         prev_by_name: dict[str, str] = {r.agent_name: r.position for r in previous_responses}
         curr_by_name: dict[str, str] = {r.agent_name: r.position for r in current_responses}
 
         common_agents = set(prev_by_name) & set(curr_by_name)
         if not common_agents:
-            return 0.0
+            logger.debug("detect_position_drift: no agent in both rounds, not measurable")
+            return None
 
         drift_sum = sum(
             1.0 - _word_overlap(prev_by_name[name], curr_by_name[name])

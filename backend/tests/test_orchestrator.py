@@ -670,6 +670,23 @@ class TestConvergenceSignalEdgeCases:
         assert result["debate_state"].termination_reason is None
 
     @pytest.mark.anyio
+    async def test_previous_round_with_no_shared_agents_does_not_count_as_zero_drift(self):
+        # Every agent that spoke last round timed out this round, so no position can
+        # be compared. Identical wording in both rounds must not read as "no movement".
+        shared = "We should proceed with a phased expansion in Q3."
+        previous = DebateRound(round_number=1, agent_outputs=[
+            AgentResponse(agent_name="Ethics", round_number=1, position=shared, reasoning="r", confidence_score=0.8),
+        ])
+        current = DebateRound(round_number=2, agent_outputs=[
+            AgentResponse(agent_name="Analyst", round_number=2, position=shared, reasoning="r", confidence_score=0.95),
+            AgentResponse(agent_name="Risk", round_number=2, position=shared, reasoning="r", confidence_score=0.75),
+        ])
+        result = await self._converge([previous, current])
+
+        assert result["should_continue"] is True
+        assert result["debate_state"].termination_reason is None
+
+    @pytest.mark.anyio
     async def test_dropped_agent_stale_confidence_is_not_used(self):
         round1 = DebateRound(round_number=1, agent_outputs=[
             AgentResponse(agent_name="Analyst", round_number=1, position="alpha beta", reasoning="r", confidence_score=0.6),

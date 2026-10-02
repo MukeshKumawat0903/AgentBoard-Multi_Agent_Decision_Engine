@@ -294,7 +294,7 @@ flowchart TD
 
 **Round 2+ — Narrowing**
 
-> "Each subsequent round, positions get sharper. The Analyst incorporates risk data into their analysis. The Strategist addresses compliance concerns. In Standard mode, round 2 is the last round. If the agreement score clears 0.75 *and* the other five signals hold (at most one dissenter, at most two high-severity critiques that round, agents settled, no Ethics veto), the debate ends as `consensus_reached`. If not, it ends as `max_rounds_reached`, and the report says so instead of faking a consensus. Thorough mode raises the bar to 0.85 and allows 3–6 rounds, so the same gate keeps looping until it passes or the rounds run out. Either way, the Moderator then synthesises the final decision."
+> "Each subsequent round, positions get sharper. The Analyst incorporates risk data into their analysis. The Strategist addresses compliance concerns. In Standard mode, round 2 is the last round. If the agreement score clears 0.75 *and* the other five signals hold (at least two rounds, at most one agent voting against the majority, at most two serious critiques still open after revision, agents settled, no Ethics veto), the debate ends as `consensus_reached`. If not, it ends as `max_rounds_reached`, and the report says so instead of faking a consensus. Thorough mode raises the bar to 0.85 and allows 3–6 rounds, so the same gate keeps looping until it passes or the rounds run out. Either way, the Moderator then synthesises the final decision."
 
 **Finalization**
 

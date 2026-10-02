@@ -577,15 +577,10 @@ def make_convergence_node(
         # they broadly agree on how settled things are (low confidence spread). The
         # "every agent is highly confident" shortcut is off unless explicitly enabled:
         # high confidence alone must not settle a debate.
-        # Drift is only measurable when the same agents spoke in both rounds; an
-        # empty or disjoint previous round would otherwise read as "no movement".
-        drift: float | None = None
+        # Drift is None when no agent spoke in both rounds (round 1, or the previous
+        # round's agents all timed out): not measurable, so it can't pass the check.
         previous_outputs = ds.rounds[-2].agent_outputs if len(ds.rounds) >= 2 else []
-        if {o.agent_name for o in previous_outputs} & {o.agent_name for o in round_data.agent_outputs}:
-            drift = ConsensusEngine().detect_position_drift(
-                previous_outputs,
-                round_data.agent_outputs,
-            )
+        drift = ConsensusEngine().detect_position_drift(previous_outputs, round_data.agent_outputs)
         _confidences = list(ds.confidence_scores.values())
         confidence_converged = bool(_confidences) and (
             (drift is not None and drift < settings.DRIFT_EARLY_STOP_THRESHOLD)

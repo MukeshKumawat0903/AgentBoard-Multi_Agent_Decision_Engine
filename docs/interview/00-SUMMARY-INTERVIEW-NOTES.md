@@ -460,7 +460,7 @@ drift < 0.05
 
 the agents are considered to have **stopped moving**.
 
-Low drift does **not** end the debate on its own. It is one of three ways to pass the "confidence has converged" signal (rule 5 in 4.5.4). The other gate signals, including agreement ≥ threshold, must still hold. If agents stall below the threshold, the debate runs on until `max_rounds`.
+Low drift does **not** end the debate on its own. It is one of two ways to pass the "confidence has converged" signal (rule 5 in 4.5.4). The other gate signals, including agreement ≥ threshold, must still hold. If agents stall below the threshold, the debate runs on until `max_rounds`.
 
 ##### Why Jaccard instead of embeddings?
 
@@ -1221,7 +1221,7 @@ These are failures of the debate *logic* — the most interesting ones to discus
 
 **② Non-convergence.** *What happens:* the agents argue and never reach the agreement threshold. *How it's handled:* a hard `max_rounds` ceiling stops the loop, and the debate still returns a decision — but honestly labeled `max_rounds_reached` with low agreement, rather than pretending it converged. *Why this matters:* it's the difference between an honest "we couldn't fully agree" and a misleading fake consensus. *How I'd harden it:* an adaptive round budget based on question difficulty, plus escalation to a human.
 
-**③ Stagnation (wasted rounds).** *What happens:* the agents stop changing their positions but still haven't hit the threshold — continuing would just burn money and time. *How it's handled:* there is **no standalone early stop**. Position **drift** below 0.05 is one of three ways to pass the "confidence converged" signal, and every other gate signal, including agreement ≥ threshold, must still hold. A stall below the threshold runs on until `max_rounds` and ends `max_rounds_reached`, so the cost is capped by the round limit, not by drift. *How I'd harden it:* stop a stalled debate early (honestly labelled as no consensus), and tell a true stall apart from oscillation (agents flip-flopping between two positions).
+**③ Stagnation (wasted rounds).** *What happens:* the agents stop changing their positions but still haven't hit the threshold — continuing would just burn money and time. *How it's handled:* there is **no standalone early stop**. Position **drift** below 0.05 is one of two ways to pass the "confidence converged" signal, and every other gate signal, including agreement ≥ threshold, must still hold. A stall below the threshold runs on until `max_rounds` and ends `max_rounds_reached`, so the cost is capped by the round limit, not by drift. *How I'd harden it:* stop a stalled debate early (honestly labelled as no consensus), and tell a true stall apart from oscillation (agents flip-flopping between two positions).
 
 **Quick reference:**
 

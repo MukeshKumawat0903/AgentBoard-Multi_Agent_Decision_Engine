@@ -66,10 +66,7 @@ cd backend
 pip install -r requirements-dev.lock
 ```
 
-> `requirements-dev.lock` pins every package (runtime and test tools) to the versions
-> CI tests against; `requirements.lock` is the runtime-only set Docker installs. Use
-> Python 3.11, like the image. If the venv breaks (e.g. `langchain_openai` won't import),
-> delete it and recreate it from the lock.
+> `requirements-dev.lock` pins every package (runtime and test tools) to the versions CI tests against; `requirements.lock` is the runtime-only set Docker installs. Use Python 3.11, like the image. If the venv breaks (e.g. `langchain_openai` won't import), delete it and recreate it from the lock.
 
 ### 2.3 Create the environment file
 
@@ -166,8 +163,7 @@ cd frontend
 npm install
 ```
 
-> This installs Next.js 15, React 18, Tailwind CSS, TypeScript, and all type definitions.
-> Run this once; you don't need to repeat it unless `package.json` changes.
+> This installs Next.js 15, React 18, Tailwind CSS, TypeScript, and all type definitions. Run this once; you don't need to repeat it unless `package.json` changes.
 
 ### 3.2 Configure the API URL (optional)
 
