@@ -12,6 +12,12 @@
 /* Agent & Critique responses                                          */
 /* ------------------------------------------------------------------ */
 
+// An agent's verdict on the proposal on the table
+export type Stance = "support" | "oppose" | "conditional" | "abstain";
+
+// How the consensus gate measures agreement (backend AGREEMENT_METHOD)
+export type AgreementMethod = "stance" | "lexical" | "semantic";
+
 export interface AgentResponse {
   agent_name: string;
   round_number: number;
@@ -22,6 +28,8 @@ export interface AgentResponse {
   // Ethics-class agents only: the position vetoes the proposal on the table
   veto?: boolean;
   veto_reason?: string | null;
+  // Verdict on the proposal on the table; null/absent for debates stored before stance existed
+  stance?: Stance | null;
   timestamp: string;
 }
 
@@ -61,6 +69,10 @@ export interface DebateRound {
   critiques: CritiqueResponse[];
   toolCalls?: ToolCallRecord[];  // accumulated during streaming (NB3)
   tool_calls?: ToolCallRecord[];  // persisted on the round (from the saved trace)
+  // Moderator's one-sentence proposal; next round's stances are toward it
+  leading_proposal?: string | null;
+  // Method that produced this round's agreement score (after any fallback)
+  agreement_method_used?: AgreementMethod | null;
 }
 
 export type DebateStatus =
@@ -136,6 +148,9 @@ export interface FinalDecision {
   human_feedback?: string | null;
   // Ethics vetoes still standing when the debate ended
   vetoes?: VetoEntry[];
+  // Method behind the final agreement score, and the final-round stance counts
+  agreement_method?: AgreementMethod | null;
+  stance_tally?: Record<string, number> | null;
 }
 
 /* ------------------------------------------------------------------ */
@@ -158,6 +173,8 @@ export interface DebateStartRequest {
   enable_agent_memory?: boolean;
   domain_pack?: string | null;
   supervised?: boolean;
+  // Omitted: the server's AGREEMENT_METHOD
+  agreement_method?: AgreementMethod;
 }
 
 export interface AgentConfigResponse {
@@ -268,6 +285,7 @@ export interface AgentOutputEvent {
   assumptions: string[];
   veto?: boolean;
   veto_reason?: string | null;
+  stance?: Stance | null;
 }
 
 export interface CritiqueCompletedEvent {
@@ -287,6 +305,14 @@ export interface SynthesisEvent {
   summary: string;
   agreement_areas: string[];
   disagreement_areas: string[];
+  // Every score is reported; agreement_method_used says which one is agreement_score
+  confidence_agreement_score?: number;
+  position_agreement_score?: number;
+  semantic_agreement_score?: number | null;
+  stance_agreement_score?: number | null;
+  stance_tally?: Record<string, number>;
+  agreement_method_used?: AgreementMethod;
+  leading_proposal?: string | null;
 }
 
 export interface DebateCompletedEvent {
@@ -382,6 +408,10 @@ export interface DebateModesResponse {
   // Mode used when none is chosen (backend DEFAULT_DEBATE_MODE; quick when unset)
   default_mode: "quick" | "standard" | "thorough";
   presets: Record<string, { max_rounds: number; consensus_threshold: number; skip_critique_phase: boolean; min_rounds: number }>;
+  // Agreement method used when none is chosen (backend AGREEMENT_METHOD)
+  default_agreement_method?: AgreementMethod;
+  // True when the "semantic" agreement method can be chosen on this server
+  semantic_available?: boolean;
 }
 
 export interface DomainPack {

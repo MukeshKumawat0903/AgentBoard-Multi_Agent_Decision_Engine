@@ -16,7 +16,7 @@ from app.agents.ethics_agent import EthicsAgent, EthicsLLMOutput
 from app.agents.risk_agent import RiskAgent
 from app.core.config import settings as app_settings
 from app.main import app
-from app.orchestrator.nodes import make_convergence_node
+from app.orchestrator.nodes import make_convergence_node, make_finalize_node, make_proposals_node
 from app.schemas.agent_response import AgentResponse
 from app.schemas.api_models import DebateStartRequest, SimulateRequest
 from app.schemas.state import DebateRound, DebateState
@@ -383,3 +383,69 @@ def test_moderator_prompt_asks_for_a_leading_proposal_and_shows_stances():
     prompt = ModeratorAgent._build_synthesis_prompt(state)
     assert "leading_proposal" in prompt
     assert "stance=oppose" in prompt
+
+
+# --- events + final decision --------------------------------------------------
+
+@pytest.mark.anyio
+async def test_synthesis_event_reports_every_score_and_the_method():
+    outputs = [_voter("Analyst", "abstain")] + [_voter(n, s) for n, s in TWO_VS_TWO[:3]]
+    _, synthesis = await _run_convergence(
+        _graph_state(outputs), _settings(semantic_enabled=True), semantic_score=0.9,
+    )
+
+    assert synthesis["agreement_method_used"] == "stance"
+    assert synthesis["stance_agreement_score"] == pytest.approx(synthesis["agreement_score"])
+    assert synthesis["stance_tally"] == {"abstain": 1, "oppose": 2, "support": 1}
+    assert synthesis["semantic_agreement_score"] == pytest.approx(0.9)
+    for key in ("confidence_agreement_score", "position_agreement_score", "leading_proposal"):
+        assert key in synthesis
+
+
+@pytest.mark.anyio
+async def test_agent_output_events_carry_the_stance():
+    agent = MagicMock()
+    agent.name = "Risk"
+    agent.allowed_tools = []
+    agent._last_tool_calls = []
+    agent.run = AsyncMock(return_value=_voter("Risk", "oppose", round_number=1))
+    emit = MagicMock()
+    node = make_proposals_node({"Risk": agent}, emit)
+    await node({"debate_state": DebateState(user_query=QUERY), "should_continue": True, "final_decision": None})
+
+    output_event = next(c.args[1] for c in emit.call_args_list if c.args[0] == "agent_output")
+    assert output_event["stance"] == "oppose"
+
+
+@pytest.mark.anyio
+async def test_final_decision_records_the_method_and_tally():
+    from app.schemas.final_decision import FinalDecision
+
+    final_round = DebateRound(
+        round_number=2,
+        agent_outputs=[_voter("Analyst", "abstain"), _voter("Risk", "support"), _voter("Ethics", "oppose")],
+        agreement_method_used="stance",
+    )
+    ds = DebateState(user_query=QUERY, current_round=2, rounds=[DebateRound(round_number=1), final_round],
+                     termination_reason="max_rounds_reached")
+    moderator = MagicMock()
+    moderator.finalize = AsyncMock(return_value=FinalDecision(
+        thread_id=ds.thread_id, decision="d", rationale_summary="r", confidence_score=0.8,
+        agreement_score=0.5, total_rounds=2, termination_reason="max_rounds_reached",
+    ))
+    node = make_finalize_node(moderator, MagicMock())
+    result = await node({"debate_state": ds, "should_continue": False, "final_decision": None})
+
+    decision = result["final_decision"]
+    assert decision.agreement_method == "stance"
+    assert decision.stance_tally == {"abstain": 1, "support": 1, "oppose": 1}
+
+
+def test_a_decision_stored_before_these_fields_still_loads():
+    from app.schemas.final_decision import FinalDecision
+
+    decision = FinalDecision.model_validate({
+        "thread_id": "t", "decision": "d", "rationale_summary": "r", "confidence_score": 0.8,
+        "agreement_score": 0.8, "total_rounds": 1, "termination_reason": "consensus_reached",
+    })
+    assert (decision.agreement_method, decision.stance_tally) == (None, None)

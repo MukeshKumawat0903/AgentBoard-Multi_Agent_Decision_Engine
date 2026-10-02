@@ -146,6 +146,7 @@ export function debateStreamReducer(state: StreamState, action: StreamAction): S
         confidence_score: e.confidence_score,
         veto: e.veto ?? false,
         veto_reason: e.veto_reason ?? null,
+        stance: e.stance ?? null,
         timestamp: new Date().toISOString(),
       };
       return {
