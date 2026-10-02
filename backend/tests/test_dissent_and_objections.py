@@ -13,9 +13,12 @@ from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 
-from app.agents.base_agent import AgentLLMOutput
-from app.agents.ethics_agent import EthicsLLMOutput
+from app.agents.analyst_agent import AnalystAgent
+from app.agents.base_agent import CRITIQUE_REPLY_INSTRUCTION, AgentLLMOutput
+from app.agents.domain_agents import FinancialEthicsAgent, SecurityAgent
+from app.agents.ethics_agent import EthicsAgent, EthicsLLMOutput
 from app.agents.risk_agent import RiskAgent
+from app.agents.strategy_agent import StrategyAgent
 from app.orchestrator.nodes import make_convergence_node, make_finalize_node
 from app.schemas.agent_response import AgentResponse, CritiqueReply, CritiqueResponse
 from app.schemas.final_decision import FinalDecision
@@ -297,3 +300,36 @@ async def test_a_proposal_never_carries_critique_replies():
     llm = _llm_returning([_reply("Strategy", "addressed")])
     response = await RiskAgent(llm_client=llm).run(DebateState(user_query=QUERY, current_round=2))
     assert response.critique_replies == []
+
+
+# --- revision prompts ---------------------------------------------------------
+
+def _prompt(llm: MagicMock) -> str:
+    return llm.ainvoke_structured.call_args.kwargs["user_prompt"]
+
+
+@pytest.mark.anyio
+@pytest.mark.parametrize("agent_cls", [
+    AnalystAgent, RiskAgent, StrategyAgent, EthicsAgent, SecurityAgent, FinancialEthicsAgent,
+])
+async def test_every_revision_prompt_asks_for_a_reply_per_critic(agent_cls):
+    llm = _llm_returning([])
+    critiques = [_critique("Strategy", severity="critical"), _critique("Ethics"), _critique("Strategy")]
+    await agent_cls(llm_client=llm).revise(DebateState(user_query=QUERY, current_round=1), critiques)
+
+    prompt = _prompt(llm)
+    assert CRITIQUE_REPLY_INSTRUCTION in prompt
+    assert "Critics to answer: Strategy, Ethics." in prompt
+    # Each critique is listed with who raised it and how serious it is.
+    assert "From Strategy (severity=critical)" in prompt and "From Ethics (severity=high)" in prompt
+
+
+@pytest.mark.anyio
+async def test_proposals_and_uncritiqued_revisions_get_no_reply_instruction():
+    proposal_llm, revision_llm = _llm_returning([]), _llm_returning([])
+    state = DebateState(user_query=QUERY, current_round=1)
+    await RiskAgent(llm_client=proposal_llm).run(state)
+    await RiskAgent(llm_client=revision_llm).revise(state, [])
+
+    assert "critique_replies" not in _prompt(proposal_llm)
+    assert "critique_replies" not in _prompt(revision_llm)

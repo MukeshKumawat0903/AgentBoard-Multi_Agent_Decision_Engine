@@ -36,6 +36,12 @@ STANCE_DESCRIPTION = (
     "conditional (support only if specific conditions are met). "
     "Use abstain only if your role does not make recommendations."
 )
+CRITIQUE_REPLY_INSTRUCTION = (
+    "For each critique above, add one entry to `critique_replies` with the critic's "
+    "name and a status: `addressed` (you changed your position), `rebutted` (it's "
+    "wrong, say why in one line in `note`), or `unaddressed`. A `critical` critique "
+    "needs a real change, not only a rebuttal."
+)
 # Stance anchor before the Moderator has named a leading proposal.
 _DEFAULT_PROPOSAL = (
     "the course of action the problem statement asks about "
@@ -218,6 +224,14 @@ class BaseAgent(ABC):
             lines.append(self.stance_guidance)
         return "\n\n---\n" + "\n".join(lines)
 
+    @staticmethod
+    def _critique_reply_instruction(critiques: list[CritiqueResponse]) -> str:
+        """Instruction appended to revision prompts asking for one reply per critic."""
+        if not critiques:
+            return ""
+        critics = ", ".join(dict.fromkeys(c.critic_agent for c in critiques))
+        return f"\n\n{CRITIQUE_REPLY_INSTRUCTION}\nCritics to answer: {critics}."
+
     async def run(self, state: DebateState) -> AgentResponse:
         user_prompt = self._build_proposal_prompt(state) + self._stance_instruction(state)
         # P3.1: inject knowledge-base context into the proposal prompt
@@ -264,7 +278,11 @@ class BaseAgent(ABC):
         state: DebateState,
         critiques: list[CritiqueResponse],
     ) -> AgentResponse:
-        user_prompt = self._build_revision_prompt(state, critiques) + self._stance_instruction(state)
+        user_prompt = (
+            self._build_revision_prompt(state, critiques)
+            + self._critique_reply_instruction(critiques)
+            + self._stance_instruction(state)
+        )
         # P3.1: inject KB context into revisions as well
         if self.knowledge_base is not None and state.use_knowledge_base:
             user_prompt = await self._enrich_with_kb(user_prompt, state.user_query)
