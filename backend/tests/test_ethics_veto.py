@@ -41,7 +41,7 @@ def _llm(result) -> MagicMock:
 def _ethics_output(veto: bool, reason: str | None = None) -> EthicsLLMOutput:
     return EthicsLLMOutput(
         position="Selling the data breaches user consent.", reasoning="Consent was not given.",
-        confidence_score=0.9, veto=veto, veto_reason=reason,
+        confidence_score=0.9, veto=veto, veto_reason=reason, stance="oppose",
     )
 
 
@@ -66,7 +66,7 @@ async def test_a_withdrawn_veto_drops_its_reason():
 
 @pytest.mark.anyio
 async def test_other_agents_keep_the_plain_schema():
-    llm = _llm(AgentLLMOutput(position="Proceed.", reasoning="Revenue.", confidence_score=0.7))
+    llm = _llm(AgentLLMOutput(position="Proceed.", reasoning="Revenue.", confidence_score=0.7, stance="abstain"))
     response = await AnalystAgent(llm_client=llm).run(DebateState(user_query=QUERY, current_round=1))
 
     assert llm.ainvoke_structured.call_args.args[0] is AgentLLMOutput

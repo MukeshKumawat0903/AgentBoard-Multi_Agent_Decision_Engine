@@ -75,6 +75,8 @@ class AnalystAgent(BaseAgent):
     Agent's responsibility.  Never assesses risk — that belongs to Risk.
     """
 
+    stance_guidance = "You do not make recommendations: set stance to `abstain`."
+
     def __init__(self, llm_client: GroqClient) -> None:
         super().__init__(
             name="Analyst",

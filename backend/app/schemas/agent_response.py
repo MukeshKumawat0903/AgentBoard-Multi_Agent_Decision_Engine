@@ -11,6 +11,10 @@ from typing import Literal
 
 from pydantic import BaseModel, ConfigDict, Field
 
+# An agent's verdict on the proposal on the table. "conditional" = support only if
+# specific conditions are met; "abstain" = the agent's role makes no recommendation.
+Stance = Literal["support", "oppose", "conditional", "abstain"]
+
 
 class AgentResponse(BaseModel):
     """Structured output from a single agent in one debate round."""
@@ -47,6 +51,14 @@ class AgentResponse(BaseModel):
         default=None,
         description="Why the veto was issued and what would lift it.",
     )
+    # Optional so debates stored before this field existed still load.
+    stance: Stance | None = Field(
+        default=None,
+        description=(
+            "Agent's verdict on the proposal on the table. "
+            "None for debates stored before this field existed."
+        ),
+    )
     timestamp: datetime = Field(
         default_factory=lambda: datetime.now(UTC),
         description="UTC timestamp when the response was generated.",
@@ -65,6 +77,7 @@ class AgentResponse(BaseModel):
                     "Current resource allocation remains constant",
                 ],
                 "confidence_score": 0.82,
+                "stance": "abstain",
             }
         }
     )

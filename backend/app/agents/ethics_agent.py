@@ -101,6 +101,7 @@ class EthicsAgent(BaseAgent):
     """
 
     output_schema = EthicsLLMOutput
+    stance_guidance = "If you set veto=true, your stance must be `oppose`."
 
     def __init__(self, llm_client: GroqClient) -> None:
         super().__init__(
