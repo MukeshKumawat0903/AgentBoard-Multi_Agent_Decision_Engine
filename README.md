@@ -89,7 +89,8 @@ and full debate trace
 | Feature                           | Phase | Description                                                                                                                                                  |
 | --------------------------------- | ----- | ------------------------------------------------------------------------------------------------------------------------------------------------------------ |
 | **Debate Modes**            | P1    | Quick (2 rounds) · Standard (2 rounds) · Thorough (6 rounds), each with a`min_rounds` floor; round count is adjustable (2–6) per debate                 |
-| **Hybrid Consensus Gate**   | P1    | Converges only when 5 signals agree (position overlap, min rounds, dissent, open disagreements, confidence converged) — confidence alone can't end a debate |
+| **Hybrid Consensus Gate**   | P1    | Converges only when 6 signals agree (agreement score, min rounds, dissent, open disagreements, confidence converged, no ethics veto) — confidence alone can't end a debate |
+| **Stance-Based Agreement**  | P1    | Each agent declares a structured verdict (support / oppose / conditional / abstain); agreement is the confidence-weighted vote share of the largest group, so a 2-vs-2 split can't pass. Word-overlap and embedding scores are still reported |
 | **Agent Registry**          | P1    | Dynamic agent discovery, per-agent LLM overrides, enable/disable at runtime                                                                                  |
 | **Per-Agent Model Routing** | P1    | Each agent can use a different provider/model (e.g. Moderator on GPT-5.5, others on Groq)                                                                    |
 | **Richer Final Output**     | P1    | Minority report, key disagreements, structured (agent-vs-agent) disagreements, agent contribution scores                                                     |
@@ -333,7 +334,8 @@ All backend settings are configured via `backend/.env`:
 | `GEMINI_MODEL`               | No            | `gemini-3.5-flash`                       | Model for Gemini provider                                          |
 | `MAX_DEBATE_ROUNDS`          | No            | `2`                                      | Orchestrator-level max rounds (fallback when not API-resolved)     |
 | `MIN_DEBATE_ROUNDS`          | No            | `2`                                      | Floor on rounds before consensus may be declared                   |
-| `CONSENSUS_THRESHOLD`        | No            | `0.75`                                   | Position-agreement score to stop early (0.0–1.0)                  |
+| `CONSENSUS_THRESHOLD`        | No            | `0.75`                                   | Agreement score to stop early (0.0–1.0)                            |
+| `AGREEMENT_METHOD`           | No            | `stance`                                 | How agreement is measured: `stance` (agents vote) / `lexical` (word overlap, also the fallback) / `semantic` (embeddings, experimental). A debate can override it with `agreement_method` |
 | `LOG_LEVEL`                  | No            | `INFO`                                   | Logging level                                                      |
 | `CORS_ORIGINS`               | No            | `["http://localhost:3000"]`              | Allowed frontend origins                                           |
 | `DATABASE_URL`               | No            | `agentboard.db`                          | SQLite database path                                               |
@@ -343,7 +345,7 @@ All backend settings are configured via `backend/.env`:
 | `DEBATE_TTL_DAYS`            | No            | `90`                                     | Auto-cleanup debates older than N days                             |
 | `KNOWLEDGE_BASE_DIR`         | No            | `knowledge_base`                         | ChromaDB vector store directory                                    |
 | `HITL_ENABLED`               | No            | `True`                                   | Enable human-in-the-loop approval                                  |
-| `SEMANTIC_CONSENSUS_ENABLED` | No            | `False`                                  | Use semantic embeddings for consensus                              |
+| `SEMANTIC_CONSENSUS_ENABLED` | No            | `False`                                  | Report embedding similarity every round and allow the `semantic` agreement method (MiniLM reads the first 256 word-pieces of each position) |
 | `LANGSMITH_TRACING`          | No            | `False`                                  | Enable LangSmith LLM call tracing                                  |
 | `LANGSMITH_API_KEY`          | No            | —                                         | LangSmith API key                                                  |
 | `LANGSMITH_PROJECT`          | No            | `agentboard`                             | LangSmith project name                                             |
@@ -380,7 +382,7 @@ npm run e2e             # Playwright end-to-end (needs the app running)
 | Base Agent                | `test_base_agent.py`                                           | LLM calling, structured output, KB/memory/tool hooks           |
 | Agents                    | `test_agents.py`                                               | All 5 core agents — prompt construction, context-awareness    |
 | LLM Client                | `test_llm_client.py`                                           | Provider factory, retry, sampling guard                        |
-| Consensus                 | `test_consensus.py`                                            | Agreement scoring (V1/V1.5/V2), drift, hybrid gate signals     |
+| Consensus                 | `test_consensus.py`, `test_stance_agreement.py`                | Agreement scoring (stance, lexical, semantic), drift, hybrid gate signals |
 | Orchestrator              | `test_orchestrator.py`                                         | State machine, termination, contribution, graceful degradation |
 | HITL                      | `test_hitl.py`                                                 | Supervised interrupt + approve/override/add_round              |
 | Simulation / Evaluation   | `test_simulation_service.py`, `test_evaluation_service.py`   | Stability metrics; LLM-as-judge + caching                      |
@@ -396,6 +398,7 @@ npm run e2e             # Playwright end-to-end (needs the app running)
 - **Debate Templates** — 16 built-in templates across 5 categories with one-click start
 - **Domain Pack Selector** — Finance, Engineering, Legal, Healthcare agent configurations
 - **Debate Mode Selector** — Quick / Standard / Thorough presets plus a Custom option (pick round count 2–6 and consensus threshold)
+- **Agreement Selector** — Vote (stance, default) / Text (word overlap) / Semantic (enabled when the server supports it); agent cards show each agent's stance
 - **Agent Chips** — Toggle agents on/off; Moderator always required
 - **Intelligence Toggles** — Knowledge Base, Agent Memory, Supervised mode
 - **Live SSE Streaming** — Real-time agent outputs, tool calls, critiques, syntheses as they are produced

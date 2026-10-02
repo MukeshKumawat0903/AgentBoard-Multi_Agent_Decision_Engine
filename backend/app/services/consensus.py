@@ -1,19 +1,38 @@
 """
 Consensus scoring engine.
 
-Computes agreement scores between agent positions to drive convergence.
+Computes the signals the hybrid consensus gate evaluates. The gate converges
+only when all six hold: agreement >= threshold (Rule 1), minimum rounds,
+little dissent, few open high-severity disagreements, confidence converged,
+and no standing ethics veto.
+
+Rule 1 — agreement score, chosen by ``AGREEMENT_METHOD`` or per debate:
+
+- ``stance`` (default) – ``compute_stance_agreement``: each agent declares a
+  structured verdict (support / oppose / conditional / abstain) toward the
+  proposal on the table; agreement is the confidence-weighted vote share of
+  the largest group. Abstainers do not vote.
+- ``lexical`` – ``0.7 × mean confidence + 0.3 × rescaled word overlap``. Legacy,
+  and the automatic fallback when fewer than two agents declared a stance.
+- ``semantic`` – ``(1-w) × mean confidence + w × embedding cosine``.
+  Experimental; needs ``SEMANTIC_CONSENSUS_ENABLED`` and sentence-transformers.
+
+Why stance: text similarity (words or embeddings) measures *topic*, not
+*verdict*. "Should expand" vs "should not expand" overlap almost completely,
+and role-bound agents word their agreement differently. Every score is still
+computed and reported each round; only the chosen one drives the gate.
 
 V1 – ``ConsensusEngine`` (pure stdlib, no ML dependencies):
-- compute_agreement_score              : mean confidence as group alignment proxy
+- compute_agreement_score              : mean confidence
 - compute_confidence_weighted_score    : confidence-weighted pairwise Jaccard overlap
 - detect_position_drift                : Jaccard-overlap delta between rounds
 
 V2 – ``SemanticConsensusEngine`` (requires ``sentence-transformers``):
 - compute_semantic_similarity          : mean pairwise cosine similarity of embeddings
-- compute_agreement_score (override)   : hybrid = (1-w)*confidence + w*cosine_sim
 
-SemanticConsensusEngine is feature-flagged via ``settings.SEMANTIC_CONSENSUS_ENABLED``
-and gracefully degrades if ``sentence-transformers`` is not installed.
+With ``SEMANTIC_CONSENSUS_ENABLED`` the cosine score is a diagnostic (logged and
+emitted) unless the ``semantic`` method is chosen; ``semantic_available()`` says
+whether it can be. The engine degrades gracefully without sentence-transformers.
 """
 
 from __future__ import annotations
@@ -230,7 +249,7 @@ def stance_tally(responses: list[AgentResponse]) -> dict[str, int]:
 # Hybrid consensus gate — the signals and predicate that decide termination.
 #
 # The convergence gate no longer stops on mean confidence alone. It evaluates
-# five signals, all of which must hold before a debate is declared converged.
+# six signals, all of which must hold before a debate is declared converged.
 # The dissent/disagreement helpers below are shared with finalize_node so the
 # live gate and the final report agree on who counts as a dissenter.
 # ---------------------------------------------------------------------------
@@ -293,7 +312,7 @@ def normalize_position_overlap(raw_overlap: float, floor: float, ceiling: float)
 class ConsensusSignals:
     """The signals the hybrid consensus gate evaluates."""
 
-    position_agreement: float       # confidence-weighted position overlap [0,1]
+    position_agreement: float       # Rule 1 agreement score [0,1] (stance / lexical / semantic)
     rounds_completed: int           # ds.current_round
     dissenting_agents: int          # count_dissenting_agents(...)
     open_disagreements: int         # count_open_disagreements(...)
