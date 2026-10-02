@@ -422,15 +422,23 @@ agreement = max(confidence sum per stance) / total voter confidence
 
 > "I'm upfront that this *reduces* false consensus rather than solving it. The stance is self-reported, and the thresholds were kept from the lexical era. The next step would be an NLI check that each position actually matches its declared stance, and calibrating thresholds on labeled debates."
 
+#### Attempt 6: Fix the Other Rules — Dissent by Stance, Objections After Revision
+
+> "With stances in place, two of the other gate rules looked wrong. Dissent was 'more than 0.20 below the mean confidence', so a Risk agent opposing at 0.90 wasn't a dissenter while an Ethics agent supporting at 0.50 was. Now a dissenter is a voting agent whose stance differs from the majority stance, and the minority report uses the same function, so the gate and the report always name the same agents."
+
+> "Open disagreements counted critiques when they were *raised*, before revisions ran, so three serious critiques that the revisions fixed still blocked consensus. Now each revision replies to every critique it got: addressed, rebutted, or unaddressed. Only unresolved ones stay open, a missing reply counts as open, and a *critical* critique needs a real change: a rebuttal isn't enough, or an agent could argue its way past the gate. The replies are self-reported, but the loop checks them: if a fix isn't real, the critic raises it again next round."
+
+> "I also turned off the 'everyone ≥ 0.90' shortcut in the settled check. With the defaults it was dead code, since agents all above 0.90 already have a spread under 0.15, but it read as 'high confidence alone ends a debate'."
+
 #### Position Drift (One Signal, Not an Early Stop)
 
-> "I also track position drift: how much each agent's wording changed since the last round (1 − Jaccard). Drift below 0.05 is one of three ways agents count as 'settled' for the gate. It doesn't end the debate on its own. If agents stall below the threshold, the debate runs to `max_rounds` and ends `max_rounds_reached`."
+> "I also track position drift: how much each agent's wording changed since the last round (1 − Jaccard). Drift below 0.05 is one of two ways agents count as 'settled' for the gate. It doesn't end the debate on its own. If agents stall below the threshold, the debate runs to `max_rounds` and ends `max_rounds_reached`."
 
 ### Why This Story Works in Interviews
 
 This demonstrates:
 
-- **Iterative problem-solving** (V1 → V1.5 → V2 → gate → stance, not designing the perfect solution upfront)
+- **Iterative problem-solving** (V1 → V1.5 → V2 → gate → stance → stance-based gate rules, not designing the perfect solution upfront)
 - **Finding bugs through testing** (the false consensus discovery, twice)
 - **ML knowledge** (embeddings, cosine similarity, hybrid scoring, and where embeddings fail: topic vs. verdict)
 - **Pragmatic engineering** (structured outputs over text parsing, feature flags, graceful fallback, backward-compatible schema changes)

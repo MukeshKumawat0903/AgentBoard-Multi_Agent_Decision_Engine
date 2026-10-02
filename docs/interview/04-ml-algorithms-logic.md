@@ -224,9 +224,9 @@ consensus = (
     active_vetoes == 0                                   # no Ethics-class veto stands
     and agreement_score >= consensus_threshold           # e.g. 0.75 (Standard)
     and rounds_completed >= min_rounds                   # floor: 1 round can't end it
-    and dissenting_agents <= MAX_DISSENTERS (1)           # few agents below the mean
-    and open_disagreements <= MAX_OPEN_DISAGREEMENTS (2)  # few high/critical critiques this round
-    and confidence_converged                             # agents stopped moving / uniformly sure
+    and dissenting_agents <= MAX_DISSENTERS (1)           # few agents voting against the majority
+    and open_disagreements <= MAX_OPEN_DISAGREEMENTS (2)  # few serious critiques still open after revision
+    and confidence_converged                             # agents stopped moving / about equally sure
 )
 
 if consensus:                       termination_reason = "consensus_reached"; stop
@@ -237,14 +237,14 @@ else:                               continue
 **The six signals:**
 1. **Agreement** — the agreement score clears the threshold. By default that is the stance vote, so it measures verdicts, not confidence or shared wording
 2. **Minimum rounds** — at least `min_rounds` completed (1/2/3 for quick/standard/thorough), so a single round can never end a multi-round debate
-3. **Dissent** — at most one agent sits more than `MINORITY_REPORT_BAND` (0.20) below the group-mean confidence
-4. **Open disagreements** — at most two high/critical critiques raised in this round's critique phase (counted per critic→target critique, however many bullet points it has). They are counted before revisions, and nothing checks whether a revision answered them. In Quick mode critiques are skipped, so this is always 0.
-5. **Confidence converged** — agents stopped moving (drift < 0.05) OR confidence spread ≤ 0.15 OR every agent ≥ 0.90 (current-round confidences only)
+3. **Dissent** — at most one voting agent's stance differs from the majority stance (the group with the largest summed confidence; ties go to head count, then oppose > conditional > support). Abstainers never dissent. So a confident opponent counts and an unsure ally doesn't. Fallback when fewer than two agents voted (older debates): more than `MINORITY_REPORT_BAND` (0.20) below the group-mean confidence
+4. **Open objections** — at most two high/critical critiques still open *after revision*. Each revision replies to every critique it received: `addressed` closes it, `rebutted` closes a `high` one but not a `critical` one (a critical issue needs a real change), and `unaddressed` or no reply at all (revision timed out) leaves it open. Counted per critic→target pair, however many bullet points. In Quick mode critiques are skipped, so this is always 0.
+5. **Confidence converged** — agents stopped moving (drift < 0.05) OR confidence spread ≤ 0.15 (current-round confidences only). The old "every agent ≥ 0.90" shortcut is off by default (`CONVERGENCE_ALLOW_ALL_CONFIDENT=false`): it was redundant with the spread check and read as "high confidence alone settles a debate"
 6. **No veto** — no Ethics-class agent's structured `veto` stands this round
 
 The Moderator's own `should_continue` opinion is **not** a signal — it's logged for comparison only.
 
-**Why this matters in an interview:** it shows you understood that *confidence ≠ agreement*. Two agents can be 90% confident in opposite conclusions. Requiring a majority stance, few dissenters and few high-severity critiques makes that much harder to pass as consensus, and the min-rounds floor stops premature termination. The story to tell is V1 → V2 → stance: confidence alone was fooled by confident opposites, word overlap and then embeddings were both negation-blind (they measure topic), so the gate now counts structured verdicts. Be precise about the limit: the stance is self-reported, and Rules 3–4 (dissent, open disagreements) still use confidence and critique severity. The gate reduces false consensus; it doesn't eliminate it. A human-approved `override` in supervised mode also ends the debate (`termination_reason = "human_override"`). The same `select_dissenting_agents` / `count_open_disagreements` helpers feed both the gate and the final minority report, so they can never disagree.
+**Why this matters in an interview:** it shows you understood that *confidence ≠ agreement*. Two agents can be 90% confident in opposite conclusions. Requiring a majority stance, few dissenters and few high-severity critiques makes that much harder to pass as consensus, and the min-rounds floor stops premature termination. The story to tell is V1 → V2 → stance: confidence alone was fooled by confident opposites, word overlap and then embeddings were both negation-blind (they measure topic), so the gate now counts structured verdicts. Be precise about the limit: stances and critique replies are self-reported. A false `addressed` buys at most one round, because the critic sees the revision next round and raises the issue again, and `min_rounds ≥ 2` in Standard/Thorough means it can't slip through on round 1. The gate reduces false consensus; it doesn't eliminate it. A human-approved `override` in supervised mode also ends the debate (`termination_reason = "human_override"`). The same `select_dissenting_agents` helper feeds both the gate and the final minority report ("Voted oppose while the majority voted support."), so they can never disagree. Full rule-by-rule write-up: [`docs/consensus_engine.md`](../consensus_engine.md).
 
 ---
 

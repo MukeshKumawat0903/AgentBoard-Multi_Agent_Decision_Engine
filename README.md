@@ -89,7 +89,7 @@ and full debate trace
 | Feature                           | Phase | Description                                                                                                                                                  |
 | --------------------------------- | ----- | ------------------------------------------------------------------------------------------------------------------------------------------------------------ |
 | **Debate Modes**            | P1    | Quick (2 rounds) · Standard (2 rounds) · Thorough (6 rounds), each with a`min_rounds` floor; round count is adjustable (2–6) per debate                 |
-| **Hybrid Consensus Gate**   | P1    | Converges only when 6 signals agree (agreement score, min rounds, dissent, open disagreements, confidence converged, no ethics veto) — confidence alone can't end a debate |
+| **Hybrid Consensus Gate**   | P1    | Converges only when 6 signals agree (agreement score, min rounds, at most one agent voting against the majority, few serious critiques still open after revision, confidence converged, no ethics veto) — confidence alone can't end a debate. See [docs/consensus_engine.md](docs/consensus_engine.md) |
 | **Stance-Based Agreement**  | P1    | Each agent declares a structured verdict (support / oppose / conditional / abstain); agreement is the confidence-weighted vote share of the largest group, so a 2-vs-2 split can't pass. Word-overlap and embedding scores are still reported |
 | **Agent Registry**          | P1    | Dynamic agent discovery, per-agent LLM overrides, enable/disable at runtime                                                                                  |
 | **Per-Agent Model Routing** | P1    | Each agent can use a different provider/model (e.g. Moderator on GPT-5.5, others on Groq)                                                                    |
@@ -441,7 +441,7 @@ See [docs/plan/platform_feature_extensions_roadmap.md](docs/plan/platform_featur
 
 ## Documentation
 
-Detailed documentation is available in the `docs/` folder:
+Detailed documentation is available in the `docs/` folder. Start with [`docs/consensus_engine.md`](docs/consensus_engine.md) for how a debate decides it has reached consensus (the six gate rules, their thresholds and the loophole each one closes).
 
 ### Backend (`docs/backend/`)
 

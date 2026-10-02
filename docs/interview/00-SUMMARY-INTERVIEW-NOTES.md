@@ -517,22 +517,24 @@ A debate terminates **only if all conditions are satisfied**:
    - Prevents premature termination by ensuring agents have had enough opportunities to critique and revise each other's reasoning.
 3. **Dissenting Agents ≤ 1**
 
-   - Allows only a small minority disagreement. Significant disagreement from multiple agents indicates the debate has not truly converged.
-4. **Open High/Critical Disagreements ≤ 2**
+   - A dissenter is a voting agent whose stance differs from the majority stance (the group with the largest summed confidence; ties go to head count, then oppose > conditional > support). Abstainers never dissent. So a confident opponent is a dissenter and an unsure ally isn't; the old rule (more than 0.20 below the mean confidence) had it backwards and is now only the fallback for debates without stances.
+   - Rule 1 says how strong the majority is; Rule 3 caps how many agents it overrules. 2 supporters at 0.9 vs an oppose and a conditional at 0.2 score 0.82 on Rule 1 but have 2 dissenters.
+4. **Open High/Critical Objections ≤ 2**
 
-   - Counts the distinct critic→target critiques rated high or critical in **this round's** critique phase, which runs before revisions. Nothing checks whether a revision answered them: a critique counts for the round it was raised in, and the next round's critiques replace it. Three or more block consensus. In Quick mode critiques are skipped, so the count is always 0.
+   - Counted **after revision**. Each revision replies to every critique it received with `addressed`, `rebutted` or `unaddressed`. A high/critical critique stays open when it is unaddressed or has no reply (e.g. the revision timed out); a `critical` one also stays open when it was only rebutted, because a critical issue needs a real change. Counted per critic→target pair. Three or more block consensus. In Quick mode critiques are skipped, so the count is always 0.
+   - The replies are self-reported, but the loop checks them: next round the critic sees the revision and raises the issue again if it isn't really fixed.
 5. **Confidence Has Converged**
 
    - Verifies that agents have settled, indicating further debate is unlikely to change the outcome.
-   - Passes if any one holds:
+   - Passes if either holds:
      - position drift < 0.05 (agents' wording barely changed since the previous round)
      - confidence spread (max − min) ≤ 0.15
-     - all agents have confidence ≥ 0.90
+   - The old "all agents ≥ 0.90" shortcut is off by default (`CONVERGENCE_ALLOW_ALL_CONFIDENT=false`): it was redundant with the spread check and read as "high confidence alone settles a debate".
 6. **No Ethics Veto Stands**
 
    - An Ethics-class agent (Ethics, FinancialEthics, PatientSafety) can set a structured `veto`; while one stands in the current round, consensus can't be declared.
 
-Only when **all six conditions** are satisfied is the debate declared converged and finalized. (The Moderator's own "should we continue?" opinion is advisory and only logged — the gate decides.)
+Only when **all six conditions** are satisfied is the debate declared converged and finalized. (The Moderator's own "should we continue?" opinion is advisory and only logged — the gate decides.) Each rule is written up in [`docs/consensus_engine.md`](../consensus_engine.md).
 
 **How the agreement score is measured:** by default, the confidence-weighted vote share of the largest stance group (4.5.3, V3). The legacy lexical blend, `0.7 × mean confidence + 0.3 × position overlap`, is the fallback and the "Text" option; there, position overlap is the confidence-weighted Jaccard overlap of the agents' positions **rescaled** so 0.08 (unrelated positions) → 0 and 0.19 (the same stance reworded) → 1. Raw overlap between agents writing in different roles is low even when they agree; without the rescaling that score could never reach the thresholds. The `semantic` method (`0.5 × mean confidence + 0.5 × mean cosine`, no rescaling) is used only when a debate picks it.
 
@@ -540,7 +542,8 @@ This ensures that:
 
 - a majority of voting agents back the same verdict, not just feel confident,
 - enough discussion has occurred,
-- few high-severity objections were raised this round,
+- at most one agent is overruled,
+- few serious objections are still open after revision,
 - agents have settled,
 
 before the Moderator produces the final decision.
@@ -1049,7 +1052,7 @@ The catch in both is the word **independent**. If the members make the *same* mi
 - Classic consensus (Paxos, Raft) is a *coordination protocol* — binary and safety-critical: every node must commit to the same value.
 - AgentBoard does **measured consensus** — each agent casts a structured verdict (support / oppose / conditional / abstain), the system *scores* the confidence-weighted share of the largest group, then decides whether that's good enough to stop.
 - The danger is **false consensus**: a naive system shouts "agreement!" the moment agents merely *sound* confident — but confidence ≠ correctness, and a high *average* confidence can hide two agents flatly contradicting each other. Text similarity doesn't save you either: "expand" and "don't expand" read as the same topic.
-- The fix borrows the database idea of a **quorum** (you need several independent confirmations, not one). A debate converges only when **all six** signals hold: (1) agreement (stance vote) ≥ threshold, (2) at least `min_rounds` completed, (3) ≤ 1 dissenter, (4) ≤ 2 open high-severity disagreements, (5) confidence has converged (low drift, spread ≤ 0.15, or everyone ≥ 0.9), (6) no Ethics veto stands. Each signal closes a loophole the others miss.
+- The fix borrows the database idea of a **quorum** (you need several independent confirmations, not one). A debate converges only when **all six** signals hold: (1) agreement (stance vote) ≥ threshold, (2) at least `min_rounds` completed, (3) ≤ 1 dissenter (agent voting against the majority stance), (4) ≤ 2 high/critical critiques still open after revision, (5) confidence has converged (low drift or spread ≤ 0.15), (6) no Ethics veto stands. Each signal closes a loophole the others miss.
 - **Convergence vs. termination** (a distinction interviewers love): *convergence* = the gate is genuinely satisfied. *Termination* = the loop stopped for **any** reason, including just hitting the round limit. Reporting "max rounds reached" as if it were "consensus" is exactly the false-consensus bug.
 
 **Say this:** *"I treat consensus as a calibrated score behind a multi-signal quorum gate, not a boolean — confidence alone can't end a debate."*
@@ -1214,7 +1217,7 @@ These are failures of the model calls themselves — the most common in any LLM 
 
 These are failures of the debate *logic* — the most interesting ones to discuss, because they're correctness bugs, not crashes.
 
-**① False consensus (the headline bug).** *What happens:* the system reports high agreement when the agents are actually opposed, so the user trusts a "consensus" that doesn't exist. *Why:* the earlier versions measured agreement from confidence and word overlap (and optionally embeddings), which stay high even when two agents *confidently* say opposite things: text similarity measures topic, not verdict. *How it's handled:* each agent now declares a structured `stance`, and agreement is the confidence-weighted share of the largest stance group. The **hybrid six-signal gate** only converges when that agreement, min-rounds, low dissent, few high-severity critiques this round, settled agents (low drift, tight confidence spread, or all highly confident) *and* no standing Ethics veto all hold at once. Confidence by itself can never end a debate, and a 2-vs-2 split can't pass any mode. *What it doesn't fix:* the stance is self-reported, so an agent that argues one way and labels it the other still fools the vote; the gate **reduces** false consensus rather than eliminating it. *How I'd harden it:* an NLI check that the position text actually matches the declared stance, or a calibrated agreement model trained on human-labeled debates.
+**① False consensus (the headline bug).** *What happens:* the system reports high agreement when the agents are actually opposed, so the user trusts a "consensus" that doesn't exist. *Why:* the earlier versions measured agreement from confidence and word overlap (and optionally embeddings), which stay high even when two agents *confidently* say opposite things: text similarity measures topic, not verdict. *How it's handled:* each agent now declares a structured `stance`, and agreement is the confidence-weighted share of the largest stance group. The **hybrid six-signal gate** only converges when that agreement, min-rounds, at most one agent voting against the majority stance, few serious critiques still open after revision, settled agents (low drift or tight confidence spread) *and* no standing Ethics veto all hold at once. Confidence by itself can never end a debate, and a 2-vs-2 split can't pass any mode. *What it doesn't fix:* the stance and critique replies are self-reported, so an agent that argues one way and labels it the other still fools the vote; the gate **reduces** false consensus rather than eliminating it. *How I'd harden it:* an NLI check that the position text actually matches the declared stance, or a calibrated agreement model trained on human-labeled debates.
 
 **② Non-convergence.** *What happens:* the agents argue and never reach the agreement threshold. *How it's handled:* a hard `max_rounds` ceiling stops the loop, and the debate still returns a decision — but honestly labeled `max_rounds_reached` with low agreement, rather than pretending it converged. *Why this matters:* it's the difference between an honest "we couldn't fully agree" and a misleading fake consensus. *How I'd harden it:* an adaptive round budget based on question difficulty, plus escalation to a human.
 
@@ -1358,7 +1361,7 @@ The 2-vs-2 split now scores ~0.50 and never passes. If fewer than two agents vot
 
 **Stagnation signal:** if position *drift* between round N-1 and N (1 − Jaccard overlap, averaged over agents present in both rounds) is below 0.05, agents have stopped changing. That is one of the ways the "confidence converged" signal can pass, **not** an early stop on its own. Drift is only measured when the same agents spoke in both rounds.
 
-**The gate, not just the score:** termination requires *six* signals together — agreement ≥ threshold, `min_rounds` reached, ≤ 1 dissenter, ≤ 2 high-severity critiques this round, confidence converged, and no standing Ethics veto. So "everyone is confident after round 1" alone never ends the debate, and the non-score signals catch some of the contradictions the score misses.
+**The gate, not just the score:** termination requires *six* signals together — agreement ≥ threshold, `min_rounds` reached, ≤ 1 agent voting against the majority stance, ≤ 2 high/critical critiques still open after revision, confidence converged, and no standing Ethics veto. So "everyone is confident after round 1" alone never ends the debate, and the non-score signals catch some of the contradictions the score misses.
 
 **Key phrase:** *"Confidence tells you how sure agents are; the gate also checks they've actually stopped disagreeing — and for long enough."*
 

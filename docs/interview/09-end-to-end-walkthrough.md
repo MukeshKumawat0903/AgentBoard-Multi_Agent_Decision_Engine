@@ -269,11 +269,11 @@ agreement_score = stance_agreement            # if method == "stance"
 # Consensus requires ALL six signals to hold (is_consensus_reached):
 consensus = (
     active_vetoes == 0                                   # no Ethics veto stands
-    and agreement_score >= consensus_threshold           # blended/semantic score from Step 2
+    and agreement_score >= consensus_threshold           # score from Step 2 (stance vote by default)
     and rounds_completed >= min_rounds                   # 1 round can't end it
-    and dissenting_agents <= 1                            # nobody far below the mean
-    and open_disagreements <= 2                           # high/critical critiques raised this round
-    and confidence_converged                             # drift low / spread tight / all sure
+    and dissenting_agents <= 1                            # at most one agent votes against the majority
+    and open_disagreements <= 2                           # high/critical critiques still open after revision
+    and confidence_converged                             # drift low / spread tight
 )
 
 if consensus:                     return "finalize"   # consensus_reached

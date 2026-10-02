@@ -124,9 +124,13 @@ With one agent, the lexical score is `mean_confidence`. `SemanticConsensusEngine
 
 | Function | Purpose |
 |---|---|
-| `select_dissenting_agents(responses, band)` | Agents whose confidence is more than `band` below the mean — the single definition of "dissenter" |
+| `stance_weights(responses)` | `(voters, summed confidence per stance)`; voters have a stance other than `abstain` |
+| `majority_stance(responses)` | Stance group with the largest summed confidence; ties → larger head count → `oppose` > `conditional` > `support`. `None` with fewer than 2 voters |
+| `select_dissenting_agents(responses, band)` | Voters whose stance differs from `majority_stance` — the single definition of "dissenter". Fewer than 2 voters: agents more than `band` below the mean confidence |
 | `count_dissenting_agents(responses, band)` | Count of the above |
-| `count_open_disagreements(critiques, severities=HIGH_SEVERITIES)` | Distinct **critic → target** critiques with `high`/`critical` severity — one objection per critique, however many bullet points it lists |
+| `build_reply_index(outputs)` | `{target: {critic: status}}` from the revised outputs' `critique_replies` |
+| `select_open_disagreements(critiques, replies=None, severities=HIGH_SEVERITIES)` | Distinct **critic → target** pairs of high/critical critiques still open: `unaddressed` or no reply, or `critical` and only `rebutted`. Each entry is `{critic, target, severity, status}` (most severe per pair). `replies=None` counts every high/critical critique |
+| `count_open_disagreements(critiques, replies=None, severities=HIGH_SEVERITIES)` | Count of the above |
 | `normalize_position_overlap(raw, floor, ceiling)` | See above |
 
 `HIGH_SEVERITIES = frozenset({"critical", "high"})`.
@@ -140,7 +144,7 @@ class ConsensusSignals:
     rounds_completed: int         # ds.current_round
     dissenting_agents: int
     open_disagreements: int
-    confidence_converged: bool    # drift low, or spread tight, or all highly confident
+    confidence_converged: bool    # drift low, or spread tight
     active_vetoes: int = 0        # Ethics-class vetoes standing this round
 
 def is_consensus_reached(signals, *, threshold, min_rounds,
@@ -155,9 +159,11 @@ def is_consensus_reached(signals, *, threshold, min_rounds,
     )
 ```
 
-**Every** criterion must hold; otherwise the debate continues until `max_rounds`. Thresholds (`MIN_DEBATE_ROUNDS`, `MAX_DISSENTERS_FOR_CONSENSUS`, `MAX_OPEN_DISAGREEMENTS_FOR_CONSENSUS`, `DRIFT_EARLY_STOP_THRESHOLD`, `CONFIDENCE_CONVERGENCE_SPREAD`, `ALL_CONFIDENT_THRESHOLD`) are in `Settings`; per-debate `consensus_threshold` / `min_rounds` come from the mode preset.
+**Every** criterion must hold; otherwise the debate continues until `max_rounds`. Thresholds (`MIN_DEBATE_ROUNDS`, `MAX_DISSENTERS_FOR_CONSENSUS`, `MAX_OPEN_DISAGREEMENTS_FOR_CONSENSUS`, `DRIFT_EARLY_STOP_THRESHOLD`, `CONFIDENCE_CONVERGENCE_SPREAD`, `CONVERGENCE_ALLOW_ALL_CONFIDENT`, `ALL_CONFIDENT_THRESHOLD`) are in `Settings`; per-debate `consensus_threshold` / `min_rounds` come from the mode preset.
 
-`confidence_converged` is true when drift (if measurable) < `DRIFT_EARLY_STOP_THRESHOLD`, **or** max − min confidence ≤ `CONFIDENCE_CONVERGENCE_SPREAD`, **or** every agent ≥ `ALL_CONFIDENT_THRESHOLD`. Confidence values come from the **current round only**.
+`confidence_converged` is true when drift (if measurable) < `DRIFT_EARLY_STOP_THRESHOLD`, **or** max − min confidence ≤ `CONFIDENCE_CONVERGENCE_SPREAD`. The old "every agent ≥ `ALL_CONFIDENT_THRESHOLD`" branch only applies with `CONVERGENCE_ALLOW_ALL_CONFIDENT=true` (off by default; with the defaults it is redundant with the spread check). Confidence values come from the **current round only**.
+
+Rule-by-rule write-up, with the loophole each rule closes: [`docs/consensus_engine.md`](../consensus_engine.md).
 
 ---
 

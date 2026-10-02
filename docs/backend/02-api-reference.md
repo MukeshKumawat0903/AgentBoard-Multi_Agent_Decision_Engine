@@ -214,7 +214,7 @@ Every event carries an SSE `id`. On reconnect, send the last id in the `Last-Eve
 | `phase_started` | each node | `{ round_number, phase }` — `proposal`, `critique`, `revision`, `convergence` |
 | `agent_output` | proposals & revisions | `{ round_number, phase, agent_name, position, reasoning, confidence_score, assumptions, veto, veto_reason, stance }` — `stance` is `support` / `oppose` / `conditional` / `abstain` |
 | `critique_completed` | critiques node | `{ round_number, critic_agent, target_agent, severity, critique_points, confidence_score }` |
-| `synthesis` | convergence node | `{ round_number, agreement_score, agreement_method_used, confidence_agreement_score, position_agreement_score, semantic_agreement_score, stance_agreement_score, stance_tally, leading_proposal, summary, agreement_areas, disagreement_areas }` — `agreement_score` is the score from `agreement_method_used`; the others are reported for comparison |
+| `synthesis` | convergence node | `{ round_number, agreement_score, agreement_method_used, confidence_agreement_score, position_agreement_score, semantic_agreement_score, stance_agreement_score, stance_tally, leading_proposal, dissenting_agents, open_disagreements, summary, agreement_areas, disagreement_areas }` — `agreement_score` is the score from `agreement_method_used`; the others are reported for comparison. `dissenting_agents` names the agents voting against the majority stance; `open_disagreements` lists the high/critical critiques still open after revision as `{ critic, target, severity, status }` |
 | `tool_called` | agent tool use | `{ agent_name, tool_name, input, output_snippet }` |
 | `agent_timeout` | timeout handler | `{ round_number, phase, agent_name }` |
 | `approval_required` | hitl node (supervised) | `{ round_number, agreement_score, termination_reason, synthesis_summary, options }` — options are the allowed actions (`add_round` only below the round limit) |
@@ -772,8 +772,8 @@ Template scores only include debates started from a built-in template (`template
 | `risk_flags` | `string[]` | Key risks |
 | `alternatives` | `string[]` | Options considered but not chosen |
 | `dissenting_opinions` | `string[]` | Positions that diverged |
-| `minority_report` | `MinorityReportEntry[]` | `{ agent_name, final_position, dissent_reason, confidence_score }` for agents whose final confidence is more than `MINORITY_REPORT_BAND` below the mean |
-| `key_disagreements` | `string[]` | Top unresolved final-round critique points, most severe first |
+| `minority_report` | `MinorityReportEntry[]` | `{ agent_name, final_position, dissent_reason, confidence_score }` for the final round's dissenters: agents voting against the majority stance (`"Voted oppose while the majority voted support."`). Without stances: final confidence more than `MINORITY_REPORT_BAND` below the mean |
+| `key_disagreements` | `string[]` | Top final-round critique points, most severe first, leaving out critiques the target addressed in its revision |
 | `structured_disagreements` | `StructuredDisagreement[]` | `{ topic, positions: [{ agent, stance }] }` |
 | `agent_contribution_scores` | `dict[str, float]` | Alignment × confidence per agent, normalised to sum to 1 |
 | `degraded` | `bool` | `true` when expected agents were missing from the final round |
@@ -802,6 +802,7 @@ Template scores only include debates started from a built-in template (`template
 | `veto` | `bool` | Ethics-class agents only: the position vetoes the proposal (blocks consensus) |
 | `veto_reason` | `string \| null` | Why, and what would lift it |
 | `stance` | `string \| null` | Verdict on the proposal on the table: `support`, `oppose`, `conditional` or `abstain`. A veto forces `oppose`. Null for debates stored before the field existed |
+| `critique_replies` | `CritiqueReply[]` | Revisions only: `{ critic_agent, status, note }` per critique received, `status` = `addressed` / `rebutted` / `unaddressed`. Empty for proposals and older debates |
 | `timestamp` | `datetime` | UTC |
 
 ### CritiqueResponse Schema

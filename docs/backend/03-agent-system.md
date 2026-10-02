@@ -49,6 +49,8 @@ class AgentLLMOutput(BaseModel):          # proposals and revisions
     reasoning: str
     assumptions: list[str]
     confidence_score: float                # 0.0 – 1.0
+    stance: Stance                         # support / oppose / conditional / abstain
+    critique_replies: list[CritiqueReply]  # revisions only: {critic_agent, status, note}
 
 class CritiqueLLMOutput(BaseModel):       # critiques
     critique_points: list[str]
@@ -58,6 +60,8 @@ class CritiqueLLMOutput(BaseModel):       # critiques
 ```
 
 The proposal/revision schema is a class attribute, `output_schema: ClassVar[type[AgentLLMOutput]] = AgentLLMOutput`. Ethics-class agents replace it with `EthicsLLMOutput`, which adds the veto fields (see below); everyone else keeps the plain schema.
+
+**Critique replies.** `revise()` appends one shared instruction (`CRITIQUE_REPLY_INSTRUCTION`) to every agent's revision prompt, naming the critics to answer: for each critique, reply `addressed` (position changed), `rebutted` (wrong, one-line reason in `note`) or `unaddressed`; a `critical` critique needs a real change. `_to_response` keeps only replies to critics who actually critiqued this agent (case-insensitive, stored under the critic's real name), one per critic with the last winning, and logs `critique_replies_dropped` for the rest. Proposals keep none. Rule 4 of the consensus gate reads these replies.
 
 ### Abstract Methods (subclasses MUST implement)
 
@@ -267,7 +271,8 @@ Round N:
 │  (4 agents × 3 targets = 12 CritiqueResponses)               │
 ├──────────────────────────────────────────────────────────────┤
 │  Phase 3: REVISIONS (parallel)                               │
-│  Each agent revises using the critiques aimed at it          │
+│  Each agent revises using the critiques aimed at it and      │
+│  replies to each one (addressed / rebutted / unaddressed)    │
 │  (Quick mode skips phases 2 and 3)                           │
 ├──────────────────────────────────────────────────────────────┤
 │  Phase 4: CONVERGENCE                                        │

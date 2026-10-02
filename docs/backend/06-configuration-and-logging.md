@@ -41,8 +41,9 @@ class Settings(BaseSettings):
     # --- Hybrid consensus gate tuning ---
     DRIFT_EARLY_STOP_THRESHOLD: float = 0.05
     MINORITY_REPORT_BAND: float = 0.20
-    ALL_CONFIDENT_THRESHOLD: float = 0.9
     CONFIDENCE_CONVERGENCE_SPREAD: float = 0.15
+    CONVERGENCE_ALLOW_ALL_CONFIDENT: bool = False
+    ALL_CONFIDENT_THRESHOLD: float = 0.9
     MAX_DISSENTERS_FOR_CONSENSUS: int = 1
     MAX_OPEN_DISAGREEMENTS_FOR_CONSENSUS: int = 2
     CONSENSUS_POSITION_WEIGHT: float = 0.3
@@ -124,11 +125,12 @@ class Settings(BaseSettings):
 | `CONSENSUS_POSITION_WEIGHT` | No | `0.3` | `lexical` method: weight of position overlap vs mean confidence |
 | `POSITION_OVERLAP_FLOOR` / `POSITION_OVERLAP_CEILING` | No | `0.08` / `0.19` | Raw word overlap mapped to 0 (unrelated positions) … 1 (same stance reworded) |
 | `DRIFT_EARLY_STOP_THRESHOLD` | No | `0.05` | Drift below this = agents stopped moving |
-| `MINORITY_REPORT_BAND` | No | `0.20` | Confidence gap below the mean that marks a dissenter |
-| `ALL_CONFIDENT_THRESHOLD` | No | `0.9` | "Everyone is confident" cut-off |
+| `MINORITY_REPORT_BAND` | No | `0.20` | Fallback dissent rule when fewer than two agents voted (older debates): confidence gap below the mean that marks a dissenter. Otherwise a dissenter is an agent voting against the majority stance |
 | `CONFIDENCE_CONVERGENCE_SPREAD` | No | `0.15` | Max confidence spread counted as converged |
-| `MAX_DISSENTERS_FOR_CONSENSUS` | No | `1` | Most dissenters allowed at consensus |
-| `MAX_OPEN_DISAGREEMENTS_FOR_CONSENSUS` | No | `2` | Most open high-severity critiques allowed |
+| `CONVERGENCE_ALLOW_ALL_CONFIDENT` | No | `false` | Also count "every agent ≥ `ALL_CONFIDENT_THRESHOLD`" as converged. Off: redundant with the spread check at the defaults |
+| `ALL_CONFIDENT_THRESHOLD` | No | `0.9` | "Everyone is confident" cut-off, only used with the flag above |
+| `MAX_DISSENTERS_FOR_CONSENSUS` | No | `1` | Most agents voting against the majority stance at consensus |
+| `MAX_OPEN_DISAGREEMENTS_FOR_CONSENSUS` | No | `2` | Most high/critical critiques still open after revision at consensus |
 | **Semantic consensus** ||||
 | `SEMANTIC_CONSENSUS_ENABLED` | No | `false` | Compute, log and emit embedding similarity every round (diagnostic) and allow the `semantic` agreement method. Doesn't change the score unless that method is chosen |
 | `SEMANTIC_MODEL` | No | `all-MiniLM-L6-v2` | sentence-transformer model (reads the first 256 word-pieces of each position) |
@@ -250,7 +252,7 @@ agentboard                      # Root logger
 | `agentboard.orchestrator` | `debate_total_timing` | `thread_id`, `total_rounds`, `termination_reason`, `total_elapsed_ms` |
 | `agentboard.nodes` | `round_started`, `phase_timing` | `round`, `phase`, `elapsed_ms`, counts |
 | `agentboard.nodes` | `round_finished` | `round`, `agreement_score`, `moderator_recommends_continue` |
-| `agentboard.nodes` | `convergence_gate` | `round`, `min_rounds`, `agreement_score`, `threshold`, `dissenting_agents`, `open_disagreements`, `confidence_converged`, `drift`, `active_vetoes`, `consensus`, `should_continue` |
+| `agentboard.nodes` | `convergence_gate` | `round`, `min_rounds`, `agreement_score`, `agreement_method_used`, `stance_agreement_score`, `stance_tally`, `threshold`, `dissenting_agents` (names), `open_disagreements` (`[{critic, target, severity, status}]`), `confidence_converged`, `drift`, `active_vetoes`, `consensus`, `should_continue` |
 | `agentboard.nodes` | `moderator_synthesis_failed` | `round`, `error` (placeholder synthesis used) |
 | `agentboard.agents.*` | `llm_call_start` | `agent`, `round`, `action`, `prompt_chars`, `provider`, `model` |
 | `agentboard.agents.*` | `llm_call_done` / `llm_call_failed` | `agent`, `round`, `action`, `elapsed_ms` |

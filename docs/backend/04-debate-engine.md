@@ -201,9 +201,9 @@ A debate is **converged only when every signal holds** (`is_consensus_reached` i
 | `active_vetoes` | Ethics-class outputs with `veto=true` this round | `== 0` |
 | `position_agreement` | agreement score from the chosen method (above) | `≥ effective_threshold` (per-run override or `CONSENSUS_THRESHOLD`) |
 | `rounds_completed` | `current_round` | `≥ min(min_rounds, max_rounds)` — one round can't end a multi-round debate |
-| `dissenting_agents` | `select_dissenting_agents()` (confidence > `MINORITY_REPORT_BAND` below the mean) | `≤ MAX_DISSENTERS_FOR_CONSENSUS` (1) |
-| `open_disagreements` | `count_open_disagreements()` — distinct critic→target critiques of high/critical severity (one objection per critique, however many bullet points) | `≤ MAX_OPEN_DISAGREEMENTS_FOR_CONSENSUS` (2) |
-| `confidence_converged` | drift / spread / all-confident | drift < `DRIFT_EARLY_STOP_THRESHOLD` (only measured over agents present in both rounds; `None` = not measurable, never "converged") **or** spread ≤ `CONFIDENCE_CONVERGENCE_SPREAD` **or** every agent ≥ `ALL_CONFIDENT_THRESHOLD` |
+| `dissenting_agents` | `select_dissenting_agents()` — voting agents whose stance differs from the majority stance (largest summed confidence; abstainers never dissent). Fewer than two voters: confidence > `MINORITY_REPORT_BAND` below the mean | `≤ MAX_DISSENTERS_FOR_CONSENSUS` (1) |
+| `open_disagreements` | `select_open_disagreements(critiques, build_reply_index(outputs))` — distinct critic→target pairs of high/critical critiques the target's revision left `unaddressed` (or didn't answer), plus `critical` ones only `rebutted` | `≤ MAX_OPEN_DISAGREEMENTS_FOR_CONSENSUS` (2) |
+| `confidence_converged` | drift / spread | drift < `DRIFT_EARLY_STOP_THRESHOLD` (only measured over agents present in both rounds; `None` = not measurable, never "converged") **or** spread ≤ `CONFIDENCE_CONVERGENCE_SPREAD`. The "every agent ≥ `ALL_CONFIDENT_THRESHOLD`" branch only applies with `CONVERGENCE_ALLOW_ALL_CONFIDENT` (off by default) |
 
 Resulting `termination_reason`:
 
@@ -213,7 +213,7 @@ Resulting `termination_reason`:
 | `current_round ≥ max_rounds`, gate not satisfied (incl. a standing veto) | `"max_rounds_reached"` | `max_rounds_reached` |
 | Human chose `override` in HITL | `"human_override"` | `converged` |
 
-`finalize_node` reuses `select_dissenting_agents()` / `count_open_disagreements()`, so the live gate and the minority report agree on who dissented.
+`finalize_node` reuses `select_dissenting_agents()` and `build_reply_index()`, so the live gate and the final report agree on who dissented and which critiques were addressed. The `synthesis` event and the `convergence_gate` log carry `dissenting_agents` (names) and `open_disagreements` (`[{critic, target, severity, status}]`). Rule-by-rule write-up: [`docs/consensus_engine.md`](../consensus_engine.md).
 
 ---
 
@@ -255,8 +255,8 @@ With `supervised=true` (and `HITL_ENABLED`), the graph routes through the **`hit
 
 From the **final round** the node also derives:
 
-- `minority_report` — agents more than `MINORITY_REPORT_BAND` (0.20) below the mean confidence
-- `key_disagreements` — top 5 unresolved critique points, most severe first
+- `minority_report` — the gate's dissenters ("Voted oppose while the majority voted support."); without stances, agents more than `MINORITY_REPORT_BAND` (0.20) below the mean confidence
+- `key_disagreements` — top 5 critique points, most severe first, leaving out critiques the target `addressed` in its revision (rebutted ones stay)
 - `agent_contribution_scores` — `word_overlap(position, decision) × confidence`, normalised to sum to 1
 - `degraded` / `missing_agents` — expected agents absent from the final round
 - `vetoes` — standing Ethics-class vetoes (`agent_name`, `reason`, `round_number`)

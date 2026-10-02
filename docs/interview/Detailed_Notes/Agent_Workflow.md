@@ -159,10 +159,10 @@ $$
 \text{overlap score} = \frac{\sum_{i<j} w_{ij}\,\text{Jaccard}(p_i, p_j)}{\sum_{i<j} w_{ij}}, \qquad w_{ij} = \frac{c_i + c_j}{2}
 $$
 
-Mean confidence also makes up 70% of the agreement score (the rescaled overlap score is the other 30%), and an agent more than 0.20 below the group's mean confidence counts as a **dissenter**.
+In the lexical method, mean confidence also makes up 70% of the agreement score (the rescaled overlap score is the other 30%). In the default stance method, confidence weights each agent's vote, and a **dissenter** is an agent voting against the majority stance (only debates without stances fall back to "more than 0.20 below the group's mean confidence").
 
-* If the Risk agent raises a **critical** critique about a regulatory fine, that critique counts toward the gate's **open disagreements** for that round. One critical critique alone does not block consensus, because the gate tolerates up to two. Three or more high/critical critiques in the same round do block it. The count is rebuilt from each round's critiques, so a risk keeps blocking only while critics keep raising it. Nothing checks whether a revision "resolved" it. The final round's critiques (top 5 by severity) also land in the decision's `key_disagreements`.
-* If the Risk agent takes a far-fetched position (*"A solar flare knocks out the cloud server"*) with confidence **`0.15`**, its pairs carry less weight in the overlap score and it drags the mean confidence down. It also sits well below the group mean, so it counts as a dissenter: the gate tolerates one dissenter, a second blocks consensus, and the dissenter is listed in the final minority report.
+* If the Risk agent raises a **critical** critique about a regulatory fine, the targeted agent must answer it in its revision. If it changes its position (`addressed`), the objection is closed. If it only argues back (`rebutted`) or ignores it, the objection stays **open** for the gate (a rebuttal would close a merely `high` critique, but not a critical one). One open objection alone does not block consensus, because the gate tolerates up to two; three or more do. If the fix isn't real, Risk raises it again next round. The final round's critiques (top 5 by severity, minus the ones addressed) land in the decision's `key_disagreements`.
+* If the Risk agent takes a far-fetched position (*"A solar flare knocks out the cloud server"*) with confidence **`0.15`**, its vote carries little weight. Whether it is a dissenter depends on its stance, not its confidence: if it opposes while the majority supports, it is one. The gate tolerates one dissenter, a second blocks consensus, and dissenters are listed in the final minority report.
 
 ---
 

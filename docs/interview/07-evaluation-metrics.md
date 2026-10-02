@@ -106,7 +106,7 @@ The rescaling matters for the lexical blend: agents writing in different roles s
 
 ### The Hybrid Gate (what decides termination)
 
-The score is only one of six signals. A debate converges only when **all** hold (`is_consensus_reached`): agreement score ≥ threshold, `rounds_completed ≥ min_rounds`, `dissenting_agents ≤ 1`, `open_disagreements ≤ 2`, `confidence_converged`, and no standing Ethics veto. This is why "all agents confident after round 1" alone never ends a debate.
+The score is only one of six signals. A debate converges only when **all** hold (`is_consensus_reached`): agreement score ≥ threshold, `rounds_completed ≥ min_rounds`, `dissenting_agents ≤ 1` (agents voting against the majority stance), `open_disagreements ≤ 2` (high/critical critiques still open after revision: unaddressed, unanswered, or critical and only rebutted), `confidence_converged` (drift < 0.05 or spread ≤ 0.15), and no standing Ethics veto. This is why "all agents confident after round 1" alone never ends a debate. The `synthesis` event also names the `dissenting_agents` and the `open_disagreements` (`{critic, target, severity, status}`). Full write-up: [`docs/consensus_engine.md`](../consensus_engine.md).
 
 ### Confidence Drift
 ```

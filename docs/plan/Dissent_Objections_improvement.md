@@ -268,14 +268,14 @@ Frontend types (`frontend/src/lib/types.ts`): add both as optional.
 
 ## Acceptance Criteria
 
-- [ ] A confident opponent is counted as a dissenter; an unsure ally is not.
-- [ ] Gate and minority report always name the same dissenters.
-- [ ] Critiques fixed in revision no longer block consensus.
-- [ ] `critical` critiques need `addressed`; `rebutted` keeps them open.
-- [ ] Missing replies count as open (safe default).
-- [ ] `all ≥ 0.9` shortcut off by default via `CONVERGENCE_ALLOW_ALL_CONFIDENT`.
-- [ ] Old debates in SQLite still load and render.
-- [ ] All existing backend + frontend tests pass (only tests asserting the old dissent definition may be updated, with a comment).
+- [x] A confident opponent is counted as a dissenter; an unsure ally is not.
+- [x] Gate and minority report always name the same dissenters.
+- [x] Critiques fixed in revision no longer block consensus.
+- [x] `critical` critiques need `addressed`; `rebutted` keeps them open.
+- [x] Missing replies count as open (safe default).
+- [x] `all ≥ 0.9` shortcut off by default via `CONVERGENCE_ALLOW_ALL_CONFIDENT`.
+- [x] Old debates in SQLite still load and render.
+- [x] All existing backend + frontend tests pass (only tests asserting the old dissent definition may be updated, with a comment).
 
 ## Do NOT
 

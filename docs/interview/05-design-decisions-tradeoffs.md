@@ -9,17 +9,17 @@ Hybrid approach — the Moderator LLM suggests `should_continue`, but the actual
 ```python
 consensus = (
     active_vetoes == 0                    # no Ethics-class veto stands
-    and position_agreement >= threshold   # blended/semantic agreement, not raw confidence
+    and position_agreement >= threshold   # stance vote share (default), not raw confidence
     and rounds_completed >= min_rounds    # a single round can never end a multi-round debate
-    and dissenting_agents <= 1            # at most one agent far below the mean confidence
-    and open_disagreements <= 2           # at most two high/critical critiques raised this round
-    and confidence_converged             # drift < 0.05 / spread ≤ 0.15 / all ≥ 0.90
+    and dissenting_agents <= 1            # at most one agent voting against the majority stance
+    and open_disagreements <= 2           # at most two high/critical critiques still open after revision
+    and confidence_converged             # drift < 0.05 / spread ≤ 0.15
 )
 if consensus:               → stop (consensus_reached)
 elif round >= max_rounds:   → stop (max_rounds_reached)
 else:                       → continue
 ```
-This replaced the original single-threshold gate (`agreement_score >= threshold`), which could declare consensus after one round on confidence alone.
+This replaced the original single-threshold gate (`agreement_score >= threshold`), which could declare consensus after one round on confidence alone. Each rule is written up in [`docs/consensus_engine.md`](../consensus_engine.md).
 
 ### Why Not Let the LLM Decide?
 The Moderator's `should_continue` flag is advisory only — it is logged, not used for routing, and not shown in the UI (so the stream can't display a call that contradicts what actually happens) — because:
