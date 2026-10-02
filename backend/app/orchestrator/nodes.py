@@ -141,6 +141,7 @@ def make_proposals_node(
                         "assumptions": result.assumptions,
                         "veto": result.veto,
                         "veto_reason": result.veto_reason,
+                        "stance": result.stance,
                     })
                 return result
             except TimeoutError:
@@ -330,6 +331,7 @@ def make_revisions_node(
                         "assumptions": result.assumptions,
                         "veto": result.veto,
                         "veto_reason": result.veto_reason,
+                        "stance": result.stance,
                     })
                 return result
             except TimeoutError:
@@ -538,6 +540,10 @@ def make_convergence_node(
             "confidence_agreement_score": confidence_agreement,
             "position_agreement_score": position_agreement,
             "semantic_agreement_score": semantic_agreement,
+            "stance_agreement_score": stance_agreement,
+            "stance_tally": tally,
+            "agreement_method_used": method_used,
+            "leading_proposal": round_data.leading_proposal,
         })
 
         # Hybrid consensus gate: consensus is declared only when the agents genuinely
@@ -833,7 +839,10 @@ def make_finalize_node(
         }
         missing_agents = sorted(expected - final_names)
 
+        final_round = ds.rounds[-1] if ds.rounds else None
         decision = decision.model_copy(update={
+            "agreement_method": final_round.agreement_method_used if final_round else None,
+            "stance_tally": (stance_tally(final_round.agent_outputs) or None) if final_round else None,
             "minority_report": minority,
             "key_disagreements": key_disags,  # top-5 by severity, final round only
             "agent_contribution_scores": contribution,
