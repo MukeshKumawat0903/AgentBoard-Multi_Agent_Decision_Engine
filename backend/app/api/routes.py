@@ -73,6 +73,7 @@ from app.schemas.api_models import (
 )
 from app.schemas.final_decision import FinalDecision
 from app.schemas.state import MAX_DEBATE_ROUNDS_LIMIT, DebateState
+from app.services.consensus import semantic_available
 from app.services.llm_client import (
     LangChainProvider,
     get_active_provider_info,
@@ -2077,7 +2078,11 @@ async def list_domain_packs():
 )
 async def list_debate_modes() -> DebateModesResponse:
     """The default comes from DEFAULT_DEBATE_MODE (Quick when not set); the UI pre-selects it."""
-    return DebateModesResponse(default_mode=default_debate_mode(), presets=mode_presets())
+    return DebateModesResponse(
+        default_mode=default_debate_mode(),
+        presets=mode_presets(),
+        semantic_available=semantic_available(),
+    )
 
 
 # ---------------------------------------------------------------------------

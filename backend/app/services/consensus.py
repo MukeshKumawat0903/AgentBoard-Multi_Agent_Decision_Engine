@@ -20,8 +20,12 @@ from __future__ import annotations
 
 import logging
 from dataclasses import dataclass
+from typing import TYPE_CHECKING
 
 from app.schemas.agent_response import AgentResponse, CritiqueResponse
+
+if TYPE_CHECKING:
+    from app.core.config import Settings
 
 logger = logging.getLogger("agentboard.services.consensus")
 
@@ -281,6 +285,23 @@ except ImportError:
     _SEMANTIC_AVAILABLE = False
 
 
+def semantic_libraries_installed() -> bool:
+    """True when ``sentence-transformers`` and ``numpy`` could be imported."""
+    return _SEMANTIC_AVAILABLE
+
+
+def semantic_available(settings: Settings | None = None) -> bool:
+    """True when the semantic score can be computed on this server.
+
+    Needs both the ``SEMANTIC_CONSENSUS_ENABLED`` flag and the embedding
+    libraries. The "semantic" agreement method is only offered when this holds.
+    """
+    if settings is None:
+        from app.core.config import settings as app_settings  # noqa: PLC0415
+        settings = app_settings
+    return bool(settings.SEMANTIC_CONSENSUS_ENABLED) and semantic_libraries_installed()
+
+
 class SemanticConsensusEngine(ConsensusEngine):
     """
     Hybrid consensus engine: mean-confidence (V1) × cosine similarity (V2).
@@ -306,7 +327,7 @@ class SemanticConsensusEngine(ConsensusEngine):
     """
 
     def __init__(self, model_name: str = "all-MiniLM-L6-v2") -> None:
-        if not _SEMANTIC_AVAILABLE:
+        if not semantic_libraries_installed():
             raise ImportError(
                 "sentence-transformers and numpy are required for SemanticConsensusEngine. "
                 "Install them with: pip install sentence-transformers numpy"
@@ -322,6 +343,9 @@ class SemanticConsensusEngine(ConsensusEngine):
         """
         Mean pairwise cosine similarity over sentence-transformer embeddings.
 
+        Synchronous and CPU-bound: async callers must run it in a worker thread
+        (``asyncio.to_thread``) so it never blocks the event loop.
+
         Returns:
             Float in [0, 1].  Returns 0.0 for fewer than 2 responses.
         """
@@ -329,6 +353,10 @@ class SemanticConsensusEngine(ConsensusEngine):
             return 0.0
 
         model = self._load_model()
+        # all-MiniLM-L6-v2 truncates its input at 256 word-pieces, so only the
+        # opening of a long position is embedded. Embeddings also capture topic
+        # more than verdict ("expand" vs "do not expand" score close), which is
+        # why this score is a diagnostic by default and not the agreement metric.
         positions = [r.position for r in responses]
         embeddings = model.encode(positions, convert_to_numpy=True)  # (n, d)
 
