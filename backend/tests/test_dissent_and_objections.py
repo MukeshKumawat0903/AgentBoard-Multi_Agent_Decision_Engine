@@ -1,5 +1,10 @@
-"""Rule 3 (dissent) of the consensus gate: a dissenter is a voting agent whose
-stance differs from the majority, shared by the gate and the minority report."""
+"""Rule 3 (dissent) and Rule 4 (open objections) of the consensus gate.
+
+Rule 3: a dissenter is a voting agent whose stance differs from the majority,
+shared by the gate and the minority report.
+Rule 4: a high/critical critique stays open until the target's revision
+addresses it (a rebuttal is enough for high, not for critical).
+"""
 
 from __future__ import annotations
 
@@ -8,8 +13,11 @@ from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 
+from app.agents.base_agent import AgentLLMOutput
+from app.agents.ethics_agent import EthicsLLMOutput
+from app.agents.risk_agent import RiskAgent
 from app.orchestrator.nodes import make_convergence_node, make_finalize_node
-from app.schemas.agent_response import AgentResponse
+from app.schemas.agent_response import AgentResponse, CritiqueReply, CritiqueResponse
 from app.schemas.final_decision import FinalDecision
 from app.schemas.state import DebateRound, DebateState
 from app.services.consensus import (
@@ -220,3 +228,72 @@ async def test_minority_report_keeps_the_confidence_gap_wording_without_stances(
 
     assert [e.agent_name for e in decision.minority_report] == ["C"]
     assert "below the group mean" in decision.minority_report[0].dissent_reason
+
+
+# --- critique replies: schema and sanitizing ----------------------------------
+
+def _critique(critic: str, target: str = "Risk", severity: str = "high", round_number: int = 1) -> CritiqueResponse:
+    return CritiqueResponse(
+        critic_agent=critic, target_agent=target, round_number=round_number,
+        critique_points=[f"{critic} sees a gap"], severity=severity,  # type: ignore[arg-type]
+        confidence_score=0.8,
+    )
+
+
+def _reply(critic: str, status: str, note: str = "") -> CritiqueReply:
+    return CritiqueReply(critic_agent=critic, status=status, note=note)  # type: ignore[arg-type]
+
+
+def _llm_returning(replies: list[CritiqueReply]) -> MagicMock:
+    llm = MagicMock()
+    llm.provider, llm.model = "groq", "test-model"
+    llm.ainvoke_structured = AsyncMock(return_value=AgentLLMOutput(
+        position="Revised.", reasoning="r", confidence_score=0.8, stance="support",
+        critique_replies=replies,
+    ))
+    return llm
+
+
+def test_critique_replies_are_optional_everywhere():
+    assert "critique_replies" not in AgentLLMOutput.model_json_schema().get("required", [])
+    assert "critique_replies" in EthicsLLMOutput.model_fields
+    assert "critique_replies" not in AgentResponse.model_json_schema().get("required", [])
+
+
+def test_a_debate_stored_before_critique_replies_existed_still_loads():
+    state = DebateState.model_validate({
+        "user_query": QUERY,
+        "current_round": 1,
+        "rounds": [{
+            "round_number": 1,
+            "agent_outputs": [{
+                "agent_name": "Risk", "round_number": 1, "position": "Too risky.",
+                "reasoning": "r", "confidence_score": 0.7, "stance": "oppose",
+            }],
+        }],
+    })
+    assert state.rounds[0].agent_outputs[0].critique_replies == []
+
+
+@pytest.mark.anyio
+async def test_a_revision_keeps_one_reply_per_critic_who_critiqued_it():
+    llm = _llm_returning([
+        _reply("Strategy", "unaddressed"),
+        _reply("Analyst", "addressed", "never critiqued Risk"),
+        _reply("ethics ", "rebutted", "case and spacing differ"),
+        _reply("Strategy", "addressed", "added a pilot phase"),
+    ])
+    state = DebateState(user_query=QUERY, current_round=1)
+    response = await RiskAgent(llm_client=llm).revise(state, [_critique("Strategy"), _critique("Ethics")])
+
+    assert [(r.critic_agent, r.status) for r in response.critique_replies] == [
+        ("Strategy", "addressed"),  # the last answer wins
+        ("Ethics", "rebutted"),     # stored under the critic's real name
+    ]
+
+
+@pytest.mark.anyio
+async def test_a_proposal_never_carries_critique_replies():
+    llm = _llm_returning([_reply("Strategy", "addressed")])
+    response = await RiskAgent(llm_client=llm).run(DebateState(user_query=QUERY, current_round=2))
+    assert response.critique_replies == []

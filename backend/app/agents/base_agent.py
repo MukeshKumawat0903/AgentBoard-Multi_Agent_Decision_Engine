@@ -15,13 +15,13 @@ simply returns a typed Pydantic instance.
 import logging
 import time
 from abc import ABC, abstractmethod
-from collections.abc import Callable
+from collections.abc import Callable, Sequence
 from typing import TYPE_CHECKING, ClassVar, Literal, TypeVar
 
 from pydantic import BaseModel, Field
 
 from app.core.config import settings
-from app.schemas.agent_response import AgentResponse, CritiqueResponse, Stance
+from app.schemas.agent_response import AgentResponse, CritiqueReply, CritiqueResponse, Stance
 from app.schemas.state import DebateState
 from app.services.llm_client import LangChainProvider
 
@@ -60,6 +60,15 @@ class AgentLLMOutput(BaseModel):
     # Required so structured output always fills it; drives the stance-based
     # agreement score (see services/consensus.compute_stance_agreement).
     stance: Stance = Field(description=STANCE_DESCRIPTION)
+    # Proposals leave it empty; revisions answer each critique received, which
+    # decides whether the critique is still open (count_open_disagreements).
+    critique_replies: list[CritiqueReply] = Field(
+        default_factory=list,
+        description=(
+            "Revisions only: one entry per critique you received, with the critic's "
+            "name and whether you addressed, rebutted or left it unaddressed."
+        ),
+    )
 
 
 class CritiqueLLMOutput(BaseModel):
@@ -127,7 +136,12 @@ class BaseAgent(ABC):
     # Role-specific rule added to the stance instruction (e.g. the Analyst abstains).
     stance_guidance: ClassVar[str] = ""
 
-    def _to_response(self, raw: AgentLLMOutput, round_number: int) -> AgentResponse:
+    def _to_response(
+        self,
+        raw: AgentLLMOutput,
+        round_number: int,
+        received_critiques: Sequence[CritiqueResponse] = (),
+    ) -> AgentResponse:
         veto = bool(getattr(raw, "veto", False))
         stance: Stance | None = getattr(raw, "stance", None)
         # A veto is a "no": an agent cannot veto a proposal and back it in the same breath.
@@ -147,7 +161,37 @@ class BaseAgent(ABC):
             veto=veto,
             veto_reason=getattr(raw, "veto_reason", None) if veto else None,
             stance=stance,
+            critique_replies=self._sanitize_replies(
+                getattr(raw, "critique_replies", None) or [], received_critiques
+            ),
         )
+
+    def _sanitize_replies(
+        self,
+        replies: list[CritiqueReply],
+        received_critiques: Sequence[CritiqueResponse],
+    ) -> list[CritiqueReply]:
+        """Keep only replies to critics who actually critiqued this agent, one per critic.
+
+        A proposal received no critiques, so it keeps none: otherwise a proposal left
+        in place by a failed revision could close a critique with an invented reply.
+        Names match case-insensitively and are stored as the critic's real name; when
+        a critic is answered twice, the last answer wins.
+        """
+        critics = {c.critic_agent.strip().lower(): c.critic_agent for c in received_critiques}
+        kept: dict[str, CritiqueReply] = {}
+        for reply in replies:
+            critic = critics.get(reply.critic_agent.strip().lower())
+            if critic is None:
+                continue
+            kept[critic] = reply.model_copy(update={"critic_agent": critic})
+        dropped = len(replies) - len(kept)
+        if dropped:
+            self.logger.info(
+                "critique_replies_dropped",
+                extra={"agent": self.name, "dropped": dropped},
+            )
+        return list(kept.values())
 
     @staticmethod
     def _proposal_on_the_table(state: DebateState) -> str | None:
@@ -235,7 +279,7 @@ class BaseAgent(ABC):
             user_prompt,
             system_prompt=system_prompt,
         )
-        return self._to_response(raw, state.current_round)
+        return self._to_response(raw, state.current_round, critiques)
 
     @abstractmethod
     def _build_proposal_prompt(self, state: DebateState) -> str:

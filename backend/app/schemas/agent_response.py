@@ -15,6 +15,25 @@ from pydantic import BaseModel, ConfigDict, Field
 # specific conditions are met; "abstain" = the agent's role makes no recommendation.
 Stance = Literal["support", "oppose", "conditional", "abstain"]
 
+# How a revising agent handled one critique it received.
+CritiqueReplyStatus = Literal["addressed", "rebutted", "unaddressed"]
+
+
+class CritiqueReply(BaseModel):
+    """A revising agent's answer to one critique it received."""
+
+    critic_agent: str = Field(description="Name of the agent whose critique this answers.")
+    status: CritiqueReplyStatus = Field(
+        description=(
+            "addressed = position changed because of it; rebutted = the critique is "
+            "wrong, reason in note; unaddressed = not handled."
+        ),
+    )
+    note: str = Field(
+        default="",
+        description="One line: what changed, or why the critique is wrong.",
+    )
+
 
 class AgentResponse(BaseModel):
     """Structured output from a single agent in one debate round."""
@@ -57,6 +76,14 @@ class AgentResponse(BaseModel):
         description=(
             "Agent's verdict on the proposal on the table. "
             "None for debates stored before this field existed."
+        ),
+    )
+    # Defaults to empty so proposals and debates stored before this field existed load.
+    critique_replies: list[CritiqueReply] = Field(
+        default_factory=list,
+        description=(
+            "Revisions only: how each received critique was handled. "
+            "Empty for proposals and older debates."
         ),
     )
     timestamp: datetime = Field(
