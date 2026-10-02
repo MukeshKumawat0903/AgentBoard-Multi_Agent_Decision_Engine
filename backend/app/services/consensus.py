@@ -2,9 +2,19 @@
 Consensus scoring engine.
 
 Computes the signals the hybrid consensus gate evaluates. The gate converges
-only when all six hold: agreement >= threshold (Rule 1), minimum rounds,
-little dissent, few open high-severity disagreements, confidence converged,
-and no standing ethics veto.
+only when all six hold (full write-up: docs/consensus_engine.md):
+
+1. agreement >= the mode threshold (below);
+2. at least ``min_rounds`` rounds debated;
+3. at most ``MAX_DISSENTERS_FOR_CONSENSUS`` dissenters: voting agents whose
+   stance differs from the majority stance (``select_dissenting_agents``);
+4. at most ``MAX_OPEN_DISAGREEMENTS_FOR_CONSENSUS`` high/critical critiques
+   still open *after revision*: each revision replies addressed / rebutted /
+   unaddressed, and only unresolved ones count, a rebuttal not being enough
+   for a critical one (``count_open_disagreements``);
+5. confidence converged: positions stopped moving or agents are about equally
+   sure (the "everyone is very confident" shortcut is off by default);
+6. no standing Ethics-class veto.
 
 Rule 1 — agreement score, chosen by ``AGREEMENT_METHOD`` or per debate:
 
@@ -286,7 +296,7 @@ def stance_tally(responses: list[AgentResponse]) -> dict[str, int]:
 # The convergence gate no longer stops on mean confidence alone. It evaluates
 # six signals, all of which must hold before a debate is declared converged.
 # The dissent/disagreement helpers below are shared with finalize_node so the
-# live gate and the final report agree on who counts as a dissenter.
+# live gate and the final report agree on who dissented and what is still open.
 # ---------------------------------------------------------------------------
 
 # Severities that count as an unresolved disagreement for the convergence gate.
@@ -416,9 +426,9 @@ class ConsensusSignals:
 
     position_agreement: float       # Rule 1 agreement score [0,1] (stance / lexical / semantic)
     rounds_completed: int           # ds.current_round
-    dissenting_agents: int          # count_dissenting_agents(...)
-    open_disagreements: int         # count_open_disagreements(...)
-    confidence_converged: bool      # agents stopped moving or are uniformly confident
+    dissenting_agents: int          # agents voting against the majority stance
+    open_disagreements: int         # high/critical critiques still open after revision
+    confidence_converged: bool      # agents stopped moving or are about equally sure
     active_vetoes: int = 0          # Ethics-class vetoes standing this round
 
 
@@ -433,10 +443,10 @@ def is_consensus_reached(
     """Hybrid consensus predicate — every criterion must hold.
 
     Replaces the single mean-confidence gate: a debate only converges when the
-    agents genuinely overlap on position, have debated a minimum number of
-    rounds, carry at most a little dissent and unresolved high-severity
-    disagreement, have either stopped moving or are uniformly confident, and
-    no ethics veto stands.
+    agents genuinely agree, have debated a minimum number of rounds, overrule
+    at most a few agents, leave few serious critiques open after revision,
+    have either stopped moving or are about equally sure, and no ethics veto
+    stands.
     """
     return (
         signals.active_vetoes == 0
