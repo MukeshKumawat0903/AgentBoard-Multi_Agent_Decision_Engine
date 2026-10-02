@@ -43,6 +43,7 @@ import Badge, { type BadgeTone } from "./ui/Badge";
 import Button from "./ui/Button";
 import CollapsibleSection from "./ui/CollapsibleSection";
 import useCountUp from "@/lib/useCountUp";
+import { voteLabel } from "@/lib/stance";
 
 /* ------------------------------------------------------------------ */
 /* Phase styling — one source of truth for badges and timeline nodes   */
@@ -535,6 +536,9 @@ export default function DebateStreamViewer({ threadId, onQuery }: Props) {
                     </div>
                     <span className="text-xs text-gray-400 tabular-nums">
                       {Math.round(synthesis.agreement_score * 100)}% agreement
+                      {synthesis.agreement_method_used === "stance" && voteLabel(synthesis.stance_tally) && (
+                        <span className="text-gray-400/80"> · {voteLabel(synthesis.stance_tally)}</span>
+                      )}
                     </span>
                   </div>
                 )}

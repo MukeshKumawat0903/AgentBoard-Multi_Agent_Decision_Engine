@@ -14,6 +14,7 @@
 
 import { useState, useEffect, useRef, type FormEvent, type ChangeEvent } from "react";
 import { Check, Microscope, Settings2, SlidersHorizontal, Sparkles, Zap, type LucideIcon } from "lucide-react";
+import type { AgreementMethod } from "@/lib/types";
 import type { AgentOption } from "./AgentRoster";
 import Toggle from "./Toggle";
 import Button from "./ui/Button";
@@ -45,6 +46,20 @@ const CUSTOM_MAX_THRESHOLD = 0.95;
 const CUSTOM_THRESHOLD_STEP = 0.05;
 const CUSTOM_DEFAULT_THRESHOLD = 0.75;
 
+// How the consensus gate measures agreement. Explanations live in tooltips only.
+const AGREEMENT_OPTIONS: { value: AgreementMethod; label: string; title: string }[] = [
+  { value: "stance",   label: "Vote",     title: "Agents vote support / oppose. Recommended." },
+  { value: "lexical",  label: "Text",     title: "Legacy: confidence + word overlap." },
+  { value: "semantic", label: "Semantic", title: "Confidence + embedding similarity (experimental)." },
+];
+const SEMANTIC_UNAVAILABLE_TITLE = "Enable SEMANTIC_CONSENSUS_ENABLED on the server";
+
+/** Server default, or Vote when it is Semantic but the server cannot compute it. */
+function initialAgreement(defaultMethod: AgreementMethod | undefined, semanticAvailable: boolean): AgreementMethod {
+  if (!defaultMethod || (defaultMethod === "semantic" && !semanticAvailable)) return "stance";
+  return defaultMethod;
+}
+
 /** Round to 2 decimals so stepping the threshold doesn't drift (e.g. 0.7500001). */
 function roundThreshold(v: number): number {
   return Math.round(v * 100) / 100;
@@ -68,6 +83,7 @@ export interface DebateOptions {
   enable_agent_memory?: boolean;
   supervised?: boolean;
   domain_pack?: string | null;
+  agreement_method?: AgreementMethod;
 }
 
 interface DebateInputProps {
@@ -80,6 +96,10 @@ interface DebateInputProps {
   prefillMode?: ModeSelection;
   // Server's default mode (DEFAULT_DEBATE_MODE); used until the user picks one
   defaultMode?: DebateMode;
+  // Server's default agreement method (AGREEMENT_METHOD); used until the user picks one
+  defaultAgreementMethod?: AgreementMethod;
+  // Whether the server can compute the "semantic" agreement method
+  semanticAvailable?: boolean;
   // Template the prefilled query came from
   prefillTemplateId?: string;
   selectedDomainPack?: string | null;
@@ -95,6 +115,8 @@ export default function DebateInput({
   prefillQuery,
   prefillMode,
   defaultMode,
+  defaultAgreementMethod,
+  semanticAvailable = false,
   prefillTemplateId,
   selectedDomainPack,
   samples,
@@ -123,6 +145,19 @@ export default function DebateInput({
   const [useKnowledgeBase, setUseKnowledgeBase] = useState(false);
   const [enableAgentMemory, setEnableAgentMemory] = useState(false);
   const [supervised, setSupervised] = useState(false);
+  const [agreementMethod, setAgreementMethod] = useState<AgreementMethod>(
+    () => initialAgreement(defaultAgreementMethod, semanticAvailable),
+  );
+  // Like the mode: follow the server default (which may load late) until the user picks.
+  const agreementChosen = useRef(false);
+  useEffect(() => {
+    if (!agreementChosen.current) setAgreementMethod(initialAgreement(defaultAgreementMethod, semanticAvailable));
+  }, [defaultAgreementMethod, semanticAvailable]);
+  function chooseAgreement(method: AgreementMethod) {
+    if (method === "semantic" && !semanticAvailable) return;
+    agreementChosen.current = true;
+    setAgreementMethod(method);
+  }
 
   // Auto-expand textarea height as content grows.
   useEffect(() => {
@@ -155,6 +190,7 @@ export default function DebateInput({
       enable_agent_memory: enableAgentMemory,
       supervised,
       domain_pack: selectedDomainPack ?? null,
+      agreement_method: agreementMethod,
     });
   }
 
@@ -410,6 +446,42 @@ export default function DebateInput({
             <span className="text-gray-500 dark:text-gray-400 ml-1">— pause for human review before finalising</span>
           </span>
         </label>
+        <div className="flex items-center gap-3 pt-0.5">
+          <span id="agreement-method-label" className="text-sm font-medium text-gray-700 dark:text-gray-300">
+            Agreement
+          </span>
+          <div
+            role="group"
+            aria-labelledby="agreement-method-label"
+            className="inline-flex rounded-lg border border-line-strong overflow-hidden text-xs"
+          >
+            {AGREEMENT_OPTIONS.map(({ value, label, title }) => {
+              const selected = agreementMethod === value;
+              const unavailable = value === "semantic" && !semanticAvailable;
+              return (
+                <button
+                  key={value}
+                  type="button"
+                  onClick={() => chooseAgreement(value)}
+                  disabled={isLoading}
+                  // aria-disabled (not disabled) so the tooltip explaining why still shows
+                  aria-disabled={unavailable || undefined}
+                  aria-pressed={selected}
+                  title={unavailable ? SEMANTIC_UNAVAILABLE_TITLE : title}
+                  className={`px-2.5 py-1 font-medium transition border-l border-line-strong first:border-l-0
+                    ${selected
+                      ? "bg-accent-50 dark:bg-accent-900/20 text-accent-700 dark:text-accent-300"
+                      : "bg-surface-raised text-gray-600 dark:text-gray-400 hover:bg-gray-50 dark:hover:bg-gray-800"
+                    }
+                    ${unavailable ? "opacity-40 cursor-not-allowed" : ""}
+                    disabled:opacity-50 disabled:cursor-not-allowed`}
+                >
+                  {label}
+                </button>
+              );
+            })}
+          </div>
+        </div>
       </div>
 
       {/* Submit / Cancel — docked to the bottom of the config panel on desktop;

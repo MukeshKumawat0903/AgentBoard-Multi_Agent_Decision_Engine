@@ -80,3 +80,22 @@ describe("AgentCard", () => {
     expect(screen.queryByText("Veto")).toBeNull();
   });
 });
+
+describe("AgentCard stance chip", () => {
+  it.each([
+    ["support", "✓"],
+    ["oppose", "✗"],
+    ["conditional", "~"],
+    ["abstain", "–"],
+  ] as const)("shows %s as %s", (stance, symbol) => {
+    render(<AgentCard response={makeResponse({ stance })} />);
+    const chip = screen.getByLabelText(`Stance: ${stance}`);
+    expect(chip.textContent).toBe(symbol);
+    expect(chip.getAttribute("title")).toBeTruthy();
+  });
+
+  it("shows no chip for responses stored before stance existed", () => {
+    render(<AgentCard response={makeResponse({ stance: null })} />);
+    expect(screen.queryByLabelText(/Stance:/)).toBeNull();
+  });
+});

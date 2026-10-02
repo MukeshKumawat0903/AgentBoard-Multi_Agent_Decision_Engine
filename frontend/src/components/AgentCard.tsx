@@ -7,11 +7,19 @@
 
 "use client";
 
-import type { AgentResponse } from "@/lib/types";
+import type { AgentResponse, Stance } from "@/lib/types";
 import { AGENT_META, DOMAIN_AGENT_META } from "@/lib/types";
 import ConfidenceMeter from "./ConfidenceMeter";
 import Markdown from "./Markdown";
 import AgentAvatar, { agentColor } from "./ui/AgentAvatar";
+
+// Compact verdict chip shown next to the confidence meter.
+const STANCE_CHIP: Record<Stance, { symbol: string; title: string; className: string }> = {
+  support:     { symbol: "✓", title: "Supports the proposal",         className: "bg-green-50 text-green-700 ring-green-200 dark:bg-green-900/20 dark:text-green-300 dark:ring-green-800" },
+  oppose:      { symbol: "✗", title: "Opposes the proposal",          className: "bg-red-50 text-red-700 ring-red-200 dark:bg-red-900/20 dark:text-red-300 dark:ring-red-800" },
+  conditional: { symbol: "~", title: "Supports only with conditions", className: "bg-amber-50 text-amber-700 ring-amber-200 dark:bg-amber-900/20 dark:text-amber-300 dark:ring-amber-800" },
+  abstain:     { symbol: "–", title: "Abstains (no recommendation)",  className: "bg-gray-50 text-gray-500 ring-gray-200 dark:bg-gray-800 dark:text-gray-400 dark:ring-gray-700" },
+};
 
 interface AgentCardProps {
   response: AgentResponse;
@@ -91,8 +99,21 @@ export default function AgentCard({ response }: AgentCardProps) {
           </div>
         )}
 
-        {/* Confidence */}
-        <ConfidenceMeter score={response.confidence_score} label="Confidence" size="sm" />
+        {/* Confidence + stance */}
+        <div className="flex items-center gap-2">
+          <div className="flex-1 min-w-0">
+            <ConfidenceMeter score={response.confidence_score} label="Confidence" size="sm" />
+          </div>
+          {response.stance && STANCE_CHIP[response.stance] && (
+            <span
+              title={STANCE_CHIP[response.stance].title}
+              aria-label={`Stance: ${response.stance}`}
+              className={`shrink-0 w-6 h-6 rounded-full ring-1 flex items-center justify-center text-xs font-bold ${STANCE_CHIP[response.stance].className}`}
+            >
+              {STANCE_CHIP[response.stance].symbol}
+            </span>
+          )}
+        </div>
       </div>
     </div>
   );
