@@ -35,7 +35,7 @@ class _RecordingLLM:
     async def ainvoke_structured(self, schema, system_prompt, user_prompt, **_kwargs):
         self.prompts.append((schema.__name__, user_prompt))
         if schema is AgentLLMOutput:
-            return AgentLLMOutput(position="Run a careful pilot first.", reasoning="r", confidence_score=0.9)
+            return AgentLLMOutput(position="Run a careful pilot first.", reasoning="r", confidence_score=0.9, stance="support")
         if schema is CritiqueLLMOutput:
             return CritiqueLLMOutput(critique_points=["minor"], severity="low", confidence_score=0.5)
         if schema is ModeratorSynthesis:
