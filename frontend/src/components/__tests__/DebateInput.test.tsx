@@ -104,3 +104,58 @@ describe("DebateInput", () => {
     expect(onSubmit.mock.calls[0][1].template_id).toBe("market-expansion");
   });
 });
+
+describe("DebateInput agreement method", () => {
+  it("defaults to Vote and sends it", () => {
+    const { onSubmit, textarea, submit } = setup();
+    expect(screen.getByRole("button", { name: "Vote" }).getAttribute("aria-pressed")).toBe("true");
+    fireEvent.change(textarea, { target: { value: QUERY } });
+    submit();
+    expect(onSubmit.mock.calls[0][1].agreement_method).toBe("stance");
+  });
+
+  it("sends the method the user picks", () => {
+    const { onSubmit, textarea, submit } = setup();
+    fireEvent.click(screen.getByRole("button", { name: "Text" }));
+    fireEvent.change(textarea, { target: { value: QUERY } });
+    submit();
+    expect(onSubmit.mock.calls[0][1].agreement_method).toBe("lexical");
+  });
+
+  it("follows the server default until the user picks one", () => {
+    const onSubmit = vi.fn<(query: string, options: DebateOptions) => void>();
+    const props = { onSubmit, isLoading: false, agents, selectedAgents: new Set<string>() };
+    const { rerender } = render(<DebateInput {...props} />);
+    rerender(<DebateInput {...props} defaultAgreementMethod="lexical" />);
+    fireEvent.change(screen.getByRole("textbox"), { target: { value: QUERY } });
+    fireEvent.click(screen.getByRole("button", { name: "Start Debate" }));
+    expect(onSubmit.mock.calls[0][1].agreement_method).toBe("lexical");
+  });
+
+  it("disables Semantic when the server cannot compute it", () => {
+    const { onSubmit, textarea, submit } = setup({ semanticAvailable: false });
+    const semantic = screen.getByRole("button", { name: "Semantic" });
+    expect(semantic.getAttribute("aria-disabled")).toBe("true");
+    expect(semantic.getAttribute("title")).toBe("Enable SEMANTIC_CONSENSUS_ENABLED on the server");
+    fireEvent.click(semantic);
+    fireEvent.change(textarea, { target: { value: QUERY } });
+    submit();
+    expect(onSubmit.mock.calls[0][1].agreement_method).toBe("stance");
+  });
+
+  it("allows Semantic when the server supports it", () => {
+    const { onSubmit, textarea, submit } = setup({ semanticAvailable: true });
+    fireEvent.click(screen.getByRole("button", { name: "Semantic" }));
+    fireEvent.change(textarea, { target: { value: QUERY } });
+    submit();
+    expect(onSubmit.mock.calls[0][1].agreement_method).toBe("semantic");
+  });
+
+  it("keeps the explanations in tooltips", () => {
+    setup();
+    expect(screen.getByRole("button", { name: "Vote" }).getAttribute("title")).toBe(
+      "Agents vote support / oppose. Recommended.",
+    );
+    expect(screen.queryByText("Agents vote support / oppose. Recommended.")).toBeNull();
+  });
+});

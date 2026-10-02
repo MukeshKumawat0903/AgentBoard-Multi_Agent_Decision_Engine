@@ -23,7 +23,7 @@ import Card from "@/components/ui/Card";
 import { startDebateAsync, cancelDebate, getTemplates, getDomainPacks, getHistory, getAgents, getDebateModes } from "@/lib/api";
 import { useToast } from "@/components/Toast";
 
-import type { DebateMode, DebateTemplate, DomainPack, HistoryItem } from "@/lib/types";
+import type { AgreementMethod, DebateMode, DebateTemplate, DomainPack, HistoryItem } from "@/lib/types";
 
 const DEFAULT_AGENTS: AgentOption[] = [
   { name: "Analyst",   icon: "📊", role: "Objective data analyst" },
@@ -96,6 +96,9 @@ export default function HomePage() {
   const [prefillTemplateId, setPrefillTemplateId] = useState<string | undefined>();
   // Server default mode (DEFAULT_DEBATE_MODE); the form falls back to Quick until it loads.
   const [defaultMode, setDefaultMode] = useState<"quick" | "standard" | "thorough" | undefined>();
+  // Server default agreement method (AGREEMENT_METHOD) and whether Semantic can be chosen.
+  const [defaultAgreementMethod, setDefaultAgreementMethod] = useState<AgreementMethod | undefined>();
+  const [semanticAvailable, setSemanticAvailable] = useState(false);
   const [prefillKey, setPrefillKey] = useState(0);
   const [domainPacks, setDomainPacks] = useState<DomainPack[]>([]);
   const [selectedDomainPack, setSelectedDomainPack] = useState<string | null>(null);
@@ -120,7 +123,13 @@ export default function HomePage() {
     // so the right-rail boxes don't disappear until a manual refresh.
     withRetry(() => getTemplates()).then(setTemplates).catch(() => {});
     withRetry(() => getDomainPacks()).then(setDomainPacks).catch(() => {});
-    withRetry(() => getDebateModes()).then((m) => setDefaultMode(m.default_mode)).catch(() => {});
+    withRetry(() => getDebateModes())
+      .then((m) => {
+        setDefaultMode(m.default_mode);
+        setDefaultAgreementMethod(m.default_agreement_method);
+        setSemanticAvailable(Boolean(m.semantic_available));
+      })
+      .catch(() => {});
     withRetry(() => getHistory({ page: 1, limit: 3 }))
       .then((r) => {
         setRecentDebates(r.items);
@@ -184,6 +193,7 @@ export default function HomePage() {
           enable_agent_memory: options.enable_agent_memory,
           supervised: options.supervised,
           domain_pack: options.domain_pack ?? selectedDomainPack ?? undefined,
+          agreement_method: options.agreement_method,
         },
         // Not aborted on cancel: the server may already have started the debate,
         // and only its thread_id lets us stop it.
@@ -331,6 +341,8 @@ export default function HomePage() {
               prefillMode={prefillMode}
               prefillTemplateId={prefillTemplateId}
               defaultMode={defaultMode}
+              defaultAgreementMethod={defaultAgreementMethod}
+              semanticAvailable={semanticAvailable}
               selectedDomainPack={selectedDomainPack}
               samples={sampleQuestions}
             />
