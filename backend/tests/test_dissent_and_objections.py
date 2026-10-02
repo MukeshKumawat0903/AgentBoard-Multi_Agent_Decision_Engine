@@ -1,9 +1,10 @@
-"""Rule 3 (dissent) and Rule 4 (open objections) of the consensus gate.
+"""Rules 3, 4 and 5 of the consensus gate.
 
 Rule 3: a dissenter is a voting agent whose stance differs from the majority,
 shared by the gate and the minority report.
 Rule 4: a high/critical critique stays open until the target's revision
 addresses it (a rebuttal is enough for high, not for critical).
+Rule 5: the "everyone is very confident" shortcut is off by default.
 """
 
 from __future__ import annotations
@@ -474,3 +475,50 @@ async def test_the_final_decision_leaves_out_critiques_already_addressed():
     decision = (await node({"debate_state": ds, "should_continue": False, "final_decision": None}))["final_decision"]
 
     assert decision.key_disagreements == ["Ethics sees a gap", "Analyst sees a gap"]
+
+
+# --- Rule 5: no overconfidence shortcut by default ----------------------------
+
+async def _converged_round_one(confidences: tuple[float, ...], **overrides) -> DebateState:
+    """One round (so no drift), unanimous support, no critiques: only Rule 5 can fail."""
+    moderator = MagicMock()
+    moderator.synthesize = AsyncMock(return_value=_synthesis(agreement_score=0.9, should_continue=False))
+    settings = _mock_settings()
+    settings.AGREEMENT_METHOD = "stance"
+    for name, value in overrides.items():
+        setattr(settings, name, value)
+    ds = DebateState(
+        user_query=QUERY, current_round=1, max_rounds=4, min_rounds=1,
+        rounds=[DebateRound(round_number=1, agent_outputs=[
+            _agent(f"A{i}", "support", c, round_number=1) for i, c in enumerate(confidences)
+        ])],
+    )
+    node = make_convergence_node(moderator, settings, MagicMock(), AsyncMock())
+    return (await node({"debate_state": ds, "should_continue": True, "final_decision": None}))["debate_state"]
+
+
+def test_the_shortcut_is_off_by_default():
+    from app.core.config import Settings
+
+    assert Settings.model_fields["CONVERGENCE_ALLOW_ALL_CONFIDENT"].default is False
+
+
+@pytest.mark.anyio
+async def test_uniformly_confident_agents_still_converge_through_the_spread():
+    ds = await _converged_round_one((0.95, 0.95, 0.95))
+    assert ds.termination_reason == "consensus_reached"
+
+
+@pytest.mark.anyio
+async def test_with_the_flag_off_high_confidence_alone_does_not_converge():
+    # Spread 0.35 > 0.15 and no drift yet; every agent clears a lowered threshold.
+    ds = await _converged_round_one((0.6, 0.95), ALL_CONFIDENT_THRESHOLD=0.5)
+    assert ds.termination_reason != "consensus_reached"
+
+
+@pytest.mark.anyio
+async def test_with_the_flag_on_the_old_shortcut_applies():
+    ds = await _converged_round_one(
+        (0.6, 0.95), ALL_CONFIDENT_THRESHOLD=0.5, CONVERGENCE_ALLOW_ALL_CONFIDENT=True,
+    )
+    assert ds.termination_reason == "consensus_reached"

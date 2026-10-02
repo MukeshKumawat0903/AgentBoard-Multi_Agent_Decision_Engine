@@ -44,6 +44,7 @@ def _mock_settings(
     settings.POSITION_OVERLAP_FLOOR = 0.08
     settings.POSITION_OVERLAP_CEILING = 0.19
     settings.MINORITY_REPORT_BAND = 0.20
+    settings.CONVERGENCE_ALLOW_ALL_CONFIDENT = False
     settings.ALL_CONFIDENT_THRESHOLD = 0.9
     settings.CONFIDENCE_CONVERGENCE_SPREAD = 0.15
     settings.DRIFT_EARLY_STOP_THRESHOLD = 0.05

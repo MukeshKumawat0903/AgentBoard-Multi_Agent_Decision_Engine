@@ -64,15 +64,21 @@ class Settings(BaseSettings):
     # Debate-tuning constants.
     # Drift below this between consecutive rounds means agents have stopped moving.
     DRIFT_EARLY_STOP_THRESHOLD: float = 0.05
-    # An agent whose final confidence is this far below the group mean is a dissenter.
+    # Dissenters are agents voting against the majority stance. Only when fewer than
+    # two agents voted (older debates) is an agent this far below the group-mean
+    # confidence counted as a dissenter instead.
     MINORITY_REPORT_BAND: float = 0.20
-    # When the moderator says "stop" and every agent is at least this confident, stop.
-    ALL_CONFIDENT_THRESHOLD: float = 0.9
     # Confidence has "converged" when the spread (max-min) across agents is within
     # this band — they agree on how settled the question is.
     CONFIDENCE_CONVERGENCE_SPREAD: float = 0.15
-    # Hybrid consensus gate: most dissenters / open high-severity disagreements a
-    # converged debate may still carry.
+    # Off by default: "every agent is at least ALL_CONFIDENT_THRESHOLD sure" also
+    # counts as converged. With the defaults it is redundant (agents all >= 0.9
+    # have a spread <= 0.10, which already passes) and reads as "high confidence
+    # alone settles a debate"; the flag keeps the old shortcut available.
+    CONVERGENCE_ALLOW_ALL_CONFIDENT: bool = False
+    ALL_CONFIDENT_THRESHOLD: float = 0.9
+    # Hybrid consensus gate: most dissenters / high-severity critiques still open
+    # after revision that a converged debate may carry.
     MAX_DISSENTERS_FOR_CONSENSUS: int = 1
     MAX_OPEN_DISAGREEMENTS_FOR_CONSENSUS: int = 2
     # Weight of confidence-weighted *position overlap* in the displayed/gated

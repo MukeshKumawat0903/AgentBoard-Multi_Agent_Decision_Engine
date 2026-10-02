@@ -560,8 +560,9 @@ def make_convergence_node(
         effective_min_rounds = min(ds.min_rounds, ds.max_rounds)
 
         # Confidence has "converged" when agents stopped moving between rounds, or
-        # they broadly agree on how settled things are (low confidence spread), or
-        # every agent is highly confident.
+        # they broadly agree on how settled things are (low confidence spread). The
+        # "every agent is highly confident" shortcut is off unless explicitly enabled:
+        # high confidence alone must not settle a debate.
         # Drift is only measurable when the same agents spoke in both rounds; an
         # empty or disjoint previous round would otherwise read as "no movement".
         drift: float | None = None
@@ -575,7 +576,10 @@ def make_convergence_node(
         confidence_converged = bool(_confidences) and (
             (drift is not None and drift < settings.DRIFT_EARLY_STOP_THRESHOLD)
             or (max(_confidences) - min(_confidences) <= settings.CONFIDENCE_CONVERGENCE_SPREAD)
-            or all(s >= settings.ALL_CONFIDENT_THRESHOLD for s in _confidences)
+            or (
+                settings.CONVERGENCE_ALLOW_ALL_CONFIDENT
+                and all(s >= settings.ALL_CONFIDENT_THRESHOLD for s in _confidences)
+            )
         )
 
         dissenting = len(select_dissenting_agents(round_data.agent_outputs, settings.MINORITY_REPORT_BAND))
