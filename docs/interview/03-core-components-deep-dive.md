@@ -173,7 +173,12 @@ def make_proposals_node(agents, emit, persist_state):
 ### What It Does
 Quantifies how much agents agree, used to decide whether to stop debating.
 
-### Two Versions
+### Three Agreement Methods
+
+**Stance vote — `compute_stance_agreement()` (default, no ML dependencies)**
+- Every proposal/revision carries a structured `stance` (support / oppose / conditional / abstain) toward the proposal on the table: the question in round 1, the Moderator's `leading_proposal` after that.
+- Score = confidence-weighted vote share of the largest stance group. Abstainers and missing stances don't vote; returns `None` when fewer than two agents vote.
+- `stance_tally()` counts agents per stance for logs and the UI ("2/3 vote").
 
 **V1 — `ConsensusEngine` (no ML dependencies)**
 - `compute_agreement_score()` — Mean confidence across all agents. Rationale: high confidence correlates with settled positions.
@@ -184,16 +189,23 @@ Quantifies how much agents agree, used to decide whether to stop debating.
 - `compute_semantic_similarity()` — Mean pairwise cosine similarity of sentence-transformer embeddings.
 - `compute_agreement_score()` — Hybrid: `(1-w) × confidence_mean + w × cosine_similarity`. Weight `w` is configurable via `SEMANTIC_CONSENSUS_WEIGHT` (0.5).
 
-**What `convergence_node` actually uses:** by default, `0.7 × compute_agreement_score() + 0.3 × normalize(compute_confidence_weighted_score())`, with raw overlap rescaled so 0.08 → 0 and 0.19 → 1. With `SEMANTIC_CONSENSUS_ENABLED`, the V2 hybrid above replaces that whole blend. Either score is then one of the six signals in `is_consensus_reached()`.
+**What `convergence_node` actually uses:** the debate's `agreement_method` (else `AGREEMENT_METHOD`, default `stance`), resolved by `resolve_agreement_method()`:
+- `stance` → the stance vote above.
+- `lexical` → `0.7 × compute_agreement_score() + 0.3 × normalize(compute_confidence_weighted_score())`, with raw overlap rescaled so 0.08 → 0 and 0.19 → 1.
+- `semantic` → the V2 hybrid; only accepted when `semantic_available()` is true.
 
-### Why Two Versions?
-**Graceful degradation** — V2 requires `sentence-transformers` (~80 MB). If it's not installed, the confidence + word-overlap blend is used. The semantic engine is feature-flagged via `SEMANTIC_CONSENSUS_ENABLED` (off by default); its import is guarded and the model only loads on first use.
+If the chosen score is `None` (fewer than two voters, semantic failure), the lexical blend is used and the round records `agreement_method_used = "lexical"`. Whichever score is chosen is then one of the six signals in `is_consensus_reached()`; all the others are still emitted on the `synthesis` event.
+
+### Why Several Methods?
+**Measuring verdict, not topic** — Jaccard and cosine both measure what the positions are *about*, so opposite verdicts on one question still score high. The stance vote measures the verdict directly; the text scores stay as the fallback and as diagnostics.
+
+**Graceful degradation** — V2 requires `sentence-transformers` (~80 MB). It is feature-flagged via `SEMANTIC_CONSENSUS_ENABLED` (off by default); its import is guarded, the model only loads on first use, and encoding runs in a worker thread (`asyncio.to_thread`) so it never blocks the SSE stream. With the flag on, the cosine score is reported every round but only drives the gate when the `semantic` method is chosen.
 
 ### Trade-off: Jaccard vs Cosine Similarity
 - **Jaccard** (V1): Simple word overlap. Fast. But "the market is growing" and "significant market expansion" have Jaccard ≈ 0.15 despite saying the same thing.
 - **Cosine similarity** (V2): Embedding-based. Captures semantic meaning. But adds ~80 MB dependency and 100ms per scoring call.
 - **Hybrid**: Blends either overlap signal with mean confidence; the weight parameter sets how much each counts.
-- **Shared blind spot:** both are negation-blind. "We should expand" and "We should not expand" score as near-identical on Jaccard *and* on cosine. That's why neither score decides on its own; the other gate signals (dissent, high-severity critiques, min rounds, veto) have to agree.
+- **Shared blind spot:** both are negation-blind. "We should expand" and "We should not expand" score as near-identical on Jaccard *and* on cosine. That's why the default agreement score is the stance vote, and why no score decides on its own; the other gate signals (dissent, high-severity critiques, min rounds, veto) have to agree.
 
 ---
 

@@ -177,15 +177,18 @@ workflow.add_conditional_edges(
 ### Phase 4 — Convergence (`convergence` node)
 
 - The **Moderator** summarises the round (`ModeratorSynthesis`). If that call fails but the round has agent output, a placeholder summary is used and the debate continues.
-- The **measured agreement score** blends two signals:
+- The Moderator's one-sentence `leading_proposal` is stored on the round (`DebateRound.leading_proposal`). Next round's proposal and revision prompts end with "Proposal on the table: …" so every agent sets its `stance` toward it; round 1 (or a missing proposal) anchors on the question itself.
+- Every candidate agreement score is computed:
   - `confidence_agreement` = mean self-confidence (`compute_agreement_score`)
   - `position_agreement` = confidence-weighted word overlap of positions (`compute_confidence_weighted_score`), **rescaled** with `normalize_position_overlap(raw, POSITION_OVERLAP_FLOOR=0.08, POSITION_OVERLAP_CEILING=0.19)` — raw overlap between agents with different roles is low even when they agree, so 0.08 (unrelated positions) maps to 0 and 0.19 (the same stance reworded) to 1
-  - `agreement_score = (1 − w)·confidence_agreement + w·position_agreement`, `w = CONSENSUS_POSITION_WEIGHT` (0.3)
-  - With `SEMANTIC_CONSENSUS_ENABLED`, embedding cosine similarity replaces the word-overlap blend
+  - `lexical_agreement = (1 − w)·confidence_agreement + w·position_agreement`, `w = CONSENSUS_POSITION_WEIGHT` (0.3)
+  - `stance_agreement` = confidence-weighted vote share of the largest stance group (`compute_stance_agreement`); `None` with fewer than two non-abstaining voters
+  - `semantic_agreement` = mean pairwise embedding cosine, only with `SEMANTIC_CONSENSUS_ENABLED`; encoded via `asyncio.to_thread`, `None` on failure
+- The **agreement score** comes from `resolve_agreement_method(ds.agreement_method, AGREEMENT_METHOD)`: `stance` → `stance_agreement`; `semantic` → `(1 − sw)·confidence_agreement + sw·semantic_agreement` (`sw = SEMANTIC_CONSENSUS_WEIGHT`); `lexical` → `lexical_agreement`. If the chosen score is `None`, the lexical blend is used and `agreement_fallback_to_lexical` is logged. The method actually used is stored as `DebateRound.agreement_method_used`.
 - `confidence_scores` is rebuilt from the **current round only**, so agents that dropped out don't leave stale values.
 - The hybrid gate runs (below); `should_continue` is written to graph state.
 - With `hitl_mode` and a stop decision, the `hitl_interrupt_payload` is built here.
-- Emits `synthesis` with the measured `agreement_score`, its components (`confidence_agreement_score`, `position_agreement_score`, `semantic_agreement_score`), the summary and agreement/disagreement areas. The moderator's own `should_continue` recommendation is only logged (`moderator_recommends_continue`) — the gate decides.
+- Emits `synthesis` with the chosen `agreement_score`, `agreement_method_used`, every component (`confidence_agreement_score`, `position_agreement_score`, `semantic_agreement_score`, `stance_agreement_score`, `stance_tally`), `leading_proposal`, the summary and agreement/disagreement areas. The moderator's own `should_continue` recommendation is only logged (`moderator_recommends_continue`) — the gate decides.
 
 ---
 
@@ -196,7 +199,7 @@ A debate is **converged only when every signal holds** (`is_consensus_reached` i
 | Signal | Source | Passes when |
 |---|---|---|
 | `active_vetoes` | Ethics-class outputs with `veto=true` this round | `== 0` |
-| `position_agreement` | measured agreement score (above) | `≥ effective_threshold` (per-run override or `CONSENSUS_THRESHOLD`) |
+| `position_agreement` | agreement score from the chosen method (above) | `≥ effective_threshold` (per-run override or `CONSENSUS_THRESHOLD`) |
 | `rounds_completed` | `current_round` | `≥ min(min_rounds, max_rounds)` — one round can't end a multi-round debate |
 | `dissenting_agents` | `select_dissenting_agents()` (confidence > `MINORITY_REPORT_BAND` below the mean) | `≤ MAX_DISSENTERS_FOR_CONSENSUS` (1) |
 | `open_disagreements` | `count_open_disagreements()` — distinct critic→target critiques of high/critical severity (one objection per critique, however many bullet points) | `≤ MAX_OPEN_DISAGREEMENTS_FOR_CONSENSUS` (2) |

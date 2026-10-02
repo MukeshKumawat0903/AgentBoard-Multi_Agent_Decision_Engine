@@ -251,7 +251,7 @@ Dependencies captured at graph-build time via Python closure. Keeps the LangGrap
 
 ---
 
-### 4.5 Consensus Engine (Evolution from V1 → V2)
+### 4.5 Consensus Engine (Evolution from V1 → V2 → Stance)
 
 The Consensus Engine is a deterministic evaluation component that analyzes the outputs of all agents to determine whether the debate has sufficiently converged or should continue to another round. Think of it as the **deterministic decision engine** that evaluates whether the debate should continue or terminate based on predefined convergence rules.
 
@@ -295,18 +295,19 @@ The **Consensus Engine** first evaluates the original outputs from all agents an
 
 - Revised positions from all agents
 - Agent confidence scores
+- Each agent's structured `stance` (support / oppose / conditional / abstain)
 - Previous round positions
-- Debate configuration (thresholds, min/max rounds)
+- Debate configuration (thresholds, min/max rounds, agreement method)
 
 **Outputs**
 
-- `agreement_score`
+- `agreement_score` (and `agreement_method_used`)
 - `should_continue`
 - `termination_reason`
 
-#### 4.5.3 Why two versions?
+#### 4.5.3 Why three versions?
 
-During testing, the initial implementation (V1) exposed an important correctness issue. This led to an improved V2 algorithm.
+During testing, the initial implementation (V1) exposed an important correctness issue. V2 tried to fix it with text similarity and hit the same wall one level up. The fix that worked (V3) stops comparing text and asks each agent for its verdict.
 
 ---
 
@@ -376,13 +377,57 @@ High Confidence
 Low Semantic Similarity
 ```
 
-**It does not solve it.** Embeddings are negation-blind: "Expand" and "Do NOT expand" share almost every word and embed close together, so the exact table above can still score high on cosine similarity. The word-overlap blend that runs by default is negation-blind too. The gate in 4.5.4 therefore never relies on the score alone. Dissent, open high-severity critiques, the minimum-rounds floor and the Ethics veto have to pass as well. Stance blindness is still a known limitation.
+**It does not solve it.** Embeddings are negation-blind: "Expand" and "Do NOT expand" share almost every word and embed close together, so the exact table above can still score high on cosine similarity. The word-overlap blend (`0.7 × confidence + 0.3 × rescaled Jaccard`) is negation-blind too, and its rescale window saturates: same-topic debates hit overlap 1.0, so the score collapses to `0.7 × confidence + 0.3`. A confident 2-vs-2 split (conf 0.80) scored 0.86 and passed even Thorough.
 
-Rather than trusting confidence alone, the system also checks whether agents are saying similar things, and the other gate signals catch part of what that check misses.
+The root cause: text similarity, words or embeddings, measures **topic**. Role-bound agents word their agreement differently and share vocabulary when they disagree. We needed to measure **verdict**.
+
+---
+
+##### V3 — Stance Vote (the default) ==>
+
+Each agent now declares its verdict as a structured field, the same pattern as the Ethics `veto`:
+
+```text
+stance ∈ { support, oppose, conditional, abstain }
+```
+
+The agreement score is the **confidence-weighted vote share of the largest stance group**:
+
+```python
+voters = [a for a in agents if a.stance not in (None, "abstain")]
+if len(voters) < 2: fall back to the word-overlap blend
+weight[stance] = sum(confidence of voters with that stance)
+agreement = max(weight) / sum(weight)
+```
+
+- **What the stance is about:** round 1 → the decision the question asks for ("Should we expand?" → support = yes). Round 2+ → the Moderator's one-sentence `leading_proposal` from the previous round ("Proposal on the table: …").
+- **`conditional` is its own group** — "yes, if X" is not a plain yes.
+- **The Analyst abstains** (it makes no recommendations), so the default panel has three voters.
+- **A veto means oppose** — an Ethics-class agent can't veto and support at once; the stance is coerced to `oppose`.
+
+Back to the opening example:
+
+| Agent    | Stance  | Confidence |
+| -------- | ------- | ---------: |
+| Strategy | support |       0.90 |
+| Risk     | oppose  |       0.90 |
+
+```text
+agreement_score = 0.90 / 1.80 = 0.50   → no consensus
+```
+
+| Vote (similar confidence) | Score | Quick 0.60 | Standard 0.75 | Thorough 0.85 |
+|---|---|---|---|---|
+| 3 of 3 | 1.00 | ✅ | ✅ | ✅ |
+| 2 of 3, dissenter unsure | 0.81 | ✅ | ✅ | ❌ |
+| 2 of 3, dissenter confident | ~0.67 | ✅ | ❌ | ❌ |
+| 2 vs 2 | ~0.50 | ❌ | ❌ | ❌ |
+
+**What it doesn't solve:** the stance is self-reported, and a vague `leading_proposal` gives a vague vote. The gate in 4.5.4 still never relies on the score alone.
 
 ##### Why keep confidence?
 
-Semantic similarity tells us **whether agents agree**.
+The stance tells us **which way each agent lands**.
 
 Confidence tells us **how certain each agent is about its own reasoning**.
 
@@ -391,7 +436,7 @@ Both signals are valuable:
 - Confidence without agreement can produce false consensus.
 - Agreement without confidence may indicate weak or uncertain reasoning.
 
-The hybrid approach balances both perspectives.
+That is why the vote is confidence-weighted: an unsure dissenter (0.40) pulls the score down less than a confident one.
 
 ---
 
@@ -425,9 +470,21 @@ A lightweight lexical comparison is sufficient to detect meaningful changes whil
 
 ---
 
-##### Optional Semantic Consensus 
+##### Choosing the agreement method
 
-Semantic consensus is **feature-flagged**:
+`AGREEMENT_METHOD` (server default) or `agreement_method` in the start request (per debate) picks which score drives the gate. The start form shows it as **Agreement: Vote / Text / Semantic**.
+
+| Method | Formula | Role |
+|---|---|---|
+| `stance` (Vote) | confidence-weighted vote share | Default |
+| `lexical` (Text) | `0.7 × mean confidence + 0.3 × rescaled word overlap` | Legacy, and the automatic fallback |
+| `semantic` | `0.5 × mean confidence + 0.5 × mean pairwise cosine` | Experimental |
+
+If the chosen method can't produce a score (fewer than two voters, stances missing in an old debate, embedding failure), the lexical blend takes over and the round records `agreement_method_used = "lexical"`. Every score is still emitted on the `synthesis` event, whichever one drives the gate.
+
+##### Optional Semantic Similarity
+
+Semantic similarity is **feature-flagged**:
 
 ```text
 SEMANTIC_CONSENSUS_ENABLED=true
@@ -435,13 +492,12 @@ SEMANTIC_CONSENSUS_ENABLED=true
 
 If enabled:
 
-- sentence-transformers (~80 MB) computes semantic agreement, and the score becomes `0.5 × mean confidence + 0.5 × mean pairwise cosine` (`SEMANTIC_CONSENSUS_WEIGHT`), with no rescaling.
+- sentence-transformers (~80 MB) computes the mean pairwise cosine every round, in a worker thread so it never blocks the SSE stream. It is logged and emitted as `semantic_agreement_score`, a **diagnostic**.
+- the `semantic` agreement method becomes available. Without the flag (or the library), asking for it returns 422 and the UI greys the option out.
 
-If disabled (the default), or if the model fails to load:
+It does **not** change the agreement score unless a debate picks the `semantic` method. (It used to silently replace the whole blend; that changed once it was clear embeddings measure topic, not verdict.)
 
-- the engine uses the deterministic blend of mean confidence and rescaled word overlap described in 4.5.4.
-
-This keeps the system lightweight for smaller deployments while allowing richer consensus analysis when semantic models are available.
+If disabled (the default), the embedding model is never loaded for consensus. This keeps the system lightweight for smaller deployments.
 
 ---
 
@@ -453,9 +509,9 @@ Instead, the Consensus Engine evaluates multiple convergence signals through `is
 
 A debate terminates **only if all conditions are satisfied**:
 
-1. **Position Agreement ≥ Threshold (Hybrid Score)**
+1. **Agreement Score ≥ Threshold (Stance Vote by default)**
 
-   - Ensures agents are not only confident but also overlap on position. Reduces **false consensus** caused by confidence alone (it can't detect negation; see 4.5.3).
+   - Ensures a confident majority of voting agents backs the same verdict, not just that agents are confident. Reduces **false consensus** caused by confidence alone or by shared wording (see 4.5.3).
 2. **Minimum Rounds Completed ≥ `min_rounds`**
 
    - Prevents premature termination by ensuring agents have had enough opportunities to critique and revise each other's reasoning.
@@ -478,11 +534,11 @@ A debate terminates **only if all conditions are satisfied**:
 
 Only when **all six conditions** are satisfied is the debate declared converged and finalized. (The Moderator's own "should we continue?" opinion is advisory and only logged — the gate decides.)
 
-**How "position agreement" is measured:** a blend `0.7 × mean confidence + 0.3 × position agreement`, where position agreement is the confidence-weighted Jaccard overlap of the agents' positions **rescaled** so 0.08 (unrelated positions) → 0 and 0.19 (the same stance reworded) → 1. Raw overlap between agents writing in different roles is low even when they agree; without the rescaling the score could never reach the thresholds. With semantic consensus enabled, the whole blend is replaced by `0.5 × mean confidence + 0.5 × mean cosine similarity` (a different weight, and no rescaling).
+**How the agreement score is measured:** by default, the confidence-weighted vote share of the largest stance group (4.5.3, V3). The legacy lexical blend, `0.7 × mean confidence + 0.3 × position overlap`, is the fallback and the "Text" option; there, position overlap is the confidence-weighted Jaccard overlap of the agents' positions **rescaled** so 0.08 (unrelated positions) → 0 and 0.19 (the same stance reworded) → 1. Raw overlap between agents writing in different roles is low even when they agree; without the rescaling that score could never reach the thresholds. The `semantic` method (`0.5 × mean confidence + 0.5 × mean cosine`, no rescaling) is used only when a debate picks it.
 
 This ensures that:
 
-- agents overlap on position, not just confidence,
+- a majority of voting agents back the same verdict, not just feel confident,
 - enough discussion has occurred,
 - few high-severity objections were raised this round,
 - agents have settled,
@@ -499,8 +555,8 @@ Agents
    ▼
 Consensus Engine
    │
-   ├── agreement
-   ├── semantic similarity
+   ├── agreement (stance vote)
+   ├── semantic similarity (diagnostic)
    ├── dissent
    ├── confidence
    ├── position drift
@@ -672,7 +728,7 @@ Step 3: LangGraph executes the debate graph
         │    → "Given the Risk agent's point about X, I revise" │
         │                                                       │
         │  CONVERGENCE: consensus engine scores the round       │
-        │    → Blend confidence + rescaled overlap (or cosine)  │
+        │    → Stance vote (confidence-weighted largest group)  │
         │    → Compute position drift vs. previous round        │
         │    → Moderator writes the round summary (advisory)    │
         └───────────────────────────────────────────────────────┘
@@ -732,10 +788,11 @@ Standard caps at **2 rounds** (threshold 0.75, min 2), so a Standard debate alwa
 | Algorithm                             | Where Used                                          | Why This Algorithm                                                                       |
 | ------------------------------------- | --------------------------------------------------- | ---------------------------------------------------------------------------------------- |
 | **LLaMA 3.3 70B (via Groq)**    | Agent reasoning, synthesis, memory summarisation    | State-of-the-art open model, free on Groq, 70B parameters = strong instruction following |
-| **all-MiniLM-L6-v2**            | RAG embeddings, semantic consensus V2               | 384-dim, fast local inference, strong semantic understanding for its size                |
-| **Cosine similarity**           | Consensus V2 (opt-in), RAG retrieval                | Measures directional alignment of embeddings, scale-invariant                            |
-| **Jaccard word overlap**        | Live agreement score, position drift, simulation consistency | Lightweight, no ML needed; rescaled 0.08→0 / 0.19→1 for the score and consistency, raw for drift |
-| **Confidence-weighted overlap** | Live agreement score (blended 0.7 confidence / 0.3 overlap) | Pairwise O(N²) but tiny N, provider-agnostic, no model download                    |
+| **all-MiniLM-L6-v2**            | RAG embeddings, semantic similarity (V2 diagnostic) | 384-dim, fast local inference, strong semantic understanding for its size                |
+| **Cosine similarity**           | Semantic diagnostic / `semantic` method (opt-in), RAG retrieval | Measures directional alignment of embeddings, scale-invariant                |
+| **Confidence-weighted stance vote** | Live agreement score (default `stance` method)  | Measures verdict, not wording; negation-proof; O(N), no model download                   |
+| **Jaccard word overlap**        | Lexical fallback score, position drift, simulation consistency | Lightweight, no ML needed; rescaled 0.08→0 / 0.19→1 for the score and consistency, raw for drift |
+| **Confidence-weighted overlap** | Lexical agreement (blended 0.7 confidence / 0.3 overlap): "Text" option + fallback | Pairwise O(N²) but tiny N, provider-agnostic, no model download          |
 | **LLM-as-Judge**                | Evaluator                                           | Flexible evaluation dimensions without labelled data                                     |
 | **N-run simulation**            | Consistency testing                                 | Measures whether the system gives stable answers across runs                             |
 
@@ -744,7 +801,7 @@ Standard caps at **2 rounds** (threshold 0.75, min 2), so a Standard debate alwa
 - **384 dimensions** — compact enough for fast cosine computation across agent pairs
 - **Local inference** — no API call, no latency, no cost
 - **Strong semantic understanding** — captures meaning, not just keywords
-- **Known limitation:** Negation blindness — "should expand" and "should NOT expand" may have high cosine similarity because the model focuses on "expand" semantically. This is a documented sentence-transformer limitation.
+- **Known limitation:** Negation blindness — "should expand" and "should NOT expand" may have high cosine similarity because the model focuses on "expand" semantically. This is a documented sentence-transformer limitation, and why embeddings are a diagnostic rather than the agreement metric. MiniLM also truncates input at 256 word-pieces.
 
 ---
 
@@ -754,7 +811,7 @@ Standard caps at **2 rounds** (threshold 0.75, min 2), so a Standard debate alwa
 | ------------------------------------------ | ------------------------------------------------------------ | ---------------------------------------------------- |
 | **Agent timeout (> 45s, per phase)** | Skip that agent, debate continues with remaining             | One slow agent shouldn't block the whole debate      |
 | **Structured output parse failure**  | `with_retry(stop_after_attempt=2)`, fallback to `None`   | Two chances; if both fail, graceful skip — no crash |
-| **False consensus**                  | Six-signal gate: position overlap + dissent + open critiques + min rounds + veto. Reduces it; negation ("should" vs "should NOT") still slips past both word overlap and embeddings | Confidence alone is insufficient signal              |
+| **False consensus**                  | Six-signal gate: stance vote + dissent + open critiques + min rounds + veto. Agents declare a structured verdict, so "should" vs "should NOT" counts as a split, not agreement | Confidence and text similarity both miss verdicts    |
 | **Stagnation / no progress**         | Drift < 0.05 only passes the "converged" signal; a stall below threshold runs to `max_rounds` | No standalone early stop: low drift alone isn't agreement |
 | **Infinite oscillation**             | Hard ceiling:`max_rounds` stops debate                     | Safety net regardless of convergence                 |
 | **KB empty or unavailable**          | `_enrich_with_kb()` returns prompt unchanged               | RAG is enhancement, not requirement                  |
@@ -765,7 +822,7 @@ Standard caps at **2 rounds** (threshold 0.75, min 2), so a Standard debate alwa
 
 ### Most Critical Edge Case to Explain: False Consensus
 
-This is the most technically interesting challenge because it's a correctness bug disguised as normal behavior. V1 would report high agreement even when agents were diametrically opposed — misleading the user into trusting a "consensus" that didn't exist. The fix was to stop trusting one number. The score now blends confidence with how much the agents' positions overlap, and the gate also requires few dissenters, few high-severity critiques, a minimum number of rounds and no standing veto. Be honest about the limit: word overlap and embeddings are both negation-blind, so "should" vs "should NOT" can still look like agreement. The gate **reduces** false consensus but does not eliminate it.
+This is the most technically interesting challenge because it's a correctness bug disguised as normal behavior. V1 would report high agreement even when agents were diametrically opposed — misleading the user into trusting a "consensus" that didn't exist. The fix took three steps. Blending confidence with word overlap helped, but overlap (and later embeddings) measures topic, so "should" vs "should NOT" still looked like agreement and a confident 2-vs-2 split passed Thorough. The fix that held: each agent declares a structured `stance`, and agreement is the confidence-weighted share of the largest stance group, so that split scores ~0.50. The gate also requires few dissenters, few high-severity critiques, a minimum number of rounds and no standing veto. Be honest about the limit: the stance is self-reported. The gate **reduces** false consensus but does not eliminate it.
 
 ---
 
@@ -826,8 +883,9 @@ FastAPI BackgroundTask  →    Celery/Dramatiq (durable task queue)
 | Metric                       | Formula / Method                           | What It Tells You                                 |
 | ---------------------------- | ------------------------------------------ | ------------------------------------------------- |
 | **Agreement Score V1** | `mean(agent.confidence)`                 | Fast convergence proxy, can be fooled; still emitted as `confidence_agreement_score` |
-| **Agreement Score (live)** | `0.7×confidence_mean + 0.3×normalize(cw_overlap)` | Default gate input: confidence plus word-level position overlap |
-| **Agreement Score V2** | `0.5×confidence_mean + 0.5×cosine_sim` (opt-in) | Meaning-level overlap; still negation-blind |
+| **Agreement Score (live, stance)** | `max(group confidence) / total voter confidence` | Default gate input: confidence-weighted share of the largest stance group; emitted as `stance_agreement_score` with a `stance_tally` |
+| **Agreement Score (lexical)** | `0.7×confidence_mean + 0.3×normalize(cw_overlap)` | "Text" option and the fallback when < 2 agents vote; overlap emitted as `position_agreement_score` |
+| **Agreement Score V2** | `0.5×confidence_mean + 0.5×cosine_sim` (opt-in) | Meaning-level overlap; still negation-blind. Diagnostic (`semantic_agreement_score`) unless the `semantic` method is chosen |
 | **Score change**       | `score_round_N − score_round_N-1`        | How fast the debate is converging                 |
 | **Position Drift**     | `1 − Jaccard(position_N, position_N-1)`  | How much agents are still updating their thinking |
 
@@ -900,8 +958,8 @@ These are powerful for making complex ideas accessible in interviews.
 | **Adapter**              | `LangChainProvider`           | Provider-agnostic LLM interface; swap backend with one env var      |
 | **Factory (closure)**    | `DebateGraph` node factories  | Capture dependencies at graph-build time for LangGraph callables    |
 | **Service Locator**      | `AgentRegistry`               | Decouple agent creation/config from the orchestrator                |
-| **Graceful Degradation** | Consensus engine, KB, tools     | V2 optional, KB returns unchanged prompt, tool skip on timeout      |
-| **Feature Flags**        | Semantic consensus, RAG, memory | Enable/disable via env vars without code changes                    |
+| **Graceful Degradation** | Consensus engine, KB, tools     | Stance/semantic fall back to lexical, KB returns unchanged prompt, tool skip on timeout |
+| **Feature Flags**        | Semantic similarity, agreement method, RAG, memory | Enable/disable via env vars without code changes   |
 
 ### Pattern Explanations for Interviews
 
@@ -984,14 +1042,14 @@ The catch in both is the word **independent**. If the members make the *same* mi
 
 ### 16.2 Consensus Theory — Agreement as a Measured Signal
 
-**In plain words:** In distributed systems, "consensus" means getting a bunch of computers to agree on one value even if some crash. That is **not** AgentBoard's problem. Here, consensus means: looking at five opinions, *how much do they really agree, and should I trust that agreement enough to stop the debate?* It's a measurement, not a voting protocol.
+**In plain words:** In distributed systems, "consensus" means getting a bunch of computers to agree on one value even if some crash. That is **not** AgentBoard's problem. Here, consensus means: looking at five opinions, *how much do they really agree, and should I trust that agreement enough to stop the debate?* It's a measurement, not a fault-tolerant commit protocol.
 
 **The theory:**
 
 - Classic consensus (Paxos, Raft) is a *coordination protocol* — binary and safety-critical: every node must commit to the same value.
-- AgentBoard does **semantic consensus** — it *scores* how close the positions are in meaning, then decides whether that's good enough to stop.
-- The danger is **false consensus**: a naive system shouts "agreement!" the moment agents merely *sound* confident — but confidence ≠ correctness, and a high *average* confidence can hide two agents flatly contradicting each other.
-- The fix borrows the database idea of a **quorum** (you need several independent confirmations, not one). A debate converges only when **all six** signals hold: (1) position agreement ≥ threshold, (2) at least `min_rounds` completed, (3) ≤ 1 dissenter, (4) ≤ 2 open high-severity disagreements, (5) confidence has converged (low drift, spread ≤ 0.15, or everyone ≥ 0.9), (6) no Ethics veto stands. Each signal closes a loophole the others miss.
+- AgentBoard does **measured consensus** — each agent casts a structured verdict (support / oppose / conditional / abstain), the system *scores* the confidence-weighted share of the largest group, then decides whether that's good enough to stop.
+- The danger is **false consensus**: a naive system shouts "agreement!" the moment agents merely *sound* confident — but confidence ≠ correctness, and a high *average* confidence can hide two agents flatly contradicting each other. Text similarity doesn't save you either: "expand" and "don't expand" read as the same topic.
+- The fix borrows the database idea of a **quorum** (you need several independent confirmations, not one). A debate converges only when **all six** signals hold: (1) agreement (stance vote) ≥ threshold, (2) at least `min_rounds` completed, (3) ≤ 1 dissenter, (4) ≤ 2 open high-severity disagreements, (5) confidence has converged (low drift, spread ≤ 0.15, or everyone ≥ 0.9), (6) no Ethics veto stands. Each signal closes a loophole the others miss.
 - **Convergence vs. termination** (a distinction interviewers love): *convergence* = the gate is genuinely satisfied. *Termination* = the loop stopped for **any** reason, including just hitting the round limit. Reporting "max rounds reached" as if it were "consensus" is exactly the false-consensus bug.
 
 **Say this:** *"I treat consensus as a calibrated score behind a multi-signal quorum gate, not a boolean — confidence alone can't end a debate."*
@@ -1156,7 +1214,7 @@ These are failures of the model calls themselves — the most common in any LLM 
 
 These are failures of the debate *logic* — the most interesting ones to discuss, because they're correctness bugs, not crashes.
 
-**① False consensus (the headline bug).** *What happens:* the system reports high agreement when the agents are actually opposed, so the user trusts a "consensus" that doesn't exist. *Why:* the naive first version measured agreement from confidence and word-overlap, which stays high even when two agents *confidently* say opposite things. *How it's handled:* the current **hybrid six-signal gate** only converges when position overlap, min-rounds, low dissent, few high-severity critiques this round, settled agents (low drift, tight confidence spread, or all highly confident) *and* no standing Ethics veto all hold at once. Confidence by itself can never end a debate. Optional semantic consensus swaps word overlap for embedding similarity. *What it doesn't fix:* both word overlap and embeddings are negation-blind ("should" vs "should not" scores as agreement), so the gate **reduces** false consensus rather than eliminating it. *How I'd harden it:* an NLI contradiction check between positions, or a calibrated agreement model trained on human-labeled debates.
+**① False consensus (the headline bug).** *What happens:* the system reports high agreement when the agents are actually opposed, so the user trusts a "consensus" that doesn't exist. *Why:* the earlier versions measured agreement from confidence and word overlap (and optionally embeddings), which stay high even when two agents *confidently* say opposite things: text similarity measures topic, not verdict. *How it's handled:* each agent now declares a structured `stance`, and agreement is the confidence-weighted share of the largest stance group. The **hybrid six-signal gate** only converges when that agreement, min-rounds, low dissent, few high-severity critiques this round, settled agents (low drift, tight confidence spread, or all highly confident) *and* no standing Ethics veto all hold at once. Confidence by itself can never end a debate, and a 2-vs-2 split can't pass any mode. *What it doesn't fix:* the stance is self-reported, so an agent that argues one way and labels it the other still fools the vote; the gate **reduces** false consensus rather than eliminating it. *How I'd harden it:* an NLI check that the position text actually matches the declared stance, or a calibrated agreement model trained on human-labeled debates.
 
 **② Non-convergence.** *What happens:* the agents argue and never reach the agreement threshold. *How it's handled:* a hard `max_rounds` ceiling stops the loop, and the debate still returns a decision — but honestly labeled `max_rounds_reached` with low agreement, rather than pretending it converged. *Why this matters:* it's the difference between an honest "we couldn't fully agree" and a misleading fake consensus. *How I'd harden it:* an adaptive round budget based on question difficulty, plus escalation to a human.
 
@@ -1166,7 +1224,7 @@ These are failures of the debate *logic* — the most interesting ones to discus
 
 | Failure                                | Symptom                                       | How AgentBoard handles it                                                                                                    | How I'd harden it                                                         |
 | -------------------------------------- | --------------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------- |
-| **False consensus**              | High agreement reported for opposed positions | Hybrid six-signal gate — confidence alone can't converge; reduces but doesn't eliminate it (negation-blind overlap)          | NLI contradiction check; calibrated agreement model trained on labeled debates |
+| **False consensus**              | High agreement reported for opposed positions | Stance vote inside the six-signal gate — confidence alone can't converge, a split vote can't pass; stance is self-reported | NLI check of position vs. declared stance; calibrated agreement model trained on labeled debates |
 | **Non-convergence**              | Agents never reach the threshold              | Hard`max_rounds` ceiling → `termination_reason = max_rounds_reached`, decision still produced with honest low agreement | Adaptive round budget by question difficulty; escalate to HITL            |
 | **Stagnation (no progress)**     | Positions stop moving but threshold unmet     | Drift < 0.05 only passes the "converged" signal; with agreement below threshold the debate runs to `max_rounds`               | Early-stop a true stall; detect oscillation vs. stall separately          |
 | **Concurrent debates interfere** | State bleed between simultaneous debates      | Unique`thread_id` (UUID) scopes LangGraph state, event buffer, and DB rows; per-thread `asyncio.Lock`                    | Move state to Redis/Postgres keyed by`thread_id` for multi-worker scale |
@@ -1269,30 +1327,38 @@ These are failures of the storage and runtime underneath — the ones that decid
 
 ## Q4: "How does the consensus engine work?"
 
-**A:** Three versions, each fixing part of the problem:
+**A:** Four steps, each fixing part of the problem:
 
 **V1 (fast):** `agreement_score = mean(agent.confidence)`. Simple, but produces false consensus — two agents 90% confident in opposite positions still scores 0.9.
 
-**Live default:** blend confidence with how much the agents' positions overlap:
+**V1.5 (lexical):** blend confidence with how much the agents' positions overlap:
 
 ```
 agreement = 0.7 × confidence_mean + 0.3 × normalize(confidence_weighted_jaccard)
 normalize: raw overlap 0.08 → 0, 0.19 → 1 (linear, clipped)
 ```
 
-Agents writing in different roles share few words even when they agree, so raw overlap is rescaled before blending; otherwise the score could never reach the thresholds.
+Agents writing in different roles share few words even when they agree, so raw overlap is rescaled before blending. But the window saturates: agents debating one question hit 1.0, so the score becomes `0.7 × confidence + 0.3` and a confident 2-vs-2 split (0.86) passes Thorough.
 
-**V2 (semantic, opt-in):** with `SEMANTIC_CONSENSUS_ENABLED`, the whole blend is replaced by:
+**V2 (semantic, opt-in):**
 
 ```
 agreement = 0.5 × confidence_mean + 0.5 × mean_pairwise_cosine(position_embeddings)
 ```
 
-Embeds each agent's position with `all-MiniLM-L6-v2`. That catches positions that are about different things, but it is **negation-blind**: "should expand" and "should NOT expand" still score as close. Word overlap has the same blind spot. Feature-flagged and lazy-loaded; if sentence-transformers is missing it falls back to the live default.
+Embeds each agent's position with `all-MiniLM-L6-v2`. That catches positions that are about different things, but it is **negation-blind**: "should expand" and "should NOT expand" still score as close. Word overlap has the same blind spot: both measure *topic*, not *verdict*.
+
+**V3 (stance, the live default):** each agent declares a structured `stance` (support / oppose / conditional / abstain) toward the proposal on the table — the question in round 1, the Moderator's `leading_proposal` after that. Agreement is the confidence-weighted vote share of the largest group:
+
+```
+agreement = max(confidence sum per stance) / total voter confidence     # abstainers excluded
+```
+
+The 2-vs-2 split now scores ~0.50 and never passes. If fewer than two agents vote, it falls back to the lexical blend. The method is selectable (`AGREEMENT_METHOD`, or per debate: Vote / Text / Semantic in the UI). `SEMANTIC_CONSENSUS_ENABLED` now only reports the cosine score as a diagnostic and unlocks the `semantic` option; it no longer overrides the score.
 
 **Stagnation signal:** if position *drift* between round N-1 and N (1 − Jaccard overlap, averaged over agents present in both rounds) is below 0.05, agents have stopped changing. That is one of the ways the "confidence converged" signal can pass, **not** an early stop on its own. Drift is only measured when the same agents spoke in both rounds.
 
-**The gate, not just the score:** termination requires *six* signals together — position agreement ≥ threshold, `min_rounds` reached, ≤ 1 dissenter, ≤ 2 high-severity critiques this round, confidence converged, and no standing Ethics veto. So "everyone is confident after round 1" alone never ends the debate, and the non-score signals catch some of the contradictions the score misses.
+**The gate, not just the score:** termination requires *six* signals together — agreement ≥ threshold, `min_rounds` reached, ≤ 1 dissenter, ≤ 2 high-severity critiques this round, confidence converged, and no standing Ethics veto. So "everyone is confident after round 1" alone never ends the debate, and the non-score signals catch some of the contradictions the score misses.
 
 **Key phrase:** *"Confidence tells you how sure agents are; the gate also checks they've actually stopped disagreeing — and for long enough."*
 
@@ -1455,22 +1521,26 @@ Question → embed → cosine search in ChromaDB
 
 ## Q12: "What's the hardest technical challenge you solved?"
 
-**A:** The V1 → V2 consensus engine evolution.
+**A:** The V1 → V2 → stance consensus engine evolution.
 
 **The discovery:** V1 (confidence-based) reported false consensus. Two agents could be 90% confident in contradictory positions, and V1 reported 0.90 agreement. We only caught this during testing with carefully chosen adversarial scenarios.
 
-**The solution:** stop trusting a single number. The live score blends confidence with rescaled word overlap between positions (embedding similarity when V2 is on). The termination gate also requires few dissenters, few high-severity critiques, a minimum number of rounds and no standing veto. Confidence alone can no longer end a debate.
+**The first fix:** stop trusting a single number. The score blended confidence with rescaled word overlap between positions (embedding similarity with V2), and the termination gate also required few dissenters, few high-severity critiques, a minimum number of rounds and no standing veto.
 
-**What it doesn't solve (say this before they ask):** word overlap and embeddings are both negation-blind. "Should expand" vs "should not expand" scores as agreement on either. The gate reduces false consensus. A real fix needs a contradiction check (NLI) between positions.
+**The second discovery:** that fix had the same bug one level up. Word overlap and embeddings both measure *topic*. "Should expand" vs "should not expand" scores as agreement on either, and once every agent writes about the same question the overlap saturates at 1.0. A confident 2-vs-2 split scored 0.86 and passed Thorough.
 
-**The hard part:** Making V2 optional without cluttering the codebase:
+**The fix that held:** measure the *verdict*. Each agent fills a structured `stance` (support / oppose / conditional / abstain) toward a concrete proposal: the question in round 1, the Moderator's one-sentence `leading_proposal` after that. Agreement is the confidence-weighted share of the largest stance group, so the same split scores ~0.50. It follows the same pattern as the Ethics `veto`: a structured field beats parsing free text.
 
-- sentence-transformers is ~80MB — not acceptable as a hard dependency
-- Feature-flagged via `SEMANTIC_CONSENSUS_ENABLED=true` (off by default)
-- Lazy-loaded — the model is loaded on first use, not at startup
-- Graceful fallback to the confidence + word-overlap blend if the import fails
+**What it doesn't solve (say this before they ask):** the stance is self-reported. An agent could argue against a proposal and still label it `support`. The gate reduces false consensus; an NLI check that the position matches the stance would close more of the gap.
 
-**Key phrase:** *"The bug was invisible because V1 produced plausible-looking wrong answers."*
+**The hard part:** changing the metric without breaking anything:
+
+- Stored debates have no `stance` → the field is optional on stored responses (required only in the LLM schema), and a round with < 2 voters falls back to the old lexical blend
+- Semantic similarity stopped silently replacing the score: it is now a diagnostic, computed off the event loop, and only drives the gate when a debate explicitly picks it
+- Every score (confidence, overlap, semantic, stance) is still emitted each round, so the methods can be compared on real debates
+- sentence-transformers (~80MB) stays an optional, lazy-loaded dependency behind `SEMANTIC_CONSENSUS_ENABLED`
+
+**Key phrase:** *"The bug was invisible because each version produced plausible-looking wrong answers. Text similarity tells you agents are talking about the same thing, not that they agree."*
 
 ---
 
@@ -1541,8 +1611,8 @@ A debate can converge quickly (good process) but produce a shallow decision (bad
 2. **Adapter (LangChainProvider)** — Provider-agnostic LLM interface. Swap Groq → OpenAI → Anthropic with one env var.
 3. **Factory with closure (node factories)** — LangGraph nodes can't accept extra arguments. Factory functions return closures that capture agents, event emitter, and persistence callback.
 4. **Service Locator (AgentRegistry)** — Agent instantiation and configuration decoupled from the orchestrator. Registry knows how to build any agent; orchestrator just asks for one.
-5. **Graceful Degradation** — V2 consensus optional (falls back to V1), KB unavailable (returns unchanged prompt), tool timeout (agent skips tool, uses cached data).
-6. **Feature Flags** — Semantic consensus, RAG, agent memory all toggleable via environment variables, no code changes required.
+5. **Graceful Degradation** — stance or semantic agreement falls back to the lexical blend when it can't be computed, KB unavailable (returns unchanged prompt), tool timeout (agent skips tool, uses cached data).
+6. **Feature Flags** — Semantic similarity, agreement method, RAG, agent memory all toggleable via environment variables, no code changes required.
 
 ---
 
@@ -1774,7 +1844,7 @@ When `AgentRegistry.get("Moderator", default_client)` is called: if the Moderato
 **A:** Six honest limitations — interviewers respect candor here:
 
 1. **No factual accuracy checking** — Agents can confidently state wrong facts. RAG helps for uploaded documents, but hallucinations outside the KB go undetected. Mitigation: add a fact-checking tool that queries a verified source.
-2. **Embedding negation blindness** — `all-MiniLM-L6-v2` has high cosine similarity for "should expand" and "should NOT expand" because it focuses on "expand" semantically. This is a known sentence-transformer limitation. Mitigation: use NLI (Natural Language Inference) models for contradiction detection in V3.
+2. **Self-reported stances** — Text similarity (words or `all-MiniLM-L6-v2` embeddings) can't tell "should expand" from "should NOT expand", which is why agreement is now a structured stance vote. But the vote trusts each agent's label, and the agreement thresholds (0.60 / 0.75 / 0.85) haven't been re-calibrated for it. Mitigation: an NLI (Natural Language Inference) check that each position actually matches its stance, and calibrating thresholds on labeled debates.
 3. **No user feedback loop** — We measure process quality (consensus score) and output quality (LLM judge), but we have zero data on whether decisions were actually useful. This is the most important unknown.
 4. **Single-instance only** — In-memory state doesn't share across servers. Can't horizontally scale without the Redis migration.
 5. **LLM-as-Judge unreliability** — The evaluator LLM can rationalise gaps rather than flagging them. It's an LLM judging an LLM — inherently susceptible to the same biases. Mitigation: human-labelled evaluation set as ground truth.

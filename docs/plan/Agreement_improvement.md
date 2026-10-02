@@ -261,12 +261,12 @@ Domain packs change the voter count; the formula adapts automatically. Calibrati
 
 ### B10. Acceptance criteria
 
-- [ ] Default run uses `stance`; a 2-vs-2 split never reaches consensus.
-- [ ] `SEMANTIC_CONSENSUS_ENABLED=true` no longer changes the gate unless `agreement_method="semantic"`.
-- [ ] No blocking `encode()` in async code.
-- [ ] Synthesis event shows all scores + `agreement_method_used`.
-- [ ] Old debates in SQLite still load and render.
-- [ ] All existing backend + frontend tests pass.
+- [x] Default run uses `stance`; a 2-vs-2 split never reaches consensus.
+- [x] `SEMANTIC_CONSENSUS_ENABLED=true` no longer changes the gate unless `agreement_method="semantic"`.
+- [x] No blocking `encode()` in async code.
+- [x] Synthesis event shows all scores + `agreement_method_used`.
+- [x] Old debates in SQLite still load and render.
+- [x] All existing backend + frontend tests pass.
 
 ---
 

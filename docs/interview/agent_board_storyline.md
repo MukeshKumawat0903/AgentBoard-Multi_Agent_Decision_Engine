@@ -73,7 +73,7 @@ Tell this when asked "Why did you build this?" or "What problem does it solve?":
 
 ### What Makes It Different From AutoGen / CrewAI
 
-> "The key difference is **structured adversarial debate**. AutoGen and CrewAI have agents collaborate — they pass messages around, they help each other. AgentBoard agents **argue**. There's a formal protocol: propose, then cross-examine, then revise under pressure, then measure if they actually agree. And the consensus isn't vibes — it's quantified by blending confidence with how much their positions overlap, behind a six-signal gate that also checks dissent, open critiques, minimum rounds and an ethics veto. Plus, it's a full-stack product with live streaming, persistence, analytics, and human-in-the-loop — not just a Python script."
+> "The key difference is **structured adversarial debate**. AutoGen and CrewAI have agents collaborate — they pass messages around, they help each other. AgentBoard agents **argue**. There's a formal protocol: propose, then cross-examine, then revise under pressure, then measure if they actually agree. And the consensus isn't vibes — every agent casts a structured stance and agreement is the confidence-weighted vote share of the largest group, behind a six-signal gate that also checks dissent, open critiques, minimum rounds and an ethics veto. Plus, it's a full-stack product with live streaming, persistence, analytics, and human-in-the-loop — not just a Python script."
 
 ---
 
@@ -290,7 +290,7 @@ flowchart TD
 
 **Round 1 — Convergence Check**
 
-> "The consensus engine scores the revised positions. It blends mean confidence with how much the positions overlap. The Moderator writes a round summary, but it doesn't decide whether to continue. A deterministic six-signal gate does. In round 1 the score is typically around 0.5, and in Standard mode round 1 can't end the debate anyway, because `min_rounds` is 2. So we loop."
+> "Every proposal and revision carries a structured stance — support, oppose, conditional or abstain — and the consensus engine scores the round as the confidence-weighted share of the largest stance group. If Strategy and Ethics support a phased migration and Risk opposes it, that's a 2-of-3 vote. The Moderator writes a round summary and names the leading proposal, which every agent votes on next round, but it doesn't decide whether to continue. A deterministic six-signal gate does. In Standard mode round 1 can't end the debate anyway, because `min_rounds` is 2. So we loop."
 
 **Round 2+ — Narrowing**
 
@@ -399,13 +399,28 @@ semantic_sim = mean(cosine_similarity(embed(pos_i), embed(pos_j)))  for all pair
 hybrid_score = (1 - w) × mean_confidence + w × semantic_similarity     # w = 0.5
 ```
 
-> "That helps when agents are talking about different things: their embeddings land far apart and the score drops. But it doesn't fix the case that started all this. Sentence embeddings are negation-blind too. 'Should expand' and 'should NOT expand' are almost the same sentence, so they embed close together. So V2 stays opt-in behind `SEMANTIC_CONSENSUS_ENABLED`, and it falls back to the default blend if the model can't load."
+> "That helps when agents are talking about different things: their embeddings land far apart and the score drops. But it doesn't fix the case that started all this. Sentence embeddings are negation-blind too. 'Should expand' and 'should NOT expand' are almost the same sentence, so they embed close together. Embeddings encode the *topic*, not the *verdict*."
 
 #### Attempt 4: Stop Trusting One Number — the Six-Signal Gate
 
-> "The real fix was to stop letting any single score end the debate. The live score blends 0.7 × mean confidence with 0.3 × confidence-weighted word overlap. The overlap is rescaled first (0.08 → 0, 0.19 → 1), because agents writing in different roles share few words even when they agree. That score is only one of six conditions that must all hold: at least `min_rounds` completed, at most one dissenter (an agent more than 0.20 below the group's mean confidence), at most two high or critical critiques raised that round, agents settled (low drift, tight confidence spread, or everyone ≥ 0.90), and no standing Ethics veto. An agent that strongly opposes the others often raises high-severity critiques, and those count against consensus even when the overlap score misses the disagreement."
+> "Next I stopped letting any single score end the debate. The score at that point blended 0.7 × mean confidence with 0.3 × confidence-weighted word overlap, rescaled first (0.08 → 0, 0.19 → 1) because agents writing in different roles share few words even when they agree. That score became only one of six conditions that must all hold: at least `min_rounds` completed, at most one dissenter (an agent more than 0.20 below the group's mean confidence), at most two high or critical critiques raised that round, agents settled (low drift, tight confidence spread, or everyone ≥ 0.90), and no standing Ethics veto."
 
-> "I'm upfront that this *reduces* false consensus rather than solving it. Stance blindness is still a known limitation. The next step would be an NLI contradiction check between positions."
+> "But when I worked the numbers, the score itself was still broken. Agents debating one question all use its vocabulary, so the rescaled overlap saturated at 1.0 and the score became `0.7 × confidence + 0.3`, a confidence threshold in disguise. A 2-vs-2 split at confidence 0.80 scored 0.86 and passed even Thorough's 0.85."
+
+#### Attempt 5: Measure the Verdict — Stance Vote (the live default)
+
+> "The root cause was that every attempt compared *text*, and text similarity measures topic. So I stopped comparing text. Every agent now fills a structured `stance` field — support, oppose, conditional, or abstain — the same pattern as the Ethics `veto`. Agreement is the confidence-weighted vote share of the largest stance group."
+
+```
+voters    = agents whose stance is not abstain
+agreement = max(confidence sum per stance) / total voter confidence
+```
+
+> "A stance has to be *about* something, so in round 1 it's toward the decision the question asks for, and from round 2 on it's toward the Moderator's one-sentence `leading_proposal` from the previous round. 'Conditional' counts as its own group, because 'yes, if X' isn't a plain yes. The Analyst abstains, since its role forbids recommendations, and a veto forces the stance to `oppose`. The same 2-vs-2 split now scores about 0.50 and can't pass any mode."
+
+> "I kept the old scores. The lexical blend is the automatic fallback when fewer than two agents vote, for example in debates stored before the field existed. `SEMANTIC_CONSENSUS_ENABLED` no longer silently replaces the score; it reports cosine similarity as a diagnostic and unlocks a 'Semantic' option. Every score is emitted every round, and the method is selectable per debate, so I can compare them on real debates."
+
+> "I'm upfront that this *reduces* false consensus rather than solving it. The stance is self-reported, and the thresholds were kept from the lexical era. The next step would be an NLI check that each position actually matches its declared stance, and calibrating thresholds on labeled debates."
 
 #### Position Drift (One Signal, Not an Early Stop)
 
@@ -415,10 +430,10 @@ hybrid_score = (1 - w) × mean_confidence + w × semantic_similarity     # w = 0
 
 This demonstrates:
 
-- **Iterative problem-solving** (V1 → V1.5 → V2 → gate, not designing the perfect solution upfront)
-- **Finding bugs through testing** (the false consensus discovery)
-- **ML knowledge** (embeddings, cosine similarity, hybrid scoring, and where embeddings fail)
-- **Pragmatic engineering** (feature flags, graceful fallback, configurability)
+- **Iterative problem-solving** (V1 → V1.5 → V2 → gate → stance, not designing the perfect solution upfront)
+- **Finding bugs through testing** (the false consensus discovery, twice)
+- **ML knowledge** (embeddings, cosine similarity, hybrid scoring, and where embeddings fail: topic vs. verdict)
+- **Pragmatic engineering** (structured outputs over text parsing, feature flags, graceful fallback, backward-compatible schema changes)
 - **Honesty about limits** (what the gate still can't catch)
 
 ---
@@ -501,9 +516,9 @@ Agent node completes work
 | `debate_started`     | Thread created          | `{thread_id, user_query, max_rounds}`                                             |
 | `round_started`      | New round begins        | `{round_number, max_rounds}`                                                      |
 | `phase_started`      | Phase transition        | `{round_number, phase}`                                                           |
-| `agent_output`       | Proposal or revision    | `{round_number, phase, agent_name, position, confidence_score}`                   |
+| `agent_output`       | Proposal or revision    | `{round_number, phase, agent_name, position, confidence_score, stance}`           |
 | `critique_completed` | Cross-examination done  | `{round_number, critic_agent, target_agent, severity, critique_points}`           |
-| `synthesis`          | Round scored            | `{round_number, agreement_score, summary, agreement_areas, disagreement_areas, confidence_agreement_score, position_agreement_score, semantic_agreement_score}` (no `should_continue`: the gate decides, so the UI never shows the Moderator's conflicting call) |
+| `synthesis`          | Round scored            | `{round_number, agreement_score, summary, agreement_areas, disagreement_areas, confidence_agreement_score, position_agreement_score, semantic_agreement_score, stance_agreement_score, stance_tally, agreement_method_used, leading_proposal}` (no `should_continue`: the gate decides, so the UI never shows the Moderator's conflicting call) |
 | `approval_required`  | HITL pause              | `{round_number, agreement_score, termination_reason, synthesis_summary, options}` |
 | `debate_completed`   | Debate loop finished    | `{thread_id, termination_reason, total_rounds, agreement_score}`                  |
 | `final_decision`     | Final decision streamed | `{FinalDecision JSON}`                                                            |
@@ -823,7 +838,7 @@ Use this framework for any decision:
 
 ## 19. CHALLENGES & HOW I SOLVED THEM
 
-### Challenge 1: False Consensus (V1 → V2 Evolution)
+### Challenge 1: False Consensus (V1 → V2 → Stance Evolution)
 
 *See [Section 8](#8-consensus-evolution--the-hardest-problem-i-solved) for the full story*
 
@@ -959,8 +974,9 @@ Use this framework for any decision:
 | RAG similarity threshold   | 0.30 cosine similarity                  |
 | Memory lessons injected    | Up to 5 per agent                       |
 | Stagnation drift threshold | 0.05 (1 − Jaccard); one way to pass "converged", not an early stop |
-| Live score weights         | 0.7 confidence + 0.3 rescaled overlap (0.08 → 0, 0.19 → 1) |
-| V2 consensus weight        | 0.5 (configurable, opt-in)              |
+| Live agreement score       | Stance vote: confidence-weighted share of the largest stance group (`AGREEMENT_METHOD=stance`) |
+| Lexical fallback weights   | 0.7 confidence + 0.3 rescaled overlap (0.08 → 0, 0.19 → 1) |
+| V2 semantic weight         | 0.5 (configurable; diagnostic unless the `semantic` method is chosen) |
 
 ---
 
@@ -972,7 +988,7 @@ Use this framework for any decision:
 
 ### "What was the hardest technical challenge?"
 
-> *Use [Section 8 — Consensus Evolution](#8-consensus-evolution--the-hardest-problem-i-solved). Tell the V1 → V1.5 → V2 → six-signal gate story, including what it still can't catch.*
+> *Use [Section 8 — Consensus Evolution](#8-consensus-evolution--the-hardest-problem-i-solved). Tell the V1 → V1.5 → V2 → six-signal gate → stance vote story, including what it still can't catch.*
 
 ### "How do you handle errors / edge cases?"
 
@@ -1091,7 +1107,7 @@ Focus on:
 Focus on:
 
 - Design decision tradeoffs ([Section 18](#18-design-decisions--tradeoffs-i-made))
-- Iterative problem-solving (V1 → V2 consensus story)
+- Iterative problem-solving (V1 → V2 → stance consensus story)
 - Production readiness awareness ([Section 20](#20-production-readiness--what-id-change-at-scale))
 - Cost engineering and optimization ([Section 14](#14-llm-provider-strategy--cost-vs-quality))
 - Observability and debugging strategy ([Section 17](#17-observability--seeing-inside-the-black-box))
@@ -1131,7 +1147,7 @@ Focus on:
 
 ### Consensus is a measurement problem, not a coordination problem
 
-> "People hear 'consensus' and think Paxos or Raft — getting N machines to agree on one value despite crashes. That's not my problem. Mine is **measuring agreement**: *how much* do these positions actually overlap, and can I trust that agreement? So I built it as a score behind a **multi-signal quorum gate**. Six conditions must all hold: position overlap, a minimum number of rounds, few dissenters, few high-severity critiques that round, agents settled (low drift, tight confidence spread, or all highly confident), and no standing ethics veto. The principle is that any single signal is gameable — high confidence especially, because an LLM's confidence is **not** a probability of being correct. Requiring several independent signals is the same instinct as a quorum: don't let one vote decide."
+> "People hear 'consensus' and think Paxos or Raft — getting N machines to agree on one value despite crashes. That's not my problem. Mine is **measuring agreement**: *how much* do these agents actually agree, and can I trust that agreement? I learned the hard way that comparing their text measures topic, not verdict, so each agent casts a structured stance and I score the confidence-weighted vote. That score sits behind a **multi-signal quorum gate**. Six conditions must all hold: the stance vote clears the threshold, a minimum number of rounds, few dissenters, few high-severity critiques that round, agents settled (low drift, tight confidence spread, or all highly confident), and no standing ethics veto. The principle is that any single signal is gameable — high confidence especially, because an LLM's confidence is **not** a probability of being correct. Requiring several independent signals is the same instinct as a quorum: don't let one vote decide."
 
 ### Why a state machine instead of a for-loop
 
@@ -1177,7 +1193,7 @@ Focus on:
 
 | What breaks | How AgentBoard copes today | How I'd harden it |
 |---|---|---|
-| **False consensus** (agreement reported for opposed views) | Six-signal hybrid gate — confidence alone can't converge; reduces it, but negation ("should" vs "should NOT") still fools word overlap and embeddings | NLI contradiction check; calibrated agreement model trained on labelled debates |
+| **False consensus** (agreement reported for opposed views) | Structured stance vote inside the six-signal gate — confidence alone can't converge and "should" vs "should NOT" counts as a split; still trusts each agent's self-reported stance | NLI check of position vs. stance; calibrated agreement model trained on labelled debates |
 | **Never converges** | Hard `max_rounds` ceiling → honest `max_rounds_reached`, decision still produced with low agreement | Adaptive round budget by question difficulty; escalate to HITL |
 | **Stagnation** (positions stop moving, threshold unmet) | No standalone early stop: drift < 0.05 only passes the "converged" signal, so a stall below threshold runs to `max_rounds` (`max_rounds_reached`) | Early-stop a true stall; distinguish it from oscillation |
 | **Concurrent debates interfere** | Unique `thread_id` scopes graph state, event buffer, and DB rows; per-thread `asyncio.Lock` | Move shared state to Redis/Postgres keyed by `thread_id` for multi-worker scale |
@@ -1217,7 +1233,7 @@ Keep these in your back pocket for explanations:
 | Critique + revision  | Judicial cross-examination                      | "Why adversarial interaction?"  |
 | BaseAgent template   | Cookie cutter (same shape, different filling)   | "How do you add agents?"        |
 | LangGraph            | GPS navigation (recalculates on conditions)     | "Why a state machine?"          |
-| Consensus V2         | Meaning-aware agreement (not just word overlap) | "How do you measure agreement?" |
+| Stance vote          | Board members raising hands (not comparing speeches) | "How do you measure agreement?" |
 | RAG                  | Open-book exam vs. closed-book                  | "How do agents use documents?"  |
 | Agent memory         | Professor's notes from prior semesters          | "How do agents learn?"          |
 | SSE streaming        | Sports live ticker (push, not poll)             | "Why SSE over polling?"         |

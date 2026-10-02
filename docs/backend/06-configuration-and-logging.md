@@ -48,6 +48,7 @@ class Settings(BaseSettings):
     CONSENSUS_POSITION_WEIGHT: float = 0.3
     POSITION_OVERLAP_FLOOR: float = 0.08
     POSITION_OVERLAP_CEILING: float = 0.19
+    AGREEMENT_METHOD: Literal["stance", "lexical", "semantic"] = "stance"
     MAX_TOOL_CALLS_PER_ROUND: int = 3
     LLM_MAX_CONCURRENCY: int = 4
 
@@ -119,7 +120,8 @@ class Settings(BaseSettings):
 | `LLM_MAX_CONCURRENCY` | No | `4` | LLM calls in flight per provider (`0` = no cap) |
 | `ENABLED_AGENTS` | No | `Analyst,Risk,Strategy,Ethics,Moderator` | Core agents enabled at runtime |
 | **Consensus gate tuning** ||||
-| `CONSENSUS_POSITION_WEIGHT` | No | `0.3` | Weight of position agreement vs mean confidence |
+| `AGREEMENT_METHOD` | No | `stance` | How Rule 1 measures agreement: `stance` (confidence-weighted stance vote), `lexical` (confidence + word overlap; also the fallback), `semantic` (confidence + embedding cosine; needs `SEMANTIC_CONSENSUS_ENABLED`). A debate can override it with `agreement_method`. Served at `GET /debate-modes` |
+| `CONSENSUS_POSITION_WEIGHT` | No | `0.3` | `lexical` method: weight of position overlap vs mean confidence |
 | `POSITION_OVERLAP_FLOOR` / `POSITION_OVERLAP_CEILING` | No | `0.08` / `0.19` | Raw word overlap mapped to 0 (unrelated positions) … 1 (same stance reworded) |
 | `DRIFT_EARLY_STOP_THRESHOLD` | No | `0.05` | Drift below this = agents stopped moving |
 | `MINORITY_REPORT_BAND` | No | `0.20` | Confidence gap below the mean that marks a dissenter |
@@ -128,9 +130,9 @@ class Settings(BaseSettings):
 | `MAX_DISSENTERS_FOR_CONSENSUS` | No | `1` | Most dissenters allowed at consensus |
 | `MAX_OPEN_DISAGREEMENTS_FOR_CONSENSUS` | No | `2` | Most open high-severity critiques allowed |
 | **Semantic consensus** ||||
-| `SEMANTIC_CONSENSUS_ENABLED` | No | `false` | Embedding-based agreement |
-| `SEMANTIC_MODEL` | No | `all-MiniLM-L6-v2` | sentence-transformer model |
-| `SEMANTIC_CONSENSUS_WEIGHT` | No | `0.5` | Semantic vs confidence weight |
+| `SEMANTIC_CONSENSUS_ENABLED` | No | `false` | Compute, log and emit embedding similarity every round (diagnostic) and allow the `semantic` agreement method. Doesn't change the score unless that method is chosen |
+| `SEMANTIC_MODEL` | No | `all-MiniLM-L6-v2` | sentence-transformer model (reads the first 256 word-pieces of each position) |
+| `SEMANTIC_CONSENSUS_WEIGHT` | No | `0.5` | `semantic` method: cosine vs confidence weight |
 | **Application** ||||
 | `APP_ENV` | No | `development` | `development`, `staging`, `production` (production refuses admin actions without a token) |
 | `LOG_LEVEL` | No | `INFO` | Root log level |

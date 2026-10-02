@@ -43,7 +43,7 @@
 |---|---|---|
 | Interaction | Agents **collaborate** (pass messages, help each other) | Agents **argue** under a formal protocol |
 | Protocol | Loose conversation | propose → cross-examine → revise → measure |
-| Consensus | Implicit / "it stopped" | **Quantified** (confidence + position overlap, behind a six-signal gate) |
+| Consensus | Implicit / "it stopped" | **Quantified** (confidence-weighted stance vote, behind a six-signal gate) |
 | Scope | Mostly a Python orchestration layer | Full product: streaming, persistence, analytics, HITL |
 
 > "The one-liner: AutoGen agents help each other; AgentBoard agents cross-examine each other, and the agreement is a *measured score*, not a feeling."
@@ -110,7 +110,7 @@
 - **Proposals (parallel):** All four agents answer simultaneously, each producing a structured output — position, reasoning, assumptions, and a confidence score in `[0,1]`.
 - **Critiques (cross-examination):** Each agent reads the other three proposals and writes critiques, rated low/medium/high/critical. That's up to 12 critiques. E.g., Risk → Strategy: "Your phased pivot assumes you keep B2C revenue during transition, but your own data shows 30% churn — critical."
 - **Revisions (under pressure):** Each agent revises against the critiques aimed at it. Confidence scores move — up when validated, down when conceding.
-- **Convergence check:** The consensus engine scores the round (confidence blended with position overlap) and a deterministic six-signal gate decides continue or stop. The Moderator only writes an advisory summary. Round 1 is typically ~0.5, and in Standard mode `min_rounds` is 2 anyway, so it loops.
+- **Convergence check:** The consensus engine scores the round (confidence-weighted vote over each agent's structured stance) and a deterministic six-signal gate decides continue or stop. The Moderator writes an advisory summary and names the leading proposal that agents vote on next round. In Standard mode `min_rounds` is 2, so round 1 always loops.
 - **Finalize:** Once all six gate signals hold (`consensus_reached`) or max rounds are hit (`max_rounds_reached`), the Moderator emits a `FinalDecision`: recommendation, confidence, risks, alternatives, **minority dissent**, and the full trace.
 
 ### C4. "How do you add a new domain — say, healthcare?"
@@ -134,18 +134,20 @@
 
 ### D1. "What was the hardest technical problem you solved?" *(flagship answer)*
 
-> "Measuring when AI agents *actually* agree. It sounds trivial — check if they said the same thing — but it isn't. I iterated through three scoring versions, then stopped trusting any single score:"
+> "Measuring when AI agents *actually* agree. It sounds trivial — check if they said the same thing — but it isn't. I iterated through three text-based scores, wrapped them in a multi-signal gate, and finally stopped comparing text at all:"
 
 - **V1 — Mean confidence.** "Average everyone's confidence. **The bug:** Analyst 0.9 confident we should expand, Risk 0.85 confident we should NOT — mean 0.875, above threshold. The system declared consensus on a flat-out disagreement. **High confidence ≠ agreement.**"
 - **V1.5 — Jaccard word overlap × confidence.** "Better, but Jaccard is bag-of-words. 'We should expand into Europe' and 'We should NOT expand into Europe' have huge word overlap and opposite meaning."
-- **V2 — Semantic similarity + confidence hybrid (opt-in).** "I embedded each position with `all-MiniLM-L6-v2` (384-dim), computed pairwise cosine similarity, and blended: `hybrid = 0.5·mean_confidence + 0.5·semantic_similarity`. That catches positions that are about different things. But embeddings are negation-blind too: 'should expand' and 'should NOT expand' still land close together. So it's feature-flagged via `SEMANTIC_CONSENSUS_ENABLED`, off by default."
-- **The gate.** "What actually ships: the score is `0.7·mean_confidence + 0.3·overlap`, with the word overlap rescaled so 0.08 → 0 and 0.19 → 1. That score is only one of six conditions. The others are a minimum number of rounds, at most one dissenter, at most two high-severity critiques that round, agents settled, and no standing Ethics veto. Confidence alone can't end a debate any more. I'm upfront that this *reduces* false consensus rather than solving it. Stance blindness is a known limitation, and the next step would be an NLI contradiction check."
+- **V2 — Semantic similarity + confidence hybrid (opt-in).** "I embedded each position with `all-MiniLM-L6-v2` (384-dim), computed pairwise cosine similarity, and blended: `hybrid = 0.5·mean_confidence + 0.5·semantic_similarity`. That catches positions that are about different things. But embeddings are negation-blind too: 'should expand' and 'should NOT expand' still land close together. Words and embeddings both measure *topic*, not *verdict*."
+- **The gate.** "The score (`0.7·mean_confidence + 0.3·overlap`, overlap rescaled so 0.08 → 0 and 0.19 → 1) became only one of six conditions. The others are a minimum number of rounds, at most one dissenter, at most two high-severity critiques that round, agents settled, and no standing Ethics veto. But the score itself was still broken: agents debating one question share its vocabulary, so the overlap saturated at 1.0 and a confident 2-vs-2 split scored 0.86, enough for Thorough."
+- **V3 — Stance vote (what ships).** "Each agent now fills a structured `stance` — support, oppose, conditional or abstain — toward a concrete proposal: the question in round 1, the Moderator's one-sentence `leading_proposal` after that. Agreement is the confidence-weighted vote share of the largest stance group. The Analyst abstains, `conditional` is its own group, and a veto forces `oppose`. That 2-vs-2 split now scores ~0.50 and fails every mode. The lexical blend stays as the fallback when fewer than two agents vote, and `SEMANTIC_CONSENSUS_ENABLED` now only reports cosine as a diagnostic instead of silently replacing the score."
+- **The limit.** "I'm upfront that this *reduces* false consensus rather than solving it. The stance is self-reported, so the next step would be an NLI check that each position actually matches its stance, plus calibrating the thresholds on labeled debates."
 
 > "I also track **position drift**. If positions barely move between rounds (drift < 0.05), that's one of three ways agents count as 'settled'. It's not an early stop: every other gate signal must still hold, and a stall below the threshold runs to `max_rounds`. The story shows iterative problem-solving, finding bugs through testing, ML fundamentals, and knowing a method's limits."
 
 ### D2. "Isn't a single agreement number gameable?"
 
-> "Yes — which is why convergence isn't one number, it's a **multi-signal quorum gate**. Six conditions must all hold: sufficient position overlap, a minimum number of rounds, few dissenters, few high-severity critiques raised that round, converged confidence (stopped moving, tight spread or all highly confident), and no standing Ethics veto. The principle is the same instinct as a database quorum: any single vote is gameable — confidence especially, because an LLM's confidence is *not* a probability of being correct — so don't let one signal decide."
+> "Yes — which is why convergence isn't one number, it's a **multi-signal quorum gate**. Six conditions must all hold: a clear stance majority, a minimum number of rounds, few dissenters, few high-severity critiques raised that round, converged confidence (stopped moving, tight spread or all highly confident), and no standing Ethics veto. The principle is the same instinct as a database quorum: any single vote is gameable — confidence especially, because an LLM's confidence is *not* a probability of being correct — so don't let one signal decide."
 
 ### D3. "How do you know the final decision is any *good* (not just agreed)?"
 
@@ -275,7 +277,7 @@
 
 | What breaks | How it copes today | How I'd harden it |
 |---|---|---|
-| **False consensus** (agreement reported for opposed views) | Six-signal hybrid quorum gate — confidence alone can't converge; reduces it, but negation still fools word overlap and embeddings | NLI contradiction check; calibrated agreement model trained on labelled debates |
+| **False consensus** (agreement reported for opposed views) | Stance vote inside a six-signal quorum gate — confidence alone can't converge, a split vote can't pass; stances are self-reported | NLI check of position vs. stance; calibrated agreement model trained on labelled debates |
 | **Never converges** | Hard `max_rounds` ceiling → honest `max_rounds_reached`, decision still produced with low agreement | Adaptive round budget by question difficulty; escalate to HITL |
 | **Stagnation** (positions stop moving, threshold unmet) | No standalone early stop: drift < 0.05 only passes the "converged" signal; a stall below threshold runs to `max_rounds` | Early-stop a true stall; distinguish it from oscillation |
 | **Concurrent debates interfere** | Unique `thread_id` scopes graph state, event buffer, and DB rows; per-thread `asyncio.Lock` | Move shared state to Redis/Postgres keyed by `thread_id` for multi-worker scale |

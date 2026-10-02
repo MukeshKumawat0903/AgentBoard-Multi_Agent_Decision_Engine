@@ -74,23 +74,45 @@ class SemanticConsensusEngine(ConsensusEngine):
 
 | Setting | Default | Description |
 |---|---|---|
-| `SEMANTIC_CONSENSUS_ENABLED` | `false` | Enable semantic scoring |
+| `SEMANTIC_CONSENSUS_ENABLED` | `false` | Compute and emit the cosine score every round (diagnostic) and allow the `semantic` agreement method |
 | `SEMANTIC_MODEL` | `all-MiniLM-L6-v2` | sentence-transformer model |
-| `SEMANTIC_CONSENSUS_WEIGHT` | `0.5` | Semantic vs confidence weight |
+| `SEMANTIC_CONSENSUS_WEIGHT` | `0.5` | `semantic` method only: cosine vs confidence weight |
 
-The model is lazy-loaded and shares the knowledge base's embedder (`get_shared_embedder`), so the weights load once.
+The model is lazy-loaded and shares the knowledge base's embedder (`get_shared_embedder`), so the weights load once. `compute_semantic_similarity` is synchronous and CPU-bound, so `convergence_node` calls it through `asyncio.to_thread`. MiniLM truncates each position at 256 word-pieces.
 
-### Measured agreement score (the blend)
+`semantic_available(settings=None) → bool` is true only when `SEMANTIC_CONSENSUS_ENABLED` is set **and** sentence-transformers/numpy import (`semantic_libraries_installed()`). `GET /debate-modes` returns it so the UI can grey out the Semantic option, and request validation rejects `agreement_method="semantic"` (422) when it is false.
 
-`convergence_node` computes the score shown in the UI and used by the gate:
+### Stance-based agreement (default)
+
+```python
+def compute_stance_agreement(responses) -> float | None
+def stance_tally(responses) -> dict[str, int]          # e.g. {"support": 2, "oppose": 1, "abstain": 1}
+def resolve_agreement_method(*candidates) -> AgreementMethod   # first known method, else "stance"
+```
+
+Each `AgentResponse` carries `stance ∈ {support, oppose, conditional, abstain}` (optional on stored responses, required in the LLM output schema). `compute_stance_agreement` ignores abstainers and missing stances, returns `None` with fewer than two voters, and otherwise returns the confidence-weighted vote share of the largest group:
+
+$$
+\text{agreement} = \frac{\max_s \sum_{a:\,\text{stance}_a = s} \text{conf}_a}{\sum_{a \in \text{voters}} \text{conf}_a}
+$$
+
+`conditional` is its own group. In `BaseAgent._to_response`, a `veto=true` output with stance `support` or `conditional` is coerced to `oppose` (`stance_coerced_by_veto` is logged).
+
+### Choosing the agreement score
+
+`convergence_node` computes every candidate and picks one with `resolve_agreement_method(ds.agreement_method, AGREEMENT_METHOD)`:
 
 ```
 position_agreement = normalize_position_overlap(confidence_weighted_overlap, 0.08, 0.19)
-agreement_score    = (1 − w)·mean_confidence + w·position_agreement
-                     where w = CONSENSUS_POSITION_WEIGHT (default 0.3)
+lexical            = (1 − w)·mean_confidence + w·position_agreement     # w = CONSENSUS_POSITION_WEIGHT (0.3)
+stance             = compute_stance_agreement(outputs)                  # None if < 2 voters
+semantic           = (1 − sw)·mean_confidence + sw·cosine              # sw = SEMANTIC_CONSENSUS_WEIGHT; needs the engine
+
+agreement_score = {"stance": stance, "lexical": lexical, "semantic": semantic}[method]
+if agreement_score is None: agreement_score = lexical; method_used = "lexical"
 ```
 
-With one agent, `agreement_score = mean_confidence`. With `SEMANTIC_CONSENSUS_ENABLED`, the semantic score replaces the blend. The `synthesis` SSE event carries the result plus its components (`confidence_agreement_score`, `position_agreement_score`, `semantic_agreement_score`). The moderator's self-reported agreement is only logged.
+With one agent, the lexical score is `mean_confidence`. `SemanticConsensusEngine.compute_agreement_score` still exists but the node no longer calls it; with the flag on and another method chosen, the cosine score is only reported. The `synthesis` SSE event carries the chosen score, `agreement_method_used`, and every component (`confidence_agreement_score`, `position_agreement_score`, `semantic_agreement_score`, `stance_agreement_score`, `stance_tally`). The moderator's self-reported agreement is only logged.
 
 ---
 
@@ -114,7 +136,7 @@ With one agent, `agreement_score = mean_confidence`. With `SEMANTIC_CONSENSUS_EN
 ```python
 @dataclass(frozen=True)
 class ConsensusSignals:
-    position_agreement: float     # measured agreement score [0,1]
+    position_agreement: float     # Rule 1 agreement score [0,1] (stance / lexical / semantic)
     rounds_completed: int         # ds.current_round
     dissenting_agents: int
     open_disagreements: int

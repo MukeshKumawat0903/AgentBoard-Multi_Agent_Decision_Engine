@@ -254,8 +254,14 @@ synthesis = await moderator.synthesize(ds)
 ```python
 confidence_agreement = mean(o.confidence_score for o in agent_outputs)          # V1, shown separately
 position_agreement = normalize(confidence_weighted_jaccard(agent_outputs))   # 0.08 → 0, 0.19 → 1
-agreement_score = 0.7 * confidence_agreement + 0.3 * position_agreement
-# With SEMANTIC_CONSENSUS_ENABLED: agreement_score = 0.5 * confidence_agreement + 0.5 * mean_cosine
+lexical_agreement = 0.7 * confidence_agreement + 0.3 * position_agreement
+stance_agreement = compute_stance_agreement(agent_outputs)   # confidence-weighted largest stance group; None if < 2 voters
+semantic_agreement = mean_cosine(...)                         # only with SEMANTIC_CONSENSUS_ENABLED; diagnostic
+
+method = ds.agreement_method or settings.AGREEMENT_METHOD    # "stance" by default
+agreement_score = stance_agreement            # if method == "stance"
+              # 0.5 * confidence_agreement + 0.5 * semantic_agreement   if method == "semantic"
+              # lexical_agreement            if method == "lexical", or as the fallback when the chosen score is None
 ```
 
 **Step 3 — Convergence Decision (Hybrid 6-signal gate):**

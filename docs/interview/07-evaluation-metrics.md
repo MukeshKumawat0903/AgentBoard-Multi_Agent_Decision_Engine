@@ -13,7 +13,7 @@ agreement_score = mean(agent.confidence_score for agent in agents)
 
 **When it's useful:** When you trust that agents self-calibrate — that high confidence reflects genuine conviction rather than LLM overconfidence.
 
-**Interview insight:** "Agreement score V1 is a proxy, not a measurement. It confuses individual confidence with group consensus. We added position overlap + a multi-signal gate to fix this."
+**Interview insight:** "Agreement score V1 is a proxy, not a measurement. It confuses individual confidence with group consensus. We tried position overlap, then embeddings, and ended up asking each agent for a structured stance, inside a multi-signal gate."
 
 > **V1 is no longer the displayed score or the gate.** See "The displayed score" and "The hybrid gate" below.
 
@@ -39,7 +39,9 @@ semantic_score = mean(
 hybrid_score = ((1 - semantic_weight) * confidence_mean) + (semantic_weight * semantic_score)
 ```
 
-**What it tells you:** How similar the *meaning* of agent positions is (paraphrases score high), combined with confidence. Opt-in via `SEMANTIC_CONSENSUS_ENABLED`; off by default.
+**What it tells you:** How similar the *meaning* of agent positions is (paraphrases score high), combined with confidence.
+
+**Status:** `SEMANTIC_CONSENSUS_ENABLED` (off by default) makes the cosine score a **diagnostic**: it is computed off the event loop, logged and emitted every round as `semantic_agreement_score`, but it does not change the agreement score. The hybrid below only drives the gate when a debate picks `agreement_method="semantic"`, which the API accepts only when `semantic_available()` (flag on and sentence-transformers installed); otherwise it returns 422.
 
 **Components:**
 - `confidence_mean`: Same as V1.
@@ -56,22 +58,55 @@ hybrid_score = ((1 - semantic_weight) * confidence_mean) + (semantic_weight * se
 
 The "Low semantic score" rows assume the positions are worded differently. Direct contradictions usually aren't, as the edge case below shows.
 
-**Edge case:** Embedding models can report high similarity for semantically different but lexically similar sentences. "We should definitely enter the Asian market" vs "We should definitely NOT enter the Asian market" may have high cosine similarity because most words are identical. Negation detection is a known weakness of sentence embeddings.
+**Edge case:** Embedding models can report high similarity for semantically different but lexically similar sentences. "We should definitely enter the Asian market" vs "We should definitely NOT enter the Asian market" may have high cosine similarity because most words are identical. Negation detection is a known weakness of sentence embeddings. More broadly, embeddings encode *topic*, not *verdict*, and MiniLM only reads the first 256 word-pieces of a position.
+
+### Agreement Score (V3: Stance Vote, the default)
+```python
+# Each agent's output carries stance ∈ {support, oppose, conditional, abstain}
+voters = [r for r in responses if r.stance and r.stance != "abstain"]
+if len(voters) < 2: return None                  # caller falls back to lexical
+weight[stance] += r.confidence_score             # per voter
+agreement = max(weight.values()) / sum(weight.values())
+```
+
+**What it tells you:** The confidence-weighted share of the largest verdict group. It measures *what agents decided*, not how they worded it, so negation and role-specific vocabulary no longer matter.
+
+**Anchor:** round 1 stances are toward the decision the question asks for; round 2+ stances are toward the Moderator's one-sentence `leading_proposal` from the previous round.
+
+**Interpretation** (default panel: Analyst abstains, so Risk, Strategy and Ethics vote):
+| Vote (similar confidence) | Score | Quick 0.60 | Standard 0.75 | Thorough 0.85 |
+|---|---|---|---|---|
+| 3 of 3 | 1.00 | ✅ | ✅ | ✅ |
+| 2 of 3, dissenter unsure (0.85, 0.85 vs 0.40) | 0.81 | ✅ | ✅ | ❌ |
+| 2 of 3, dissenter confident | ~0.67 | ✅ | ❌ | ❌ |
+| 2 vs 2 (4 voters) | ~0.50 | ❌ | ❌ | ❌ |
+
+`conditional` is its own group ("yes, if X" ≠ "yes"), and an Ethics-class veto forces the stance to `oppose`.
+
+**Weakness:** the label is self-reported, and a vague `leading_proposal` makes the vote vague too. The thresholds were kept from the lexical era and have not been re-calibrated against real debates.
 
 ### The Displayed Score (what `convergence_node` actually shows)
 
-Even with semantics off, the live `agreement_score` is a **blend**, not pure V1:
+The live `agreement_score` comes from the debate's agreement method: `agreement_method` in the start request, else `AGREEMENT_METHOD` (default `stance`).
+
+| Method | UI label | Formula |
+|---|---|---|
+| `stance` | Vote | V3 above |
+| `lexical` | Text | `(1 − w)·confidence_mean + w·normalize(confidence_weighted_overlap)`, w = `CONSENSUS_POSITION_WEIGHT` (0.3) |
+| `semantic` | Semantic | `(1 − w)·confidence_mean + w·semantic_score`, w = `SEMANTIC_CONSENSUS_WEIGHT` (0.5), no rescaling |
+
 ```
-agreement = (1 − w)·confidence_mean + w·normalize(confidence_weighted_overlap),   w = CONSENSUS_POSITION_WEIGHT (0.3)
 normalize(x) = clip((x − 0.08) / (0.19 − 0.08), 0, 1)     # POSITION_OVERLAP_FLOOR / _CEILING
 ```
-The rescaling matters: agents writing in different roles share few words even when they agree (raw overlap ~0.08 for unrelated positions, ~0.19 for the same stance reworded), so without it the blend could never reach the mode thresholds.
+The rescaling matters for the lexical blend: agents writing in different roles share few words even when they agree (raw overlap ~0.08 for unrelated positions, ~0.19 for the same stance reworded), so without it the blend could never reach the mode thresholds. It also saturates: same-topic debates hit 1.0, so the lexical score collapses to `0.7 × confidence + 0.3`, which is why a 2-vs-2 split (conf 0.80) scored 0.86 and passed Thorough.
 
-When `SEMANTIC_CONSENSUS_ENABLED`, this whole blend is replaced by the V2 hybrid: `0.5·confidence_mean + 0.5·semantic_score` (`SEMANTIC_CONSENSUS_WEIGHT`), with no rescaling. That's a different weight, not just a different overlap term.
+**Fallback:** if the chosen method can't produce a score (fewer than two voters, stances missing in an old debate, semantic engine failed) the lexical blend is used and the round records `agreement_method_used = "lexical"`.
+
+**Every score is reported.** The `synthesis` event carries `agreement_score` plus `agreement_method_used`, `confidence_agreement_score`, `position_agreement_score`, `semantic_agreement_score`, `stance_agreement_score` and `stance_tally` (e.g. `{"support": 2, "oppose": 1, "abstain": 1}`). The UI shows "78% agreement · 2/3 vote" when the method is stance. `FinalDecision` records `agreement_method` and the final-round `stance_tally`.
 
 ### The Hybrid Gate (what decides termination)
 
-The score is only one of six signals. A debate converges only when **all** hold (`is_consensus_reached`): position agreement ≥ threshold, `rounds_completed ≥ min_rounds`, `dissenting_agents ≤ 1`, `open_disagreements ≤ 2`, `confidence_converged`, and no standing Ethics veto. This is why "all agents confident after round 1" alone never ends a debate.
+The score is only one of six signals. A debate converges only when **all** hold (`is_consensus_reached`): agreement score ≥ threshold, `rounds_completed ≥ min_rounds`, `dissenting_agents ≤ 1`, `open_disagreements ≤ 2`, `confidence_converged`, and no standing Ethics veto. This is why "all agents confident after round 1" alone never ends a debate.
 
 ### Confidence Drift
 ```

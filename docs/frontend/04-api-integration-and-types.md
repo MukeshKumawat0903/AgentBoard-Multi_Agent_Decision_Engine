@@ -206,6 +206,7 @@ interface AgentResponse {
   confidence_score: number;      // 0–1
   veto?: boolean;                // Ethics-class agents: vetoes the proposal
   veto_reason?: string | null;
+  stance?: Stance | null;       // null/absent for debates stored before stance existed
   timestamp: string;
 }
 
@@ -324,7 +325,11 @@ interface DebateStartRequest {
   enable_agent_memory?: boolean;
   domain_pack?: string | null;
   supervised?: boolean;         // HITL (async only)
+  agreement_method?: AgreementMethod;  // omitted → server AGREEMENT_METHOD
 }
+
+type AgreementMethod = "stance" | "lexical" | "semantic";   // UI labels: Vote / Text / Semantic
+type Stance = "support" | "oppose" | "conditional" | "abstain";
 
 interface ApprovalAcceptedResponse {
   thread_id: string;
@@ -335,6 +340,8 @@ interface ApprovalAcceptedResponse {
 interface DebateModesResponse {
   default_mode: "quick" | "standard" | "thorough";
   presets: Record<string, { max_rounds: number; consensus_threshold: number; skip_critique_phase: boolean; min_rounds: number }>;
+  default_agreement_method?: AgreementMethod;  // pre-selected in the Agreement selector
+  semantic_available?: boolean;                // false → the Semantic option is greyed out
 }
 
 interface AsyncDebateStartResponse {
@@ -532,9 +539,9 @@ interface AnalyticsQuality {
 interface DebateStartedEvent    { type: "debate_started"; thread_id: string; user_query: string; max_rounds: number; agents?: string[]; }
 interface RoundStartedEvent     { type: "round_started"; round_number: number; max_rounds: number; }
 interface PhaseStartedEvent     { type: "phase_started"; round_number: number; phase: DebatePhase; }
-interface AgentOutputEvent      { type: "agent_output"; round_number: number; phase: DebatePhase; agent_name: string; position: string; reasoning: string; confidence_score: number; assumptions: string[]; veto?: boolean; veto_reason?: string | null; }
+interface AgentOutputEvent      { type: "agent_output"; round_number: number; phase: DebatePhase; agent_name: string; position: string; reasoning: string; confidence_score: number; assumptions: string[]; veto?: boolean; veto_reason?: string | null; stance?: Stance | null; }
 interface CritiqueCompletedEvent { type: "critique_completed"; round_number: number; critic_agent: string; target_agent: string; severity: "low"|"medium"|"high"|"critical"; critique_points: string[]; confidence_score: number; }
-interface SynthesisEvent        { type: "synthesis"; round_number: number; agreement_score: number; summary: string; agreement_areas: string[]; disagreement_areas: string[]; }
+interface SynthesisEvent        { type: "synthesis"; round_number: number; agreement_score: number; summary: string; agreement_areas: string[]; disagreement_areas: string[]; confidence_agreement_score?: number; position_agreement_score?: number; semantic_agreement_score?: number | null; stance_agreement_score?: number | null; stance_tally?: Record<string, number>; agreement_method_used?: AgreementMethod; leading_proposal?: string | null; }
 interface DebateCompletedEvent  { type: "debate_completed"; thread_id: string; termination_reason: string; total_rounds: number; agreement_score: number; }
 interface FinalDecisionEvent    extends FinalDecision { type: "final_decision"; }
 interface ApprovalRequiredEvent { type: "approval_required"; round_number: number; agreement_score: number; termination_reason: string; synthesis_summary: string; options: string[]; }

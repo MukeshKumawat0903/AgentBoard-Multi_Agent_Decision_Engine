@@ -85,7 +85,7 @@ result = await llm.with_structured_output(AgentLLMOutput).ainvoke(messages)
 
 **Where it's used:**
 1. **RAG embeddings** — Documents are chunked and embedded for ChromaDB storage/retrieval
-2. **Semantic consensus** (V2, opt-in via `SEMANTIC_CONSENSUS_ENABLED`) — Agent positions are embedded, and pairwise cosine similarity measures "meaning overlap"
+2. **Semantic similarity** (V2, opt-in via `SEMANTIC_CONSENSUS_ENABLED`) — Agent positions are embedded, and pairwise cosine similarity measures "meaning overlap". It is a **diagnostic** reported every round; it only drives the gate when a debate explicitly picks the `semantic` agreement method (§3)
 
 ### Why all-MiniLM-L6-v2 Over Alternatives
 
@@ -106,7 +106,9 @@ result = await llm.with_structured_output(AgentLLMOutput).ainvoke(messages)
 
 - **Domain-specific jargon** — Financial regulation terms or medical terminology may not embed well because the model was trained on general web text.
 - **Short positions** — If an agent's position is <10 words, the embedding is noisy. The consensus engine requires ≥2 responses to compute similarity.
-- **Paraphrases with negation** — "We should expand" and "We should NOT expand" may have high cosine similarity because the sentence structures are identical. This is a known limitation of symmetric embeddings.
+- **Paraphrases with negation** — "We should expand" and "We should NOT expand" may have high cosine similarity because the sentence structures are identical. This is a known limitation of symmetric embeddings, and the main reason embeddings are not the agreement metric (see V3 in §3).
+- **Long positions** — MiniLM truncates input at 256 word-pieces, so only the opening of a long position is embedded.
+- **Topic, not verdict** — embeddings encode what a text is *about*. Two agents debating the same decision score high cosine whether they back it or reject it.
 
 ---
 
@@ -151,7 +153,48 @@ hybrid = (1 - w) * base_score + w * semantic_score           # Blended
 - w = 0.5 → balanced
 - w = 1 → pure semantic (slower, more accurate for meaning, ignores confidence)
 
-> **What actually ships as the live score:** even with semantics off, `convergence_node` no longer shows pure mean confidence. It blends mean confidence with the V1.5 confidence-weighted overlap — first **rescaled** onto 0–1 with `POSITION_OVERLAP_FLOOR` 0.08 (unrelated positions → 0) and `POSITION_OVERLAP_CEILING` 0.19 (same stance reworded → 1), because agents writing in different roles share few words even when they agree — using `CONSENSUS_POSITION_WEIGHT` (0.3). When semantics are on, the V2 hybrid above (0.5 × mean confidence + 0.5 × mean cosine, no rescaling) replaces that whole blend, so the overlap weight changes from 0.3 to 0.5 as well. Whichever score is produced is then fed — alongside dissent, open-disagreement, and drift signals — into the hybrid gate in §4.
+**Weakness:** the same blind spot as word overlap, one level up. Embeddings encode *topic*, not *verdict*: "expand into SE Asia" and "do not expand into SE Asia" score close. It also blocks: `model.encode()` is CPU-bound, so it now runs in a worker thread (`asyncio.to_thread`) to keep the SSE stream flowing.
+
+**Status today:** with `SEMANTIC_CONSENSUS_ENABLED=true` the cosine score is computed, logged and emitted every round as `semantic_agreement_score`, but it **does not change the agreement score** unless the debate picks `agreement_method="semantic"`. That method is only offered when `semantic_available()` is true (flag on *and* sentence-transformers installed); asking for it otherwise returns 422.
+
+### V3: Stance Vote (default)
+
+The root problem with V1.5 and V2: text similarity, words or embeddings, measures **topic**. Role-bound agents word their agreement differently (low overlap when they agree) and share the same vocabulary when they disagree (high overlap on "should" vs "should not"). So each agent now declares its **verdict** as a structured field, the same pattern as the Ethics `veto`:
+
+```
+stance ∈ {support, oppose, conditional, abstain}      # required in the LLM output schema
+
+voters = agents whose stance is not abstain (and not missing)
+if len(voters) < 2: return None                       # caller falls back to lexical
+weight[stance] = sum(confidence of voters with that stance)
+agreement = max(weight) / sum(weight)                 # confidence-weighted share of the largest group
+```
+
+- **What the stance is about:** round 1 → the decision the question asks for ("Should we expand?" → support = yes). Round 2+ → the Moderator's one-sentence `leading_proposal` from the previous round, injected into the proposal and revision prompts as "Proposal on the table: …".
+- **`conditional` is its own group.** "Yes, if X" is not counted as a plain yes.
+- **Analyst abstains** (it makes no recommendations), so the default panel has three voters: Risk, Strategy, Ethics.
+- **Veto consistency:** an Ethics-class agent that vetoes cannot also support; `support`/`conditional` with `veto=true` is coerced to `oppose`.
+
+| Vote (similar confidence) | Score | Quick 0.60 | Standard 0.75 | Thorough 0.85 |
+|---|---|---|---|---|
+| 3 of 3 | 1.00 | ✅ | ✅ | ✅ |
+| 2 of 3, dissenter unsure (0.85, 0.85 vs 0.40) | 0.81 | ✅ | ✅ | ❌ |
+| 2 of 3, dissenter confident | ~0.67 | ✅ | ❌ | ❌ |
+| 2 vs 2 (4 voters) | ~0.50 | ❌ | ❌ | ❌ |
+
+Under the old lexical blend the 2-vs-2 split scored 0.86 (conf 0.80, overlap saturated at 1.0) and passed Thorough. Under stance it scores ~0.52 and never passes.
+
+**Weakness:** it trusts the agent's self-reported label, and the anchor depends on the Moderator naming a sensible leading proposal. Thresholds were kept at 0.60 / 0.75 / 0.85; calibrating them against real debates is still open.
+
+> **What actually ships as the live score:** `AGREEMENT_METHOD` (default `stance`, overridable per debate with `agreement_method` in the start request) picks which score drives Rule 1:
+>
+> | Method | Formula | Role |
+> |---|---|---|
+> | `stance` | V3 vote share | Default |
+> | `lexical` | `0.7 × mean confidence + 0.3 × rescaled overlap` | Legacy, and the automatic fallback |
+> | `semantic` | `0.5 × mean confidence + 0.5 × cosine` | Experimental, needs `semantic_available()` |
+>
+> The lexical overlap is the V1.5 score **rescaled** onto 0–1 with `POSITION_OVERLAP_FLOOR` 0.08 (unrelated positions → 0) and `POSITION_OVERLAP_CEILING` 0.19 (same stance reworded → 1), because agents writing in different roles share few words even when they agree. If the chosen method cannot produce a score (fewer than two voters, stances missing, semantic engine failed), the lexical blend takes over and the round records `agreement_method_used = "lexical"`. Every available score (confidence, overlap, semantic, stance) is still emitted on the `synthesis` event; only the chosen one feeds the hybrid gate in §4.
 
 ### Position Drift Detection
 
@@ -171,15 +214,15 @@ overall_drift = mean(drift_i for all matched agents)
 The naïve "stop when mean confidence ≥ threshold" gate was replaced by a **hybrid gate that requires six signals to all hold** (`is_consensus_reached` in `consensus.py`). The single-threshold version let a debate end after one round on confidence alone — the hybrid gate fixes that.
 
 ```python
-# agreement_score shown to the user blends confidence with position overlap:
-#   agreement = (1 - w)*mean_confidence + w*normalize(confidence_weighted_overlap),  w = 0.3
-#   normalize(x) = clip((x - 0.08) / (0.19 - 0.08), 0, 1)
-# With SEMANTIC_CONSENSUS_ENABLED the whole blend is replaced by
-#   agreement = 0.5*mean_confidence + 0.5*mean_pairwise_cosine   (no rescaling)
+# agreement_score comes from the debate's agreement method (default "stance"):
+#   stance   : confidence-weighted vote share of the largest stance group
+#   lexical  : 0.7*mean_confidence + 0.3*clip((overlap - 0.08) / (0.19 - 0.08), 0, 1)
+#   semantic : 0.5*mean_confidence + 0.5*mean_pairwise_cosine
+# Falls back to lexical when the chosen method can't produce a score.
 
 consensus = (
     active_vetoes == 0                                   # no Ethics-class veto stands
-    and position_agreement >= consensus_threshold        # e.g. 0.75 (Standard)
+    and agreement_score >= consensus_threshold           # e.g. 0.75 (Standard)
     and rounds_completed >= min_rounds                   # floor: 1 round can't end it
     and dissenting_agents <= MAX_DISSENTERS (1)           # few agents below the mean
     and open_disagreements <= MAX_OPEN_DISAGREEMENTS (2)  # few high/critical critiques this round
@@ -192,7 +235,7 @@ else:                               continue
 ```
 
 **The six signals:**
-1. **Position agreement** — the blended/semantic agreement score clears the threshold (real overlap, not just confidence)
+1. **Agreement** — the agreement score clears the threshold. By default that is the stance vote, so it measures verdicts, not confidence or shared wording
 2. **Minimum rounds** — at least `min_rounds` completed (1/2/3 for quick/standard/thorough), so a single round can never end a multi-round debate
 3. **Dissent** — at most one agent sits more than `MINORITY_REPORT_BAND` (0.20) below the group-mean confidence
 4. **Open disagreements** — at most two high/critical critiques raised in this round's critique phase (counted per critic→target critique, however many bullet points it has). They are counted before revisions, and nothing checks whether a revision answered them. In Quick mode critiques are skipped, so this is always 0.
@@ -201,7 +244,7 @@ else:                               continue
 
 The Moderator's own `should_continue` opinion is **not** a signal — it's logged for comparison only.
 
-**Why this matters in an interview:** it shows you understood that *confidence ≠ agreement*. Two agents can be 90% confident in opposite conclusions. Requiring position overlap, few dissenters and few high-severity critiques makes that much harder to pass as consensus, and the min-rounds floor stops premature termination. Be precise about the limit: overlap (word or embedding) is negation-blind, so "should" vs "should not" can still score as agreement. The gate reduces false consensus; it doesn't eliminate it. A human-approved `override` in supervised mode also ends the debate (`termination_reason = "human_override"`). The same `select_dissenting_agents` / `count_open_disagreements` helpers feed both the gate and the final minority report, so they can never disagree.
+**Why this matters in an interview:** it shows you understood that *confidence ≠ agreement*. Two agents can be 90% confident in opposite conclusions. Requiring a majority stance, few dissenters and few high-severity critiques makes that much harder to pass as consensus, and the min-rounds floor stops premature termination. The story to tell is V1 → V2 → stance: confidence alone was fooled by confident opposites, word overlap and then embeddings were both negation-blind (they measure topic), so the gate now counts structured verdicts. Be precise about the limit: the stance is self-reported, and Rules 3–4 (dissent, open disagreements) still use confidence and critique severity. The gate reduces false consensus; it doesn't eliminate it. A human-approved `override` in supervised mode also ends the debate (`termination_reason = "human_override"`). The same `select_dissenting_agents` / `count_open_disagreements` helpers feed both the gate and the final minority report, so they can never disagree.
 
 ---
 

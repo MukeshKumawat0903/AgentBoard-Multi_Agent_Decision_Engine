@@ -109,6 +109,7 @@ Start a new multi-agent debate. The call **blocks** until the final decision is 
 | `domain_pack` | `string` or `null` | No | `"finance"` / `"engineering"` / `"legal"` / `"healthcare"` | Use a domain pack's agents (replaces `agents`) |
 | `supervised` | `bool` | No (`false`) | — | Pause for human approval (async only) |
 | `template_id` | `string` or `null` | No | id from `GET /templates` | Template the query started from (analytics only; unknown ids are dropped) |
+| `agreement_method` | `string` or `null` | No | `"stance"` / `"lexical"` / `"semantic"` | How the gate measures agreement. Omitted → `AGREEMENT_METHOD` (`stance`). `semantic` is rejected with 422 unless the server reports `semantic_available` |
 
 Mode presets (see also `GET /debate-modes`):
 
@@ -164,7 +165,7 @@ Returns a [`FinalDecision`](#finaldecision-schema):
 | Status | Error Code | Cause |
 |---|---|---|
 | `400` | `supervised_requires_async` | `supervised: true` sent to the blocking endpoint |
-| `422` | Validation error | Query length, ranges, fewer than 2 debating agents |
+| `422` | Validation error | Query length, ranges, fewer than 2 debating agents, `agreement_method="semantic"` when semantic is unavailable |
 | `422` | `unknown_domain_pack` / `unknown_agents` | Unknown pack id or agent name |
 | `429` | `llm_rate_limit` or rate limit | Provider 429 or app rate limit |
 | `502` | `llm_response_error` | LLM returned unusable output |
@@ -211,9 +212,9 @@ Every event carries an SSE `id`. On reconnect, send the last id in the `Last-Eve
 | `debate_started` | graph start | `{ thread_id, user_query, max_rounds, agents }` |
 | `round_started` | proposals node | `{ round_number, max_rounds }` |
 | `phase_started` | each node | `{ round_number, phase }` — `proposal`, `critique`, `revision`, `convergence` |
-| `agent_output` | proposals & revisions | `{ round_number, phase, agent_name, position, reasoning, confidence_score, assumptions, veto, veto_reason }` |
+| `agent_output` | proposals & revisions | `{ round_number, phase, agent_name, position, reasoning, confidence_score, assumptions, veto, veto_reason, stance }` — `stance` is `support` / `oppose` / `conditional` / `abstain` |
 | `critique_completed` | critiques node | `{ round_number, critic_agent, target_agent, severity, critique_points, confidence_score }` |
-| `synthesis` | convergence node | `{ round_number, agreement_score, confidence_agreement_score, position_agreement_score, semantic_agreement_score, summary, agreement_areas, disagreement_areas }` |
+| `synthesis` | convergence node | `{ round_number, agreement_score, agreement_method_used, confidence_agreement_score, position_agreement_score, semantic_agreement_score, stance_agreement_score, stance_tally, leading_proposal, summary, agreement_areas, disagreement_areas }` — `agreement_score` is the score from `agreement_method_used`; the others are reported for comparison |
 | `tool_called` | agent tool use | `{ agent_name, tool_name, input, output_snippet }` |
 | `agent_timeout` | timeout handler | `{ round_number, phase, agent_name }` |
 | `approval_required` | hitl node (supervised) | `{ round_number, agreement_score, termination_reason, synthesis_summary, options }` — options are the allowed actions (`add_round` only below the round limit) |
@@ -376,6 +377,7 @@ Run N independent debates on the same query and measure how stable the decision 
 | `domain_pack` | `string` or `null` | `null` | — | Replaces `agents` |
 | `use_knowledge_base` | `bool` | `false` | — | KB context in each run |
 | `enable_agent_memory` | `bool` | `false` | — | Past-debate lessons in each run |
+| `agreement_method` | `string` or `null` | `null` | `"stance"` / `"lexical"` / `"semantic"` | Agreement method for every run; omitted → `AGREEMENT_METHOD`. `semantic` → 422 when unavailable |
 
 ### Response — `200 OK` — `SimulationResult`
 
@@ -431,11 +433,13 @@ Cancels a running job (also sent by the UI when you leave the page). Returns the
 
 ## GET /debate-modes
 
-The mode presets and the configured default (`DEFAULT_DEBATE_MODE`, Quick when not set). The home and Simulate pages pre-select `default_mode`.
+The mode presets and the configured default (`DEFAULT_DEBATE_MODE`, Quick when not set). The home and Simulate pages pre-select `default_mode`. `default_agreement_method` is `AGREEMENT_METHOD`, and `semantic_available` is true only when `SEMANTIC_CONSENSUS_ENABLED` is set and sentence-transformers is installed; the home page pre-selects the default method and greys out Semantic when it's unavailable.
 
 ```json
 {
   "default_mode": "quick",
+  "default_agreement_method": "stance",
+  "semantic_available": false,
   "presets": {
     "quick":    { "max_rounds": 2, "consensus_threshold": 0.6,  "skip_critique_phase": true,  "min_rounds": 1 },
     "standard": { "max_rounds": 2, "consensus_threshold": 0.75, "skip_critique_phase": false, "min_rounds": 2 },
@@ -778,7 +782,9 @@ Template scores only include debates started from a built-in template (`template
 | `estimated_cost_usd` | `float \| null` | Best-effort cost (null if the price is unknown) |
 | `human_feedback` | `string \| null` | Reviewer direction from a HITL override, which the decision followed |
 | `vetoes` | `VetoEntry[]` | Ethics vetoes still standing at the end: `{ agent_name, reason, round_number }` |
-| `debate_trace` | `DebateRound[]` | Full round history |
+| `agreement_method` | `string \| null` | Method behind the final agreement score: `stance`, `lexical` or `semantic` (null for older decisions) |
+| `stance_tally` | `dict[str, int] \| null` | Final-round agents per stance, e.g. `{"support": 2, "oppose": 1, "abstain": 1}` |
+| `debate_trace` | `DebateRound[]` | Full round history; each round also carries `leading_proposal` and `agreement_method_used` |
 | `total_rounds` | `integer` | Rounds run |
 | `termination_reason` | `string` | `consensus_reached`, `human_override` or `max_rounds_reached` |
 | `created_at` | `datetime` | UTC timestamp |
@@ -789,12 +795,13 @@ Template scores only include debates started from a built-in template (`template
 |---|---|---|
 | `agent_name` | `string` | `"Analyst"`, `"Risk"`, … |
 | `round_number` | `integer` | ≥ 1 |
-| `position` | `string` | The agent's stance |
+| `position` | `string` | The agent's position, in prose |
 | `reasoning` | `string` | Supporting reasoning |
 | `assumptions` | `string[]` | Explicit assumptions |
 | `confidence_score` | `float [0,1]` | Self-assessed confidence |
 | `veto` | `bool` | Ethics-class agents only: the position vetoes the proposal (blocks consensus) |
 | `veto_reason` | `string \| null` | Why, and what would lift it |
+| `stance` | `string \| null` | Verdict on the proposal on the table: `support`, `oppose`, `conditional` or `abstain`. A veto forces `oppose`. Null for debates stored before the field existed |
 | `timestamp` | `datetime` | UTC |
 
 ### CritiqueResponse Schema
