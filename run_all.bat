@@ -5,21 +5,10 @@ echo --- Starting Multi-Agent Decision Engine ---
 
 REM 1. Start Backend (FastAPI)
 echo Starting Backend (FastAPI)...
-REM Load env vars from backend\.env (ignore blank lines and comments starting with #)
+REM The backend reads backend\.env itself (it starts in that folder), so the
+REM values are not exported here: cmd would keep quotes and break JSON values.
 set "ROOT=%~dp0"
 set "BACKEND_DIR=%ROOT%backend"
-setlocal enabledelayedexpansion
-if exist "%BACKEND_DIR%\.env" (
-	for /f "usebackq tokens=1* delims==" %%A in ("%BACKEND_DIR%\.env") do (
-		set "key=%%A"
-		set "value=%%B"
-		if defined key (
-			if not "!key:~0,1!"=="#" (
-				set "!key!=!value!"
-			)
-		)
-	)
-)
 
 REM Start backend using the ROOT venv Python (has all pip-installed deps incl. langgraph)
 REM backend\venv is a separate, incomplete venv – always use %ROOT%venv\Scripts\python.exe
