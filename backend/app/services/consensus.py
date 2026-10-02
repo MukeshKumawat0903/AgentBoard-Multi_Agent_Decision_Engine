@@ -19,10 +19,12 @@ and gracefully degrades if ``sentence-transformers`` is not installed.
 from __future__ import annotations
 
 import logging
+from collections import defaultdict
 from dataclasses import dataclass
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, get_args
 
 from app.schemas.agent_response import AgentResponse, CritiqueResponse
+from app.schemas.state import AgreementMethod
 
 if TYPE_CHECKING:
     from app.core.config import Settings
@@ -170,6 +172,58 @@ class ConsensusEngine:
             extra={"common_agents": len(common_agents), "drift": round(score, 4)},
         )
         return score
+
+
+# ---------------------------------------------------------------------------
+# Stance-based agreement (Rule 1 of the consensus gate, default method)
+#
+# Text similarity — word overlap or embeddings — measures *topic*: role-bound
+# agents write differently when they agree and alike when they don't ("should
+# expand" vs "should not expand"). Each agent therefore declares its verdict as
+# a structured ``stance`` and agreement is the vote share of the largest group.
+# ---------------------------------------------------------------------------
+
+AGREEMENT_METHODS: tuple[AgreementMethod, ...] = get_args(AgreementMethod)
+
+
+def resolve_agreement_method(*candidates: object) -> AgreementMethod:
+    """First candidate that names a known agreement method, else ``"stance"``.
+
+    Called as ``resolve_agreement_method(per_debate_choice, settings.AGREEMENT_METHOD)``.
+    """
+    for candidate in candidates:
+        if candidate in AGREEMENT_METHODS:
+            return candidate  # type: ignore[return-value]
+    return "stance"
+
+
+def compute_stance_agreement(responses: list[AgentResponse]) -> float | None:
+    """Confidence-weighted vote share of the largest stance group.
+
+    Abstainers and agents with no stance are excluded. ``conditional`` is its own
+    group: "yes, if X" is not counted as a plain "yes".
+    Returns None when fewer than 2 agents voted, so the caller can fall back.
+    """
+    voters = [r for r in responses if r.stance and r.stance != "abstain"]
+    if len(voters) < 2:
+        return None
+    weight: dict[str, float] = defaultdict(float)
+    for r in voters:
+        weight[r.stance] += r.confidence_score  # type: ignore[index]
+    total = sum(weight.values())
+    return max(weight.values()) / total if total else 0.0
+
+
+def stance_tally(responses: list[AgentResponse]) -> dict[str, int]:
+    """Counts per stance, for logs/UI (e.g. {'support': 2, 'oppose': 1, 'abstain': 1}).
+
+    Agents with no stance (debates stored before the field existed) are left out.
+    """
+    tally: dict[str, int] = {}
+    for r in responses:
+        if r.stance:
+            tally[r.stance] = tally.get(r.stance, 0) + 1
+    return tally
 
 
 # ---------------------------------------------------------------------------

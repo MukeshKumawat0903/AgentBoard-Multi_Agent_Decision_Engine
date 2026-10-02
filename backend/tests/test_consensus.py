@@ -31,11 +31,14 @@ from app.services.consensus import (
     ConsensusEngine,
     ConsensusSignals,
     _word_overlap,
+    compute_stance_agreement,
     count_dissenting_agents,
     count_open_disagreements,
     is_consensus_reached,
     normalize_position_overlap,
+    resolve_agreement_method,
     select_dissenting_agents,
+    stance_tally,
 )
 
 
@@ -526,3 +529,87 @@ class TestSemanticAvailable:
 
         monkeypatch.setattr(consensus, "_SEMANTIC_AVAILABLE", True)
         assert consensus.semantic_available(self._settings(True)) is True
+
+
+# ---------------------------------------------------------------------------
+# Stance-based agreement
+# ---------------------------------------------------------------------------
+
+def _voter(name: str, stance: str | None, confidence: float) -> AgentResponse:
+    return AgentResponse(
+        agent_name=name, round_number=1, position=f"{name} position.",
+        reasoning="r", confidence_score=confidence, stance=stance,
+    )
+
+
+class TestComputeStanceAgreement:
+
+    def test_two_vs_two_split_is_about_half(self):
+        responses = [
+            _voter("A", "support", 0.85), _voter("B", "support", 0.80),
+            _voter("C", "oppose", 0.80), _voter("D", "oppose", 0.75),
+        ]
+        assert compute_stance_agreement(responses) == pytest.approx(1.65 / 3.20)
+        assert compute_stance_agreement(responses) == pytest.approx(0.52, abs=0.01)
+
+    def test_unanimous_support_is_one(self):
+        responses = [_voter(n, "support", c) for n, c in zip("ABCD", (0.9, 0.7, 0.8, 0.6))]
+        assert compute_stance_agreement(responses) == pytest.approx(1.0)
+
+    def test_three_vs_one_with_equal_confidence(self):
+        responses = [_voter(n, "support", 0.9) for n in "ABC"] + [_voter("D", "oppose", 0.9)]
+        assert compute_stance_agreement(responses) == pytest.approx(0.75)
+
+    def test_unsure_dissenter_weighs_less(self):
+        responses = [_voter(n, "support", 0.9) for n in "ABC"] + [_voter("D", "oppose", 0.4)]
+        assert compute_stance_agreement(responses) == pytest.approx(2.7 / 3.1)
+        assert compute_stance_agreement(responses) == pytest.approx(0.87, abs=0.01)
+
+    def test_conditional_is_its_own_group(self):
+        responses = [_voter("A", "support", 0.8), _voter("B", "conditional", 0.8)]
+        assert compute_stance_agreement(responses) == pytest.approx(0.5)
+
+    def test_abstainers_and_missing_stances_do_not_vote(self):
+        responses = [
+            _voter("Analyst", "abstain", 0.9), _voter("Legacy", None, 0.9),
+            _voter("Risk", "support", 0.8), _voter("Strategy", "support", 0.6),
+        ]
+        assert compute_stance_agreement(responses) == pytest.approx(1.0)
+
+    @pytest.mark.parametrize("stances", [
+        ["abstain", "abstain", "abstain"],
+        ["support", "abstain", None],
+        [None, None],
+        [],
+    ])
+    def test_fewer_than_two_voters_returns_none(self, stances):
+        responses = [_voter(f"A{i}", s, 0.8) for i, s in enumerate(stances)]
+        assert compute_stance_agreement(responses) is None
+
+    def test_all_zero_confidence_returns_zero(self):
+        responses = [_voter("A", "support", 0.0), _voter("B", "oppose", 0.0)]
+        assert compute_stance_agreement(responses) == 0.0
+
+
+class TestStanceTally:
+
+    def test_counts_each_stance_and_skips_missing(self):
+        responses = [
+            _voter("A", "support", 0.8), _voter("B", "support", 0.7),
+            _voter("C", "oppose", 0.9), _voter("D", "abstain", 0.5), _voter("E", None, 0.5),
+        ]
+        assert stance_tally(responses) == {"support": 2, "oppose": 1, "abstain": 1}
+
+    def test_empty(self):
+        assert stance_tally([]) == {}
+
+
+class TestResolveAgreementMethod:
+
+    def test_first_known_method_wins(self):
+        assert resolve_agreement_method("semantic", "lexical") == "semantic"
+        assert resolve_agreement_method(None, "lexical") == "lexical"
+
+    def test_unknown_values_fall_through_to_stance(self):
+        assert resolve_agreement_method(None, "words") == "stance"
+        assert resolve_agreement_method() == "stance"
