@@ -26,11 +26,14 @@ from app.schemas.state import DebateRound, DebateState
 from app.services.consensus import (
     ConsensusSignals,
     _confidence_gap_dissenters,
+    build_reply_index,
     compute_stance_agreement,
     count_dissenting_agents,
+    count_open_disagreements,
     is_consensus_reached,
     majority_stance,
     select_dissenting_agents,
+    select_open_disagreements,
     stance_weights,
 )
 from tests.test_orchestrator import _mock_settings, _synthesis
@@ -333,3 +336,141 @@ async def test_proposals_and_uncritiqued_revisions_get_no_reply_instruction():
 
     assert "critique_replies" not in _prompt(proposal_llm)
     assert "critique_replies" not in _prompt(revision_llm)
+
+
+# --- open objections after revision -------------------------------------------
+
+def _revised(name: str, replies: list[CritiqueReply], stance: str = "support") -> AgentResponse:
+    return _agent(name, stance, 0.85).model_copy(update={"critique_replies": replies})
+
+
+def _open_after(critiques: list[CritiqueResponse], outputs: list[AgentResponse]) -> int:
+    return count_open_disagreements(critiques, build_reply_index(outputs))
+
+
+def test_critiques_fixed_in_revision_are_closed():
+    critiques = [_critique(c) for c in ("Strategy", "Ethics", "Analyst")]
+    outputs = [_revised("Risk", [_reply(c, "addressed") for c in ("Strategy", "Ethics", "Analyst")])]
+    assert count_open_disagreements(critiques) == 3  # as raised
+    assert _open_after(critiques, outputs) == 0      # after revision
+
+
+def test_a_rebuttal_closes_a_high_critique():
+    assert _open_after([_critique("Strategy", severity="high")], [_revised("Risk", [_reply("Strategy", "rebutted")])]) == 0
+
+
+def test_a_rebuttal_does_not_close_a_critical_critique():
+    critiques = [_critique("Strategy", severity="critical")]
+    outputs = [_revised("Risk", [_reply("Strategy", "rebutted", "the data says otherwise")])]
+    assert select_open_disagreements(critiques, build_reply_index(outputs)) == [
+        {"critic": "Strategy", "target": "Risk", "severity": "critical", "status": "rebutted"},
+    ]
+
+
+def test_an_addressed_critical_critique_is_closed():
+    outputs = [_revised("Risk", [_reply("Strategy", "addressed")])]
+    assert _open_after([_critique("Strategy", severity="critical")], outputs) == 0
+
+
+def test_an_unaddressed_critique_stays_open():
+    outputs = [_revised("Risk", [_reply("Strategy", "unaddressed")])]
+    assert _open_after([_critique("Strategy")], outputs) == 1
+
+
+def test_no_reply_counts_as_unaddressed():
+    # The target's revision timed out: its proposal is still in place, with no replies.
+    outputs = [_agent("Risk", "oppose", 0.8, round_number=1)]
+    assert select_open_disagreements([_critique("Strategy")], build_reply_index(outputs)) == [
+        {"critic": "Strategy", "target": "Risk", "severity": "high", "status": "unaddressed"},
+    ]
+
+
+def test_a_reply_to_someone_who_never_critiqued_closes_nothing():
+    outputs = [_revised("Risk", [_reply("Analyst", "addressed")])]
+    assert _open_after([_critique("Strategy")], outputs) == 1
+
+
+def test_a_reply_only_closes_critiques_aimed_at_the_replying_agent():
+    critiques = [_critique("Strategy", target="Risk"), _critique("Strategy", target="Ethics")]
+    outputs = [_revised("Risk", [_reply("Strategy", "addressed")]), _revised("Ethics", [])]
+    assert select_open_disagreements(critiques, build_reply_index(outputs))[0]["target"] == "Ethics"
+    assert _open_after(critiques, outputs) == 1
+
+
+def test_the_last_reply_from_a_critic_wins_in_the_index():
+    outputs = [_revised("Risk", [_reply("Strategy", "addressed"), _reply("Strategy", "unaddressed")])]
+    assert build_reply_index(outputs) == {"Risk": {"Strategy": "unaddressed"}}
+
+
+def test_low_and_medium_critiques_never_count():
+    critiques = [_critique("Strategy", severity="low"), _critique("Ethics", severity="medium")]
+    assert _open_after(critiques, [_revised("Risk", [])]) == 0
+
+
+def test_one_pair_is_one_objection_reported_at_its_highest_severity():
+    critiques = [_critique("Strategy", severity="high"), _critique("Strategy", severity="critical")]
+    open_ = select_open_disagreements(critiques, build_reply_index([_revised("Risk", [])]))
+    assert [o["severity"] for o in open_] == ["critical"]
+
+
+def test_without_replies_every_high_critique_counts_as_before():
+    critiques = [_critique("Strategy"), _critique("Ethics", severity="critical"), _critique("Analyst", severity="low")]
+    assert count_open_disagreements(critiques) == 2
+    assert count_open_disagreements(critiques, None) == 2
+
+
+def test_a_round_without_critiques_has_no_open_objections():
+    # Quick mode skips critiques and revisions.
+    assert _open_after([], [_agent("Risk", "support", 0.9)]) == 0
+
+
+@pytest.mark.anyio
+async def test_the_gate_reaches_consensus_once_raised_critiques_are_fixed():
+    critics = ("Strategy", "Ethics", "Finance")
+    outputs = [_revised("Risk", [_reply(c, "addressed") for c in critics])] + [
+        _agent(c, "support", 0.85) for c in critics
+    ]
+    ds = _two_round_state(outputs)
+    ds.rounds[-1].critiques = [_critique(c, round_number=2) for c in critics]
+
+    result = await _converge(ds)
+    assert result["debate_state"].termination_reason == "consensus_reached"
+
+
+@pytest.mark.anyio
+async def test_the_gate_still_blocks_when_the_revisions_left_them_open():
+    critics = ("Strategy", "Ethics", "Finance")
+    outputs = [_revised("Risk", [_reply(c, "unaddressed") for c in critics])] + [
+        _agent(c, "support", 0.85) for c in critics
+    ]
+    ds = _two_round_state(outputs)
+    ds.rounds[-1].critiques = [_critique(c, round_number=2) for c in critics]
+
+    result = await _converge(ds)
+    assert result["should_continue"] is True
+    assert result["debate_state"].termination_reason != "consensus_reached"
+
+
+@pytest.mark.anyio
+async def test_the_final_decision_leaves_out_critiques_already_addressed():
+    outputs = [
+        _revised("Risk", [_reply("Strategy", "addressed"), _reply("Ethics", "rebutted")]),
+        _agent("Strategy", "support", 0.85), _agent("Ethics", "support", 0.85),
+    ]
+    ds = DebateState(
+        user_query=QUERY, current_round=2, termination_reason="max_rounds_reached",
+        rounds=[DebateRound(round_number=1), DebateRound(
+            round_number=2, agent_outputs=outputs,
+            critiques=[_critique("Strategy", round_number=2), _critique("Ethics", round_number=2),
+                       _critique("Analyst", target="Strategy", severity="low", round_number=2)],
+        )],
+    )
+    moderator = MagicMock()
+    moderator.finalize = AsyncMock(return_value=FinalDecision(
+        thread_id=ds.thread_id, decision="d", rationale_summary="r", confidence_score=0.8,
+        agreement_score=0.5, total_rounds=2, termination_reason="max_rounds_reached",
+    ))
+    node = make_finalize_node(moderator, MagicMock(), settings=_mock_settings())
+    decision = (await node({"debate_state": ds, "should_continue": False, "final_decision": None}))["final_decision"]
+
+    assert decision.key_disagreements == ["Ethics sees a gap", "Analyst sees a gap"]

@@ -35,10 +35,12 @@ from app.schemas.agent_response import AgentResponse
 from app.schemas.final_decision import MinorityReportEntry
 from app.schemas.state import MAX_DEBATE_ROUNDS_LIMIT, AgreementMethod, DebateRound, DebateState
 from app.services.consensus import (
+    SEVERITY_RANK,
     ConsensusEngine,
     ConsensusSignals,
     SemanticConsensusEngine,
     _word_overlap,
+    build_reply_index,
     compute_stance_agreement,
     count_open_disagreements,
     is_consensus_reached,
@@ -577,7 +579,10 @@ def make_convergence_node(
         )
 
         dissenting = len(select_dissenting_agents(round_data.agent_outputs, settings.MINORITY_REPORT_BAND))
-        open_disagreements = count_open_disagreements(round_data.critiques)
+        # Critiques are counted after revision: each revised output says how it
+        # handled the critiques it received, and only unresolved ones stay open.
+        replies = build_reply_index(round_data.agent_outputs)
+        open_disagreements = count_open_disagreements(round_data.critiques, replies)
 
         active_vetoes = sum(1 for output in round_data.agent_outputs if output.veto)
         signals = ConsensusSignals(
@@ -820,13 +825,19 @@ def make_finalize_node(
                     for output in select_dissenting_agents(final_outputs, minority_band)
                 ]
 
-        # Key disagreements are the highest-severity unresolved critique points from
-        # the final round only, sorted critical→low. dissenting_opinions stays a
-        # separate field and is not merged in here.
-        _SEVERITY_RANK = {"critical": 0, "high": 1, "medium": 2, "low": 3}
+        # Key disagreements are the highest-severity critique points from the final
+        # round only, sorted critical→low. Critiques the target addressed in its
+        # revision are already fixed and left out; rebutted ones are real, argued
+        # disagreements and stay. dissenting_opinions stays a separate field and is
+        # not merged in here.
         final_critiques = ds.rounds[-1].critiques if ds.rounds else []
+        final_replies = build_reply_index(ds.rounds[-1].agent_outputs) if ds.rounds else {}
+        unresolved_critiques = [
+            c for c in final_critiques
+            if final_replies.get(c.target_agent, {}).get(c.critic_agent) != "addressed"
+        ]
         sorted_critiques = sorted(
-            final_critiques, key=lambda c: _SEVERITY_RANK.get(c.severity, 99)
+            unresolved_critiques, key=lambda c: SEVERITY_RANK.get(c.severity, 99)
         )
         key_disags: list[str] = []
         for critique in sorted_critiques:

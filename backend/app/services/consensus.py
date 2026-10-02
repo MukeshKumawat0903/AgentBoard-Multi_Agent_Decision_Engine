@@ -328,21 +328,72 @@ def count_dissenting_agents(responses: list[AgentResponse], band: float) -> int:
     return len(select_dissenting_agents(responses, band))
 
 
+SEVERITY_RANK: dict[str, int] = {"critical": 0, "high": 1, "medium": 2, "low": 3}
+
+
+def build_reply_index(outputs: list[AgentResponse]) -> dict[str, dict[str, str]]:
+    """``{target_agent: {critic_agent: status}}`` from this round's outputs.
+
+    Revisions replace proposals in place, so these are the revised outputs; an
+    agent whose revision failed still has its proposal, which carries no replies.
+    """
+    return {
+        output.agent_name: {reply.critic_agent: reply.status for reply in output.critique_replies}
+        for output in outputs
+    }
+
+
+def is_objection_open(severity: str, status: str) -> bool:
+    """A critique stays open unless addressed; a rebuttal only settles a non-critical one."""
+    return status == "unaddressed" or (status == "rebutted" and severity == "critical")
+
+
+def select_open_disagreements(
+    critiques: list[CritiqueResponse],
+    replies: dict[str, dict[str, str]] | None = None,
+    severities: frozenset[str] = HIGH_SEVERITIES,
+) -> list[dict[str, str]]:
+    """High/critical critic→target pairs not resolved by the target's revision.
+
+    Each entry is ``{critic, target, severity, status}``. A critique with no reply
+    (revision missing, failed or timed out) counts as ``unaddressed``. A pair is
+    one objection however many critiques or bullet points it has; the most severe
+    is reported. ``replies=None`` keeps the old behaviour: every high/critical
+    critique counts as open.
+    """
+    open_pairs: dict[tuple[str, str], dict[str, str]] = {}
+    for critique in critiques:
+        if critique.severity not in severities:
+            continue
+        status = "unaddressed"
+        if replies is not None:
+            status = replies.get(critique.target_agent, {}).get(critique.critic_agent, "unaddressed")
+        if not is_objection_open(critique.severity, status):
+            continue
+        pair = (critique.critic_agent, critique.target_agent)
+        known = open_pairs.get(pair)
+        if known is None or SEVERITY_RANK[critique.severity] < SEVERITY_RANK[known["severity"]]:
+            open_pairs[pair] = {
+                "critic": critique.critic_agent,
+                "target": critique.target_agent,
+                "severity": critique.severity,
+                "status": status,
+            }
+    return list(open_pairs.values())
+
+
 def count_open_disagreements(
     critiques: list[CritiqueResponse],
+    replies: dict[str, dict[str, str]] | None = None,
     severities: frozenset[str] = HIGH_SEVERITIES,
 ) -> int:
-    """Number of high-severity objections still on the table.
+    """Number of serious objections still open after revision.
 
-    Counts distinct critic→target critiques whose severity is in ``severities``.
-    A critique is one objection regardless of how many bullet points it lists,
-    so the count no longer explodes just because a critic was verbose.
+    Counts distinct critic→target pairs from ``select_open_disagreements``, so a
+    verbose critic can't inflate the count and a round that raises and fixes
+    issues isn't punished. ``replies=None`` counts every high/critical critique.
     """
-    return len({
-        (critique.critic_agent, critique.target_agent)
-        for critique in critiques
-        if critique.severity in severities
-    })
+    return len(select_open_disagreements(critiques, replies, severities))
 
 
 def normalize_position_overlap(raw_overlap: float, floor: float, ceiling: float) -> float:
