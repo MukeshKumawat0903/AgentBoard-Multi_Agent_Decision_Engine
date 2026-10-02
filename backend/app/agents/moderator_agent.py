@@ -54,6 +54,13 @@ class ModeratorSynthesis(BaseModel):
         default=None,
         description="Key question for the next round when should_continue is true.",
     )
+    leading_proposal: str | None = Field(
+        default=None,
+        description=(
+            "One sentence: the recommendation most agents are converging on. "
+            "Agents give their stance toward this next round."
+        ),
+    )
 
     model_config = ConfigDict(
         json_schema_extra={
@@ -64,6 +71,7 @@ class ModeratorSynthesis(BaseModel):
                 "agreement_score": 0.62,
                 "should_continue": True,
                 "next_round_focus": "Resolve timing with evidence.",
+                "leading_proposal": "Launch a Q4 pilot in Singapore before a wider rollout.",
             }
         }
     )
@@ -133,8 +141,10 @@ _SYNTHESIS_TEMPLATE = PromptTemplate.from_template(
     "Synthesize the positions. Identify agreement and disagreement areas. "
     "Estimate how far the agents agree (agreement_score, 0.0-1.0) and recommend "
     "whether another round would help (should_continue), with its key question "
-    "(next_round_focus). Whether the debate stops is decided separately, from the "
-    "agents' measured agreement."
+    "(next_round_focus). State in one sentence the recommendation most agents are "
+    "converging on (leading_proposal); next round every agent declares its stance "
+    "toward it. Whether the debate stops is decided separately, from the agents' "
+    "measured agreement."
 )
 
 _FINALIZE_TEMPLATE = PromptTemplate.from_template(
@@ -343,8 +353,9 @@ class ModeratorAgent(BaseAgent):
         latest = state.rounds[-1]
         lines: list[str] = []
         for out in latest.agent_outputs:
+            stance = f", stance={out.stance}" if out.stance else ""
             lines.append(
-                f"  [{out.agent_name}] (confidence={out.confidence_score:.2f}):\n"
+                f"  [{out.agent_name}] (confidence={out.confidence_score:.2f}{stance}):\n"
                 f"    {out.position[:400]}"
             )
         return "\n".join(lines) if lines else "(no outputs this round)"

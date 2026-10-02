@@ -10,6 +10,7 @@ from httpx import ASGITransport, AsyncClient
 from pydantic import ValidationError
 
 from app.agents.analyst_agent import AnalystAgent
+from app.agents.moderator_agent import ModeratorAgent
 from app.agents.base_agent import AgentLLMOutput
 from app.agents.ethics_agent import EthicsAgent, EthicsLLMOutput
 from app.agents.risk_agent import RiskAgent
@@ -61,6 +62,9 @@ def test_a_debate_stored_before_stance_existed_still_loads():
     }
     state = DebateState.model_validate(legacy)
     assert state.rounds[0].agent_outputs[0].stance is None
+    assert state.rounds[0].leading_proposal is None
+    assert state.rounds[0].agreement_method_used is None
+    assert state.agreement_method is None
 
 
 @pytest.mark.anyio
@@ -281,23 +285,101 @@ async def test_api_returns_422_for_unavailable_semantic(path, semantic_off):
 
 
 @pytest.mark.anyio
-async def test_start_async_stores_the_resolved_method(monkeypatch):
+async def test_start_stores_the_resolved_method(monkeypatch):
+    from app.api.dependencies import get_debate_store, get_decision_store
+    from app.schemas.final_decision import FinalDecision
+
     monkeypatch.setattr(app_settings, "AGREEMENT_METHOD", "stance")
     captured: list[DebateState] = []
 
-    async def _fake_persist(state, _db):
-        captured.append(state)
+    async def _run(*_args, initial_state, **_kwargs):
+        captured.append(initial_state)
+        initial_state.current_round = 1
+        return initial_state, FinalDecision(
+            thread_id=initial_state.thread_id, decision="d", rationale_summary="r",
+            confidence_score=0.8, agreement_score=0.8, total_rounds=1,
+            termination_reason="consensus_reached",
+        )
 
     graph = MagicMock()
-    graph.run = AsyncMock(side_effect=lambda *a, **k: (k["initial_state"], None))
-    with (
-        patch("app.api.routes.DebateGraph", return_value=graph),
-        patch("app.api.routes._persist_debate_state", side_effect=_fake_persist),
-    ):
-        async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:  # type: ignore[arg-type]
-            await client.post("/debate/start-async", json={"query": QUERY})
-            await client.post("/debate/start-async", json={"query": QUERY, "agreement_method": "lexical"})
+    graph.run = AsyncMock(side_effect=_run)
+    debate_store: dict = {}
+    decision_store: dict = {}
+    app.dependency_overrides[get_debate_store] = lambda: debate_store
+    app.dependency_overrides[get_decision_store] = lambda: decision_store
+    try:
+        with patch("app.api.routes.DebateGraph", return_value=graph):
+            async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:  # type: ignore[arg-type]
+                for body in ({"query": QUERY}, {"query": QUERY, "agreement_method": "lexical"}):
+                    assert (await client.post("/debate/start", json=body)).status_code == 200
+    finally:
+        app.dependency_overrides.pop(get_debate_store, None)
+        app.dependency_overrides.pop(get_decision_store, None)
 
-    # Background runs may persist again; take each debate's first snapshot.
-    first_seen = dict.fromkeys((s.thread_id, s.agreement_method) for s in captured)
-    assert [method for _, method in first_seen] == ["stance", "lexical"]
+    assert [state.agreement_method for state in captured] == ["stance", "lexical"]
+
+
+# --- the stance anchor: what the stance is about --------------------------------
+
+def _prompt_for(state: DebateState) -> str:
+    return RiskAgent(llm_client=_llm(None))._stance_instruction(state)
+
+
+def test_round_one_anchors_on_the_question():
+    prompt = _prompt_for(DebateState(user_query=QUERY, current_round=1, rounds=[DebateRound(round_number=1)]))
+    assert "Proposal on the table: the course of action the problem statement asks about" in prompt
+    assert "Set `stance` toward this proposal." in prompt
+
+
+def test_later_rounds_anchor_on_the_previous_leading_proposal():
+    state = DebateState(user_query=QUERY, current_round=2, rounds=[
+        DebateRound(round_number=1, leading_proposal="Run a Singapore pilot in Q4."),
+        DebateRound(round_number=2),
+    ])
+    assert "Proposal on the table: Run a Singapore pilot in Q4." in _prompt_for(state)
+
+
+def test_missing_leading_proposal_falls_back_to_the_question():
+    state = DebateState(user_query=QUERY, current_round=3, rounds=[
+        DebateRound(round_number=1, leading_proposal="An older proposal."),
+        DebateRound(round_number=2, leading_proposal="  "),
+        DebateRound(round_number=3),
+    ])
+    prompt = _prompt_for(state)
+    assert "An older proposal." not in prompt
+    assert "the course of action the problem statement asks about" in prompt
+
+
+@pytest.mark.anyio
+async def test_revision_prompt_uses_the_same_anchor():
+    llm = _llm(AgentLLMOutput(position="p", reasoning="r", confidence_score=0.7, stance="support"))
+    state = DebateState(user_query=QUERY, current_round=2, rounds=[
+        DebateRound(round_number=1, leading_proposal="Run a Singapore pilot in Q4."),
+        DebateRound(round_number=2),
+    ])
+    await RiskAgent(llm_client=llm).revise(state, [])
+    assert "Proposal on the table: Run a Singapore pilot in Q4." in llm.ainvoke_structured.call_args.kwargs["user_prompt"]
+
+
+@pytest.mark.anyio
+async def test_convergence_node_stores_the_leading_proposal():
+    emit = MagicMock()
+    moderator = MagicMock()
+    synthesis = _synthesis(agreement_score=0.5, should_continue=True)
+    synthesis.leading_proposal = "  Run a Singapore pilot in Q4.  "
+    moderator.synthesize = AsyncMock(return_value=synthesis)
+    graph_state = _graph_state([_voter("Risk", "support"), _voter("Strategy", "support")], current_round=1)
+
+    node = make_convergence_node(moderator, _settings(), emit, AsyncMock())
+    result = await node(graph_state)
+
+    assert result["debate_state"].rounds[-1].leading_proposal == "Run a Singapore pilot in Q4."
+
+
+def test_moderator_prompt_asks_for_a_leading_proposal_and_shows_stances():
+    state = DebateState(user_query=QUERY, current_round=1, rounds=[
+        DebateRound(round_number=1, agent_outputs=[_voter("Risk", "oppose", round_number=1)]),
+    ])
+    prompt = ModeratorAgent._build_synthesis_prompt(state)
+    assert "leading_proposal" in prompt
+    assert "stance=oppose" in prompt

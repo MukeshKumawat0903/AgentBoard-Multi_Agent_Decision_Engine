@@ -66,6 +66,13 @@ class DebateRound(BaseModel):
         default_factory=list,
         description="Tool invocations made by agents this round (for the persisted trace).",
     )
+    leading_proposal: str | None = Field(
+        default=None,
+        description=(
+            "The Moderator's one-sentence summary of the recommendation most agents are "
+            "converging on. Next round's agents declare their stance toward it."
+        ),
+    )
     agreement_method_used: AgreementMethod | None = Field(
         default=None,
         description=(

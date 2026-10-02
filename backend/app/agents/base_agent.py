@@ -36,6 +36,11 @@ STANCE_DESCRIPTION = (
     "conditional (support only if specific conditions are met). "
     "Use abstain only if your role does not make recommendations."
 )
+# Stance anchor before the Moderator has named a leading proposal.
+_DEFAULT_PROPOSAL = (
+    "the course of action the problem statement asks about "
+    "(support = yes, go ahead; oppose = no)."
+)
 
 
 class AgentLLMOutput(BaseModel):
@@ -144,10 +149,27 @@ class BaseAgent(ABC):
             stance=stance,
         )
 
+    @staticmethod
+    def _proposal_on_the_table(state: DebateState) -> str | None:
+        """The Moderator's leading proposal from the previous round, if it gave one."""
+        for round_data in state.rounds:
+            if round_data.round_number == state.current_round - 1:
+                return (round_data.leading_proposal or "").strip() or None
+        return None
+
     def _stance_instruction(self, state: DebateState) -> str:
         """Instruction appended to proposal/revision prompts telling the agent what
-        its ``stance`` is about and how to set it."""
-        lines = [f"Set `stance`. {STANCE_DESCRIPTION}"]
+        its ``stance`` is about and how to set it.
+
+        Round 1 (or when the Moderator gave no leading proposal): the decision the
+        problem statement asks for, so "Should we expand?" → support = yes.
+        Round 2+: the Moderator's leading proposal from the previous round.
+        """
+        proposal = self._proposal_on_the_table(state) or _DEFAULT_PROPOSAL
+        lines = [
+            f"Proposal on the table: {proposal}",
+            f"Set `stance` toward this proposal. {STANCE_DESCRIPTION}",
+        ]
         if self.stance_guidance:
             lines.append(self.stance_guidance)
         return "\n\n---\n" + "\n".join(lines)
