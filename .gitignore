@@ -28,7 +28,7 @@ Thumbs.db
 .mypy_cache/
 .coverage
 htmlcov/
-*docs
+# *docs
 
 # Logs
 backend/logs/
