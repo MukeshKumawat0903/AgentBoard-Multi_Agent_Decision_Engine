@@ -18,6 +18,15 @@ export type Stance = "support" | "oppose" | "conditional" | "abstain";
 // How the consensus gate measures agreement (backend AGREEMENT_METHOD)
 export type AgreementMethod = "stance" | "lexical" | "semantic";
 
+// How a revising agent handled one critique it received
+export type CritiqueReplyStatus = "addressed" | "rebutted" | "unaddressed";
+
+export interface CritiqueReply {
+  critic_agent: string;
+  status: CritiqueReplyStatus;
+  note: string;
+}
+
 export interface AgentResponse {
   agent_name: string;
   round_number: number;
@@ -30,6 +39,8 @@ export interface AgentResponse {
   veto_reason?: string | null;
   // Verdict on the proposal on the table; null/absent for debates stored before stance existed
   stance?: Stance | null;
+  // Revisions only: how each critique received was handled; absent for older debates
+  critique_replies?: CritiqueReply[];
   timestamp: string;
 }
 
@@ -313,6 +324,17 @@ export interface SynthesisEvent {
   stance_tally?: Record<string, number>;
   agreement_method_used?: AgreementMethod;
   leading_proposal?: string | null;
+  // Agents voting against the majority stance (gate Rule 3)
+  dissenting_agents?: string[];
+  // High/critical critiques still open after revision (gate Rule 4)
+  open_disagreements?: OpenDisagreement[];
+}
+
+export interface OpenDisagreement {
+  critic: string;
+  target: string;
+  severity: CritiqueResponse["severity"];
+  status: CritiqueReplyStatus;
 }
 
 export interface DebateCompletedEvent {

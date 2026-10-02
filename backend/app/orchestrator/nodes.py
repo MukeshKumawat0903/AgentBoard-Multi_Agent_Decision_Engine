@@ -42,12 +42,12 @@ from app.services.consensus import (
     _word_overlap,
     build_reply_index,
     compute_stance_agreement,
-    count_open_disagreements,
     is_consensus_reached,
     majority_stance,
     normalize_position_overlap,
     resolve_agreement_method,
     select_dissenting_agents,
+    select_open_disagreements,
     stance_tally,
 )
 from app.services.llm_client import llm_call_slot
@@ -521,6 +521,18 @@ def make_convergence_node(
             output.agent_name: output.confidence_score for output in round_data.agent_outputs
         }
 
+        # Rules 3 and 4 of the gate, worked out here so the synthesis event can name
+        # who is overruled and which objections are still open.
+        dissenting_names = [
+            output.agent_name
+            for output in select_dissenting_agents(round_data.agent_outputs, settings.MINORITY_REPORT_BAND)
+        ]
+        # Critiques are counted after revision: each revised output says how it
+        # handled the critiques it received, and only unresolved ones stay open.
+        open_objections = select_open_disagreements(
+            round_data.critiques, build_reply_index(round_data.agent_outputs)
+        )
+
         ds.touch()
         if persist_state is not None:
             await persist_state(ds)
@@ -548,14 +560,16 @@ def make_convergence_node(
             "stance_tally": tally,
             "agreement_method_used": method_used,
             "leading_proposal": round_data.leading_proposal,
+            "dissenting_agents": dissenting_names,
+            "open_disagreements": open_objections,
         })
 
         # Hybrid consensus gate: consensus is declared only when the agents genuinely
-        # overlap on position AND have debated a minimum number of rounds AND carry
-        # little dissent / unresolved high-severity disagreement AND have stopped
-        # moving (or are uniformly confident). Any single criterion failing keeps the
-        # debate going until the max-rounds cap. This replaces the old "agreement >=
-        # threshold" gate that stopped on mean confidence alone after one round.
+        # agree AND have debated a minimum number of rounds AND carry little dissent /
+        # few serious critiques still open after revision AND have stopped moving (or
+        # are about equally sure) AND no veto stands. Any single criterion failing keeps
+        # the debate going until the max-rounds cap. This replaces the old "agreement
+        # >= threshold" gate that stopped on mean confidence alone after one round.
         effective_threshold = state.get("consensus_threshold") or settings.CONSENSUS_THRESHOLD
         effective_min_rounds = min(ds.min_rounds, ds.max_rounds)
 
@@ -582,18 +596,12 @@ def make_convergence_node(
             )
         )
 
-        dissenting = len(select_dissenting_agents(round_data.agent_outputs, settings.MINORITY_REPORT_BAND))
-        # Critiques are counted after revision: each revised output says how it
-        # handled the critiques it received, and only unresolved ones stay open.
-        replies = build_reply_index(round_data.agent_outputs)
-        open_disagreements = count_open_disagreements(round_data.critiques, replies)
-
         active_vetoes = sum(1 for output in round_data.agent_outputs if output.veto)
         signals = ConsensusSignals(
             position_agreement=agreement_score,
             rounds_completed=ds.current_round,
-            dissenting_agents=dissenting,
-            open_disagreements=open_disagreements,
+            dissenting_agents=len(dissenting_names),
+            open_disagreements=len(open_objections),
             confidence_converged=confidence_converged,
             active_vetoes=active_vetoes,
         )
@@ -624,8 +632,8 @@ def make_convergence_node(
                 "stance_agreement_score": stance_agreement,
                 "stance_tally": tally,
                 "threshold": effective_threshold,
-                "dissenting_agents": dissenting,
-                "open_disagreements": open_disagreements,
+                "dissenting_agents": dissenting_names,
+                "open_disagreements": open_objections,
                 "confidence_converged": confidence_converged,
                 "drift": round(drift, 4) if drift is not None else None,
                 "active_vetoes": active_vetoes,

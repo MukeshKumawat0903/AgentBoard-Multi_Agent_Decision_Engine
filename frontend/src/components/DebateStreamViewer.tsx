@@ -43,6 +43,7 @@ import Badge, { type BadgeTone } from "./ui/Badge";
 import Button from "./ui/Button";
 import CollapsibleSection from "./ui/CollapsibleSection";
 import useCountUp from "@/lib/useCountUp";
+import { openObjectionsLabel } from "@/lib/objections";
 import { voteLabel } from "@/lib/stance";
 
 /* ------------------------------------------------------------------ */
@@ -480,6 +481,7 @@ export default function DebateStreamViewer({ threadId, onQuery }: Props) {
       )}
       {state.rounds.map((round: DebateRound, rIdx: number) => {
         const synthesis = state.syntheses[round.round_number];
+        const openLabel = openObjectionsLabel(synthesis?.open_disagreements);
         const isFocused =
           focusedRoundIdx !== null && state.rounds[focusedRoundIdx]?.round_number === round.round_number;
         const isActiveRound = state.status === "streaming" && rIdx === state.rounds.length - 1;
@@ -527,19 +529,26 @@ export default function DebateStreamViewer({ threadId, onQuery }: Props) {
                   <Badge tone={phase.tone} className="capitalize">{round.phase}</Badge>
                 </div>
                 {synthesis && (
-                  <div className="flex items-center gap-2">
-                    <div className="w-16 h-1.5 bg-gray-200 dark:bg-gray-700 rounded-full overflow-hidden">
-                      <div
-                        className="h-full bg-green-500 rounded-full transition-all duration-500"
-                        style={{ width: `${Math.round(synthesis.agreement_score * 100)}%` }}
-                      />
+                  <div className="flex flex-col items-end gap-0.5 min-w-0">
+                    <div className="flex items-center gap-2">
+                      <div className="w-16 h-1.5 bg-gray-200 dark:bg-gray-700 rounded-full overflow-hidden">
+                        <div
+                          className="h-full bg-green-500 rounded-full transition-all duration-500"
+                          style={{ width: `${Math.round(synthesis.agreement_score * 100)}%` }}
+                        />
+                      </div>
+                      <span className="text-xs text-gray-400 tabular-nums">
+                        {Math.round(synthesis.agreement_score * 100)}% agreement
+                        {synthesis.agreement_method_used === "stance" && voteLabel(synthesis.stance_tally) && (
+                          <span className="text-gray-400/80"> · {voteLabel(synthesis.stance_tally)}</span>
+                        )}
+                      </span>
                     </div>
-                    <span className="text-xs text-gray-400 tabular-nums">
-                      {Math.round(synthesis.agreement_score * 100)}% agreement
-                      {synthesis.agreement_method_used === "stance" && voteLabel(synthesis.stance_tally) && (
-                        <span className="text-gray-400/80"> · {voteLabel(synthesis.stance_tally)}</span>
-                      )}
-                    </span>
+                    {openLabel && (
+                      <span className="text-xs text-gray-400/80 truncate max-w-[18rem]" title={openLabel}>
+                        {openLabel}
+                      </span>
+                    )}
                   </div>
                 )}
               </div>

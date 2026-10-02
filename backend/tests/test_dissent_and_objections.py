@@ -167,12 +167,12 @@ def _two_round_state(outputs: list[AgentResponse]) -> DebateState:
     )
 
 
-async def _converge(ds: DebateState) -> dict:
+async def _converge(ds: DebateState, emit: MagicMock | None = None) -> dict:
     moderator = MagicMock()
     moderator.synthesize = AsyncMock(return_value=_synthesis(agreement_score=0.9, should_continue=False))
     settings = _mock_settings()
     settings.AGREEMENT_METHOD = "stance"
-    node = make_convergence_node(moderator, settings, MagicMock(), AsyncMock())
+    node = make_convergence_node(moderator, settings, emit or MagicMock(), AsyncMock())
     return await node({"debate_state": ds, "should_continue": True, "final_decision": None})
 
 
@@ -475,6 +475,41 @@ async def test_the_final_decision_leaves_out_critiques_already_addressed():
     decision = (await node({"debate_state": ds, "should_continue": False, "final_decision": None}))["final_decision"]
 
     assert decision.key_disagreements == ["Ethics sees a gap", "Analyst sees a gap"]
+
+
+
+# --- events -------------------------------------------------------------------
+
+@pytest.mark.anyio
+async def test_the_synthesis_event_names_dissenters_and_open_objections():
+    outputs = [
+        _revised("Risk", [_reply("Strategy", "rebutted"), _reply("Ethics", "addressed")], stance="oppose"),
+        _agent("Strategy", "support", 0.9), _agent("Ethics", "support", 0.9), _agent("Analyst", "abstain", 0.9),
+    ]
+    ds = _two_round_state(outputs)
+    ds.rounds[-1].critiques = [
+        _critique("Strategy", severity="critical", round_number=2),
+        _critique("Ethics", round_number=2),
+        _critique("Risk", target="Strategy", round_number=2),
+    ]
+    emit = MagicMock()
+    await _converge(ds, emit)
+
+    synthesis = next(c.args[1] for c in emit.call_args_list if c.args[0] == "synthesis")
+    assert synthesis["dissenting_agents"] == ["Risk"]
+    assert synthesis["open_disagreements"] == [
+        {"critic": "Strategy", "target": "Risk", "severity": "critical", "status": "rebutted"},
+        {"critic": "Risk", "target": "Strategy", "severity": "high", "status": "unaddressed"},
+    ]
+
+
+@pytest.mark.anyio
+async def test_a_clean_round_reports_empty_lists():
+    emit = MagicMock()
+    await _converge(_two_round_state([_agent(n, "support", 0.9) for n in ("Risk", "Strategy")]), emit)
+
+    synthesis = next(c.args[1] for c in emit.call_args_list if c.args[0] == "synthesis")
+    assert (synthesis["dissenting_agents"], synthesis["open_disagreements"]) == ([], [])
 
 
 # --- Rule 5: no overconfidence shortcut by default ----------------------------
