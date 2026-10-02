@@ -253,6 +253,13 @@ class DebateModesResponse(BaseModel):
 
     default_mode: DebateMode = Field(description="Mode used when none is chosen (DEFAULT_DEBATE_MODE).")
     presets: dict[str, dict] = Field(description="Settings each mode applies.")
+    semantic_available: bool = Field(
+        default=False,
+        description=(
+            "True when SEMANTIC_CONSENSUS_ENABLED is set and the embedding libraries are "
+            "installed, so the 'semantic' agreement method can be chosen."
+        ),
+    )
 
 
 class ApproveRequest(BaseModel):

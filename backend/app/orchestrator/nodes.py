@@ -397,7 +397,7 @@ def make_convergence_node(
 
     # Phase 4.3: instantiate the semantic engine once at factory time so the
     # sentence-transformers model is loaded once per debate graph, not once
-    # per convergence round.
+    # per convergence round. Only built when SEMANTIC_CONSENSUS_ENABLED is set.
     _semantic_engine: SemanticConsensusEngine | None = None
     if settings.SEMANTIC_CONSENSUS_ENABLED:
         try:
@@ -456,24 +456,21 @@ def make_convergence_node(
             agreement_score = (1.0 - w) * confidence_agreement + w * position_agreement
         else:
             agreement_score = confidence_agreement
+        # Embedding similarity is computed and reported every round when enabled,
+        # but it measures topic more than verdict, so it never drives the gate on
+        # its own. Encoding is CPU-bound: run it off the event loop so SSE keeps flowing.
         semantic_agreement: float | None = None
-
         if _semantic_engine is not None and len(round_data.agent_outputs) >= 2:
             try:
-                semantic_agreement = _semantic_engine.compute_semantic_similarity(
-                    round_data.agent_outputs
-                )
-                # Semantic similarity is a true position-overlap signal — when the
-                # engine is available it overrides the word-overlap blend entirely.
-                agreement_score = _semantic_engine.compute_agreement_score(
-                    round_data.agent_outputs,
-                    semantic_weight=settings.SEMANTIC_CONSENSUS_WEIGHT,
+                semantic_agreement = await asyncio.to_thread(
+                    _semantic_engine.compute_semantic_similarity, round_data.agent_outputs
                 )
             except Exception as exc:  # noqa: BLE001
                 logger.warning(
                     "semantic_consensus_failed",
                     extra={"error": str(exc)},
                 )
+                semantic_agreement = None
 
         ds.agreement_score = agreement_score
 

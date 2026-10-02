@@ -498,3 +498,31 @@ class TestIsConsensusReached:
 
     def test_unconverged_confidence_blocks(self):
         assert is_consensus_reached(self._signals(confidence_converged=False), **self._GATE) is False
+
+
+class TestSemanticAvailable:
+    """The semantic score needs both the flag and the embedding libraries."""
+
+    @staticmethod
+    def _settings(enabled: bool):
+        from types import SimpleNamespace
+
+        return SimpleNamespace(SEMANTIC_CONSENSUS_ENABLED=enabled)
+
+    def test_false_when_flag_off(self, monkeypatch):
+        import app.services.consensus as consensus
+
+        monkeypatch.setattr(consensus, "_SEMANTIC_AVAILABLE", True)
+        assert consensus.semantic_available(self._settings(False)) is False
+
+    def test_false_when_library_missing(self, monkeypatch):
+        import app.services.consensus as consensus
+
+        monkeypatch.setattr(consensus, "_SEMANTIC_AVAILABLE", False)
+        assert consensus.semantic_available(self._settings(True)) is False
+
+    def test_true_when_flag_on_and_library_installed(self, monkeypatch):
+        import app.services.consensus as consensus
+
+        monkeypatch.setattr(consensus, "_SEMANTIC_AVAILABLE", True)
+        assert consensus.semantic_available(self._settings(True)) is True

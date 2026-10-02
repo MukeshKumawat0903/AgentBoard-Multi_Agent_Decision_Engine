@@ -327,13 +327,79 @@ class TestNodeFactories:
         assert outputs[1].confidence_score == pytest.approx(0.83)
 
     @pytest.mark.anyio
-    async def test_convergence_node_uses_semantic_consensus_when_enabled(self):
+    async def test_semantic_score_is_reported_but_does_not_drive_the_gate(self):
+        """SEMANTIC_CONSENSUS_ENABLED alone only observes: the cosine score is emitted
+        and the agreement score stays the word-overlap blend."""
         emit = MagicMock()
         persist_state = AsyncMock()
         moderator = MagicMock()
         moderator.synthesize = AsyncMock(return_value=_synthesis(agreement_score=0.4, should_continue=True))
         settings = _mock_settings(semantic_enabled=True, consensus_threshold=0.8)
 
+        outputs = [_agent_response("Analyst"), _agent_response("Risk")]
+        round_data = DebateRound(round_number=1, agent_outputs=outputs)
+        debate_state = DebateState(
+            user_query="Should we expand internationally in Q3?",
+            current_round=1,
+            rounds=[round_data],
+        )
+        graph_state: DebateGraphState = {
+            "debate_state": debate_state,
+            "should_continue": True,
+            "final_decision": None,
+        }
+
+        with patch("app.orchestrator.nodes.SemanticConsensusEngine") as engine_cls:
+            engine = engine_cls.return_value
+            engine.compute_semantic_similarity.return_value = 0.88
+
+            node = make_convergence_node(moderator, settings, emit, persist_state)
+            result = await node(graph_state)
+
+        engine.compute_semantic_similarity.assert_called_once_with(outputs)
+        hybrid = 0.5 * 0.8 + 0.5 * 0.88
+        assert result["debate_state"].agreement_score != pytest.approx(hybrid)
+        synthesis = next(c.args[1] for c in emit.call_args_list if c.args[0] == "synthesis")
+        assert synthesis["semantic_agreement_score"] == pytest.approx(0.88)
+        assert synthesis["agreement_score"] == pytest.approx(result["debate_state"].agreement_score)
+
+    @pytest.mark.anyio
+    async def test_semantic_failure_keeps_the_debate_going(self):
+        emit = MagicMock()
+        moderator = MagicMock()
+        moderator.synthesize = AsyncMock(return_value=_synthesis(agreement_score=0.4, should_continue=True))
+        settings = _mock_settings(semantic_enabled=True)
+
+        round_data = DebateRound(
+            round_number=1,
+            agent_outputs=[_agent_response("Analyst"), _agent_response("Risk")],
+        )
+        debate_state = DebateState(
+            user_query="Should we expand internationally in Q3?",
+            current_round=1,
+            max_rounds=3,
+            rounds=[round_data],
+        )
+        graph_state: DebateGraphState = {
+            "debate_state": debate_state,
+            "should_continue": True,
+            "final_decision": None,
+        }
+
+        with patch("app.orchestrator.nodes.SemanticConsensusEngine") as engine_cls:
+            engine_cls.return_value.compute_semantic_similarity.side_effect = RuntimeError("model down")
+            node = make_convergence_node(moderator, settings, emit, AsyncMock())
+            result = await node(graph_state)
+
+        assert "should_continue" in result
+        synthesis = next(c.args[1] for c in emit.call_args_list if c.args[0] == "synthesis")
+        assert synthesis["semantic_agreement_score"] is None
+
+    @pytest.mark.anyio
+    async def test_semantic_encoding_runs_off_the_event_loop(self):
+        moderator = MagicMock()
+        moderator.synthesize = AsyncMock(return_value=_synthesis(agreement_score=0.4, should_continue=True))
+        settings = _mock_settings(semantic_enabled=True)
         round_data = DebateRound(
             round_number=1,
             agent_outputs=[_agent_response("Analyst"), _agent_response("Risk")],
@@ -349,16 +415,15 @@ class TestNodeFactories:
             "final_decision": None,
         }
 
-        with patch("app.orchestrator.nodes.SemanticConsensusEngine") as engine_cls:
-            engine = engine_cls.return_value
-            engine.compute_semantic_similarity.return_value = 0.88
-            engine.compute_agreement_score.return_value = 0.86
+        with (
+            patch("app.orchestrator.nodes.SemanticConsensusEngine") as engine_cls,
+            patch("app.orchestrator.nodes.asyncio.to_thread", new=AsyncMock(return_value=0.5)) as to_thread,
+        ):
+            node = make_convergence_node(moderator, settings, MagicMock(), AsyncMock())
+            await node(graph_state)
 
-            node = make_convergence_node(moderator, settings, emit, persist_state)
-            result = await node(graph_state)
-
-        assert result["debate_state"].agreement_score == pytest.approx(0.86)
-        assert result["should_continue"] is False
+        to_thread.assert_awaited_once()
+        assert to_thread.await_args.args[0] is engine_cls.return_value.compute_semantic_similarity
 
     @pytest.mark.anyio
     async def test_convergence_node_does_not_converge_with_open_disagreements(self):
