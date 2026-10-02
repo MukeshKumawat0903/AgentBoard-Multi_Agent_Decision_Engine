@@ -41,5 +41,5 @@ logs/
 *.db-wal
 
 # Local notes (not for git)
-docs/interview/
-docs/plan/
+*docs/interview/
+*docs/plan/
